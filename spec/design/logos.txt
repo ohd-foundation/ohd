@@ -1,0 +1,75 @@
+OHD
+───
+  ╭──╮╷__╷┌──╮
+  ╰──╯╵  ╵└──╯
+      
+
+OHD  ·  cross (CORD)
+─────────────────────
+
+         C
+  ╭──╮ │ O │ ┌──╮
+  ╰──╯ │ R │ └──╯
+         D
+
+
+OHDC  ·  cross (short)
+───────────────────────
+
+         O
+  ╭──╮ │ H │ ┌──╮
+  ╰──╯ │ D │ └──╯
+         C
+
+
+OHD  ·  cross (CORD) · H bars
+───────────────────────────────
+
+       H  C  H
+  ╭──╮ H  O  H ┌──╮
+  ╰──╯ H  R  H └──╯
+       H  D  H
+
+
+OHDC  ·  cross (short) · H bars
+─────────────────────────────────
+
+       H  O  H
+  ╭──╮ H  H  H ┌──╮
+  ╰──╯ H  D  H └──╯
+       H  C  H
+
+
+OHD  ·  icon (CORD) · block
+─────────────────────────────
+
+       H  C  H
+  ##   H  O  H   ##
+  ##   H  R  H   ##
+       H  D  H
+
+
+OHDC  ·  icon (short) · block
+──────────────────────────────
+
+       H  O  H
+  ##   H  H  H   ##
+  ##   H  D  H   ##
+       H  C  H
+
+
+Letterform legend
+─────────────────
+
+  O  ╭──╮   square outline, all corners rounded
+     ╰──╯
+
+  H  ╷  ╷   two verticals, implied crossbar at mid-height
+     ╵  ╵
+
+  D  ┌──╮   square outline, right corners rounded only
+     └──╯
+
+  │   thin vertical bar separator
+  H   H letterform as bar (self-referential)
+  ##  simplified O or D block (icon use)
