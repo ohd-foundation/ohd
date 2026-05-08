@@ -2,6 +2,8 @@
 
 Visual / mermaid externalization of the architecture, aligned with the current spec. The spec is canonical; this doc is a review aid showing the same model in diagram form. Scrap after the review pass if it doesn't add value.
 
+> **Note** — the diagrams below show four components for layout simplicity, but **OHD Emergency** is also a first-class component (the emergency-services counterpart to OHD Care). It uses the same OHDC protocol via emergency-grant tokens issued by the patient phone after a break-glass dialog signed by a certified emergency-authority relay. See `spec/docs/components/emergency.md` for the full spec; the diagrams below would benefit from a refresh once we settle on a layout that includes Emergency cleanly.
+
 ---
 
 ## 1. The four components

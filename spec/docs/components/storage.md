@@ -36,7 +36,7 @@ See [`../design/deployment.md`](../design/deployment.md) for operator-side detai
 
 ## External interface — OHDC
 
-OHD Storage exposes a single external protocol: **OHDC**. Three auth profiles flow through it, each enforced server-side:
+OHD Storage exposes a single external protocol: **OHDC** — Connect-RPC over HTTP/3 with Protobuf schemas. See [`connect.md`](connect.md) "Wire format" for the protocol shape, encoding, and release artifacts. Three auth profiles flow through it, each enforced server-side:
 
 | Auth profile | Used by | Scope |
 |---|---|---|

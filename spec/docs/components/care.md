@@ -130,6 +130,20 @@ To avoid the "wrong patient" failure mode:
 
 OHD Care users (operators) authenticate to the Care app itself via the operator's OIDC (their clinic SSO, their personal Google, etc.). The operator's identity is bound to the active grant — every audit row records both the `grant_id` and the operator's identity (in operator-side records, not in OHD's protocol). This protects the patient: even if a clinic's staff turns over, the audit trail shows which person did what.
 
+### Cases
+
+OHD Care is case-aware. Patient encounters typically span a case (a planned admission, an outpatient procedure, an ongoing therapy course, an inherited emergency case from EMS). Cases are first-class in OHD Care's UI and MCP:
+
+- **Open a case** — when starting a new encounter (admission, new outpatient visit, ongoing-care episode), the operator opens a case via `open_case` — picks `case_type`, sets a label, optionally links to a predecessor (e.g., the EMS emergency case that brought the patient in). Storage records a `case_started` marker.
+- **Active-case display** — every patient view in OHD Care shows whether there's an active case for this patient and (if yes) the case's start time, current authority (themselves or a colleague at the same operator), and the predecessor chain.
+- **Case timeline** — chronological view of everything that happened in this case: vitals from sensors, medications, observations, the operator's submitted clinical content, handoffs.
+- **Predecessor / parent inheritance** — inheritance is intrinsic to case linkage and asymmetric. A successor case (with `predecessor_case_ulid` set) automatically reads the predecessor's scope — handoff context flows forward (EMS → admission). A parent case automatically reads its children's scopes — sub-task results roll up (EKG referral results visible to the doctor who ordered it). Children do **not** see the parent's broader scope; predecessors do **not** see their successors. To pass parent scope down to a child, link the same case as both `parent_case_ulid` and `predecessor_case_ulid`. No grant-level inherit-flags — the case linkage carries the rule.
+- **Handoff** — at end of operator's involvement (discharge, transfer, end-of-shift handoff), the operator initiates handoff to the next authority. New case opens with the current case as predecessor; current case closes; previous authority retains read-only access to their span (the case's filters at close time) for records / billing / follow-up.
+- **Case-resolved writes** — operator-submitted events are written into `events` normally; no `case_id` tagging. The case's filters pull them in at read time, typically via a `device_id_in: [operator_device]` filter plus the case's time range. The EMS EKG flows into the hospital admission case because the admission case has `predecessor_case_ulid` set to the EMS case; the predecessor chain pulls those events in automatically.
+- **Auto-close + reopen tokens** — if the operator forgets to close the case, it auto-closes after the inactivity threshold for its `case_type` (admission default 30 days). The operator gets a reopen token (default TTL 24h) that lets them reopen without re-running break-glass / patient-grant if the case wasn't really finished.
+- **Patient force-close** — the patient can force-close any case from OHD Connect at any time. This revokes the active operator's grant; the operator's local cache becomes their HIPAA / GDPR responsibility from that point.
+- **Retrospective access** — once a case is closed, the patient can issue case-scoped grants to specialists / insurers / researchers for review, without giving access to anything outside the case's data.
+
 ## Deployment
 
 OHD Care is deployable in many shapes:

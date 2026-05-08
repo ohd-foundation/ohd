@@ -8,6 +8,40 @@ OHDC is the only external surface of OHD Storage. Every external consumer (the O
 
 What an authenticated session can actually invoke is determined by its **token scope**, not by the protocol layer. There is one wire format, one set of operations, three auth profiles.
 
+### Wire format
+
+OHDC is a **Connect-RPC** service defined by **Protobuf** schemas. Picked because:
+
+- **Schema-first.** The `.proto` file is the contract. Vendors compile against it; drift is caught at compile time. Critical because OHDC is the single external surface — third parties (CGM providers, lab integrations, hospital EHRs) build against it without coordination.
+- **Codegen across every language OHD ships in.** Buf CLI generates typed clients/servers in Rust (the storage core), Kotlin (Android), Swift (iOS), TypeScript (Care web + Connect web), and Python (tooling, conformance harness, MCP servers). One source of truth.
+- **Wire-encoding flexibility.** Each request advertises `Content-Type` — `application/proto` (binary, default in production) or `application/json` (debuggable in browsers, curl-friendly). Same schema, two encodings.
+- **Streaming first-class.** Server-streaming for `read_samples` over long ranges, sync (cache↔primary), and `audit_query` tail-follow. Client-streaming for large `import` and chunked `attach_blob`. Defined in the `.proto`, not bolted on with SSE/WebSocket workarounds.
+- **HTTP-native.** Plain HTTP/3 with HTTP/2 fallback. Works through every proxy, load balancer, and CDN. Standard HTTP status codes (`429`, `404`, `500`); structured error details (`OUT_OF_SCOPE`, `INVALID_UNIT`, etc.) in the body.
+- **gRPC-compatible.** A Connect server accepts gRPC clients and vice versa, so an integrator who already has a gRPC stack (large hospital EHRs, lab systems) reuses tooling.
+
+### Transport
+
+| Layer | Choice |
+|---|---|
+| Protocol | Connect-RPC over HTTP |
+| HTTP version | HTTP/3 (QUIC) preferred; HTTP/2 fallback |
+| Default encoding | `application/proto` (Protobuf binary) |
+| Debug encoding | `application/json` (same schema, JSON wire) |
+| TLS | TLS 1.3 required, terminated by Caddy on the operator side, terminated end-to-end through OHD Relay |
+| Path prefix | `/ohdc.v1.OhdcService/<Method>` |
+
+Mobile clients use platform-native HTTP/3 stacks (URLSession on iOS, Cronet on Android). The Rust core uses `hyper` + `quinn`.
+
+### Release artifacts
+
+For each OHDC version, the project publishes:
+
+- The `.proto` schema files in the `ohd-protocol` repo (`proto/ohdc/v1/*.proto`).
+- Generated client libraries: `ohdc-client-rust`, `ohdc-client-kotlin`, `ohdc-client-swift`, `ohdc-client-ts`, `ohdc-client-python`.
+- A reference server stub used by the storage core and by integrators to test against.
+- The conformance corpus (input event sequence + expected query outputs + binary sample-block fixtures); see [`../design/storage-format.md`](../design/storage-format.md).
+- Buf Schema Registry-published API documentation at `buf.build/openhealth-data/ohdc`.
+
 ### Operations
 
 | Category | Operation | Notes |
@@ -133,6 +167,28 @@ Reference personal app: Android, iOS, web. Configured with a self-session token;
   - Full portable export (lossless OHD format, signed by the source instance).
   - Doctor-PDF for in-person sharing.
   - Migration assistant for moving between deployment modes (on-device → SaaS, etc.).
+- **Cases**:
+  - List of ongoing cases prominently surfaced (so the user is aware: "EMS Prague Region — open since 14:23").
+  - Closed-cases history with full audit (who accessed what, when, what was written).
+  - Tap into any case to see its events, audit, handoff chain, current authority, retrospective grant management.
+  - Force-close any case at any time (revokes the active authority's grant).
+  - Issue retrospective case-scoped grants (specialist consult, insurer billing review).
+- **Emergency / break-glass settings** (full UX detail in `screens-emergency.md`):
+  - Feature on/off (default off — opt-in).
+  - Approval timeout (default 30s; range 10–300s).
+  - Default action on timeout — Allow vs. Deny — with explanatory copy: *Allow gives access if you can't respond; better for unconscious users. Deny refuses access on timeout; better against malicious requests when you're nearby and unaware.*
+  - BLE beacon on/off (default on when feature enabled; broadcasts opaque ID only).
+  - Lock-screen behaviour: full dialog above lock (default), or "basic info only on lock" (shoulder-surfer mode).
+  - Location share opt-in.
+  - History window (0h / 3h / 12h / 24h) — how much vital-signs context the responder gets.
+  - Per-channel emergency profile — toggle which channels are visible in emergencies.
+  - Sensitivity-class toggles — by default hides mental_health / substance_use / sexual_health / reproductive; user can flip per category.
+  - Trusted authority roots — list of emergency authority CAs the phone accepts; OHD project default + per-locale roots; user can add or remove.
+- **Pending review (incoming writes)**:
+  - When a grant submits a write that requires approval, the user reviews here. Includes emergency-case writes if the user has flagged them for review.
+- **Audit transparency for emergency**:
+  - Auto-granted (timeout-default-allow) accesses are visually distinct in the audit view (different color / icon).
+  - User can review what was accessed during a break-glass after the fact, and dispute / refine settings.
 
 ### Form factors
 
@@ -166,7 +222,8 @@ Tools:
 - **Reading**: `query_events`, `query_latest`, `summarize`, `correlate`, `find_patterns`, `get_medications_taken`, `get_food_log`, `chart`
 - **Grants**: `create_grant`, `list_grants`, `revoke_grant`
 - **Pending review**: `list_pending`, `approve_pending`, `reject_pending`
-- **Audit**: `audit_query`
+- **Cases**: `list_cases`, `get_case`, `force_close_case`, `issue_retrospective_grant`
+- **Audit**: `audit_query`, including the `auto_granted` flag on emergency-timeout accesses
 
 The user's chat assistant uses this MCP to log new entries ("I just took my metformin"), answer questions about their data ("how was my sleep last week?"), manage grants ("revoke Dr. Smith's access"), and review pending submissions.
 

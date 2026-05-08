@@ -14,13 +14,13 @@ The protocol spec, architecture, and design docs live in [`spec/`](spec/README.m
 
 ## Status
 
-**Spec stabilization.** Implementation cleared out. Once the spec review settles, the implementation plan gets re-created against the four-component model: OHD Storage (core), OHD Connect (personal app), OHD Care (clinical app), OHD Relay (bridge). All four speak the unified OHDC protocol with three auth profiles (self-session, grant token, device token).
+**Spec stabilization.** Implementation cleared out. Once the spec review settles, the implementation plan gets re-created against the five-component model: OHD Storage (core), OHD Connect (personal app), OHD Care (clinical app), OHD Emergency (emergency-services app), OHD Relay (bridge + emergency authority). All five speak the unified OHDC protocol with three auth profiles (self-session, grant token, device token).
 
 ## Where to start
 
 - [`spec/README.md`](spec/README.md) — protocol overview and doc index.
 - [`spec/docs/01-architecture.md`](spec/docs/01-architecture.md) — how the four components fit together.
 - [`spec/docs/deployment-modes.md`](spec/docs/deployment-modes.md) — where the data lives (on-device, self-hosted, custom provider, OHD Cloud).
-- [`spec/docs/components/`](spec/docs/components/) — per-component specs (storage, connect, care, relay).
+- [`spec/docs/components/`](spec/docs/components/) — per-component specs (storage, connect, care, emergency, relay).
 - [`spec/docs/design/storage-format.md`](spec/docs/design/storage-format.md) — the on-disk format.
 - [`spec/docs/glossary.md`](spec/docs/glossary.md) — every term defined once.

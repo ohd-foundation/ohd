@@ -128,17 +128,16 @@ If you run or fork OHD, we ask that you follow the spirit of the project:
 
 A minimal attribution requirement ("based on Open Health Data, ohd.org") will be part of the license, but won't be onerous — similar to Apache 2.0's notice requirement.
 
-## Licensing decision: still open
+## Licensing decision: dual-licensed Apache-2.0 OR MIT
 
-The exact license text needs to be written. The current leading candidates are:
+The repository is **dual-licensed under your choice of Apache 2.0 or MIT** — the standard Rust-ecosystem convention. Files: [`LICENSE`](../LICENSE) (overview), [`LICENSE-APACHE`](../LICENSE-APACHE), [`LICENSE-MIT`](../LICENSE-MIT), [`NOTICE`](../NOTICE). The "spirit of the project" asks (this section's consequences) live in [`SPIRIT.md`](../SPIRIT.md) as non-binding requests, not license clauses.
 
-- **Apache 2.0** — permissive, widely understood, has good patent provisions. This is the leading candidate.
-- **MIT** — even more permissive but weaker on patents.
-- **AGPL** — would legally require open-sourcing modifications, but is more restrictive than we want (many companies won't touch AGPL code).
+Why the pair:
 
-We'll likely go with Apache 2.0 and make the "spirit of the project" asks non-binding.
+- **MIT** for projects and downstream consumers that want minimal license text and the broadest compatibility (including with GPLv2 codebases).
+- **Apache 2.0** for the explicit patent grant and patent-retaliation clause — health tech is a patent-active space, and the Apache half gives downstream users a real shield.
 
-The license will be finalized before public release of any code. Until then, all work is owned by the project founder(s) and not yet open-sourced.
+AGPL was considered and rejected: it would legally require open-sourcing modifications, which sounds aligned but in practice would block hospital and enterprise deployments that the project's reach depends on. The non-binding `SPIRIT.md` asks are the right shape — strong norms, no enforcement teeth.
 
 ## A note on the tone of this document
 

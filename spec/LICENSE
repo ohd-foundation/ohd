@@ -1,0 +1,27 @@
+# License
+
+Open Health Data (OHD) — this repository's specification, reference implementations, tooling, and documentation — is licensed under **either of**:
+
+- **Apache License, Version 2.0** ([LICENSE-APACHE](LICENSE-APACHE) or http://www.apache.org/licenses/LICENSE-2.0)
+- **MIT License** ([LICENSE-MIT](LICENSE-MIT) or http://opensource.org/licenses/MIT)
+
+at your option.
+
+This is the standard convention for the Rust ecosystem. You pick whichever license suits your use; both grants apply to every file in this repository unless explicitly noted otherwise in a file header.
+
+## Why dual-licensed
+
+- **MIT** for projects and downstream consumers that want minimal license text and the broadest compatibility.
+- **Apache 2.0** for the explicit patent grant and patent-retaliation clause (which matter in health tech), and for compatibility with downstream Apache 2.0 projects that don't accept GPLv3 — the inverse of MIT's GPLv2 compatibility.
+
+## Contributing
+
+Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in OHD by you, as defined in the Apache-2.0 license, shall be **dual-licensed as above, without any additional terms or conditions**. This is the standard Rust-ecosystem contributor agreement (no separate CLA needed).
+
+## Trademark
+
+Neither license grants you permission to use the OHD name or logo. Forks, derivative works, and downstream products are welcome to identify themselves as "based on Open Health Data" or similar; using the OHD name as your own product name, or in a way that implies endorsement, is not permitted.
+
+## Spirit of the project
+
+We ask — but do **not** legally require — that operators, integrators, and forkers honor the spirit of the project: respect user data ownership, keep portability working, contribute fixes back where it benefits everyone. See [SPIRIT.md](SPIRIT.md). These are non-binding requests, not license clauses.

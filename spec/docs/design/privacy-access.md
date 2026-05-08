@@ -49,12 +49,14 @@ This gives them full functionality (logging via OHD Connect, sharing via grants,
 
 Every external operation authenticates under one of three profiles. They share the same OHDC protocol surface; what they can do is bounded by their profile.
 
+The full self-session mechanics — OAuth 2.0 Authorization Code with PKCE, OIDC delegation, token wire formats (`ohds_…`, `ohdr_…`), system-DB tables (`oidc_identities`, `sessions`, `pending_invites`), operator-configurable account-join modes, on-device Mode A/B, multi-identity linking — live in [`auth.md`](auth.md). What follows here is the conceptual three-profile summary.
+
 ### 1. Self-session
 
 The user authenticated as themselves via OIDC. Full scope on their own data — read everything, write everything, manage grants, view the full audit log, export, import.
 
-- **Token shape**: short-TTL bearer (default 1 hour), with a refresh token for longer sessions. Bound server-side so revocation is immediate.
-- **Stored**: server-side in a session store (Redis, or the storage's own session table). Revoked on logout, on password/key change, or by the user from another device.
+- **Token shape**: opaque `ohds_<base64url>` access (1h TTL) + `ohdr_<base64url>` refresh (30d, rotated on use). Server-side state in `sessions` (system DB); SHA-256-hashed at rest. Revocation is immediate (set `revoked_at_ms`).
+- **Issued via**: OAuth Authorization Code + PKCE for browser/MCP clients, Device Authorization Grant for CLI. OIDC providers verify identity; OHD Storage acts as the OAuth Authorization Server. See [`auth.md`](auth.md).
 - **Used by**: OHD Connect personal app (mobile, web, CLI), OHD Connect MCP, any user-facing tool the user authenticates to.
 
 ### 2. Grant token
@@ -145,21 +147,145 @@ The patient sees what the doctor wants to add before it lands in their record. T
 
 Trust-tiered policy lets a primary doctor relationship auto-commit routine writes (`lab_result`, `clinical_note`) while still queueing high-stakes ones (`prescription`). New / one-off relationships default to `always`.
 
-### Emergency / break-glass grants
+### Emergency access (break-glass)
 
-A pre-issued grant for emergency responders. Curated for the critical subset:
+Emergency access is a real, productized feature — not an aspirational reservation. It lets first responders access a curated subset of the user's data without a pre-issued grant, mediated by **certified emergency authorities**, with the user retaining audit visibility and revocation rights.
 
-- **Allowed reads**: active medications, allergies, known diagnoses, blood type, advance directives.
-- **Denied sensitivity classes**: mental_health, substance_use, sexual_health, reproductive (unless the user explicitly opts to include them — body-anatomy emergencies can need reproductive context).
-- **Approval mode for writes**: `never_required` (queueing emergency writes would be malpractice).
-- **Notifications**: always on. The user sees emergency access promptly.
+#### The actors
 
-Activation:
+- **Patient phone** running OHD Connect. Broadcasts a low-power BLE beacon while the feature is enabled. Holds the patient's emergency-template grant (the user's emergency profile).
+- **Bystander** — anyone with OHD Connect installed and internet connectivity, *including* the responder if they're nearby. Their device acts as a BLE-to-internet transport proxy. Forwards TLS-encrypted bytes; sees nothing of the patient's data.
+- **Responder** (paramedic, EMS staff, ER triage, etc.). Authenticated to their **station's certified relay**. Views the data via their station-side authentication. Mechanically a bystander + a station-authenticated user.
+- **Station's certified relay** — an OHD Relay deployment running in emergency-authority mode, holding an authority cert that the patient's phone trusts. Signs emergency-access requests. Routes responder traffic. The trust boundary is institutional (the station), not individual (the responder).
 
-- **Pre-emptive**: the user generates a long-lived token, stores it as a QR on their phone's lock screen, on a wristband, in emergency-services' registry. Paramedics scan it.
-- **On-demand**: the user is conscious and pairs with the responder's OHD Care via NFC.
+The trust model: the patient's phone has a list of **trusted authority roots**. An emergency request must be signed by an authority cert whose chain terminates at a trusted root. Responder identity is the station's operational concern; the patient's phone trusts the station, not each individual responder.
 
-No permission system is perfect for emergencies. The goal is to be better than the status quo (paramedics asking the unconscious patient) without locking unconscious patients out of care.
+For v1.0, the OHD project maintains a default trust root and signs sub-certs for partner emergency services (per-country EMS organizations, hospital networks, etc.). Patients can add or remove trust roots. Per-country governance comes when there's a partnership story.
+
+#### The emergency-template grant
+
+The user pre-configures their emergency profile as a **template grant** (`grants.is_template=1`, `grantee_kind='emergency_template'`). Its rules tables define what's in scope when break-glass fires:
+
+- **Default read scope** (allowlist): allergies, active medications, blood type, advance directives, recent vitals (HR, BP, SpO2, temperature, glucose if relevant), current diagnoses.
+- **Default deny by sensitivity**: `mental_health`, `substance_use`, `sexual_health`, `reproductive` — unless the user explicitly opts to include them. Some emergencies need reproductive context (pregnancy, body-anatomy concerns); the user can flip this per category.
+- **Per-channel granularity**: the user can fine-tune which specific channels are visible (e.g., share `glucose` but not `sleep`).
+
+The user edits this template via OHD Connect's settings; under the hood, edits are CRUD on the template grant's rule tables.
+
+#### The break-glass flow
+
+1. **Discovery**: patient's phone broadcasts an opaque BLE beacon. Responder (or bystander) discovers it.
+2. **Request**: responder, via their station's relay, sends a signed emergency-access request. Transport may be direct internet (if patient phone has connectivity), or BLE → bystander → internet → station relay.
+3. **Verification**: patient's phone verifies the signature against trusted authority roots. If valid, accepts the request.
+4. **Dialog**: phone shows the dialog above the lock screen — OHD logo, the authority's certified label ("EMS Prague Region"), countdown timer (default 30s, configurable 10–300s), [Approve] [Reject] buttons. Vibrates / rings.
+5. **Resolution**:
+   - **Approve** → flow continues immediately.
+   - **Reject** → request denied; logged.
+   - **Timeout** → action depends on `_meta.emergency_default_allow_on_timeout` (default: allow, for unconscious users; user can flip to deny).
+6. **On approve (interactive or auto-granted)**:
+   - Storage clones the emergency-template grant into a fresh active grant. The new grant's `grantee_kind='emergency'`, `is_template=0`, `grantee_label` = the authority's certified name, `grantee_ulid` = the authority's identity.
+   - A new `cases` row is opened with `case_type='emergency'`, the new grant attached as `opening_authority_grant_id`.
+   - The grant is bound to the new case via a `grant_cases` row.
+   - Historical context window is applied per `_meta.emergency_history_hours` (default 24h).
+   - An `audit_log` row records the access. If the timeout path was taken, `auto_granted=1` so the user's audit view renders it distinctly.
+   - The grant token is issued back through the relay to the responder.
+7. **Subsequent OHDC**: responder queries through their station relay using the issued grant token; reads return data per the rules; writes from the responder are tagged with the case_id (e.g., EKG measurements from the ambulance device flow into the case).
+
+#### Settings (in OHD Connect)
+
+- **Feature on/off** (default: off — opt-in).
+- **BLE beacon on/off** (default: on when feature on; broadcasts opaque ID only, no health data).
+- **Approval timeout** (default: 30s; configurable 10–300s).
+- **Default action on timeout** (default: allow; configurable to deny). UI shows tradeoff copy: *allow = better for unconscious users; deny = better against malicious actors who might trigger break-glass when you're nearby and unaware*.
+- **Lock-screen visibility**: full dialog above lock screen (default), OR "basic info only on lock screen" sub-option (shoulder-surfer mode).
+- **Location share** (default: off; opt-in).
+- **History window**: 0h / 3h / 12h / 24h of recent vitals visible to the responder (default: 24h).
+- **Per-channel emergency profile**: which channels are in scope. Default profile is the allergies/meds/vitals set above; user can add or remove channels.
+- **Sensitivity classes**: which sensitivity classes are allowed in emergency (default: all general; deny mental_health/substance_use/sexual_health/reproductive). User can toggle per class.
+- **Trusted authority roots**: list of emergency authorities whose certs the phone accepts. Default: OHD project root + any country-specific roots pre-installed for the user's locale. User can add (paste cert) or remove.
+
+#### Bystander as transport proxy
+
+Any OHD Connect installation can serve as a transport proxy automatically — no opt-in by the bystander, no payload exposure to the bystander. The bystander's device:
+
+- Listens for BLE-encapsulated emergency requests addressed to OHD beacons in proximity.
+- Relays the encrypted bytes to the destination station relay over the bystander's internet connection.
+- Returns the response bytes back over BLE.
+- Sees nothing of the patient's data (TLS terminates at patient phone and station relay).
+
+Battery and bandwidth cost is negligible (sporadic emergency events, short-lived sessions). The bystander can opt out of the proxy role in their own settings if they want; default is on, treating "OHD Connect installed" as implicit consent to act as a good-Samaritan transport.
+
+#### Operator-side records
+
+When an emergency authority records data into the patient's OHD during a case (vitals, drugs administered, observations, clinical notes), the authority typically also keeps a copy in their own infrastructure for clinical safety, regulatory retention (HIPAA / GDPR / national equivalents), billing, and operational continuity. This is consistent with how healthcare data flows already work — every doctor visit produces records the doctor's employer keeps independently of any patient-side record.
+
+This duplication is **outside OHD's protocol scope**:
+
+- OHD provides the patient-side canonical record, the audit trail of accesses, and lifecycle control (revocation stops *future* OHDC reads).
+- OHD does **not** synchronize, manage, or police the operator-side copies. The operator's copies are governed by their own regulatory regime.
+- Revocation of an OHD grant stops future OHDC access; it does not retroactively delete records the operator legitimately processed under a valid grant.
+
+This is a feature, not a bug: clinical safety requires operators to have continuous access to the records they're working with, even if the patient's OHD goes offline. The data-ownership inversion still holds for *new* data flows; existing operator records are subject to existing healthcare data law.
+
+The reference OHD Emergency app demonstrates a deployable pattern that includes operator-side record-keeping (alongside the OHDC integration) — see [`../components/emergency.md`](../components/emergency.md).
+
+### Cases — episodes of care
+
+Cases are labeled, curated containers of events. They serve different purposes than grants:
+
+| | Case | Grant |
+|---|---|---|
+| Purpose | "What's in this episode" | "Who can read/write what" |
+| Defines | Filter expressions over events | Access rules + optional case binding |
+| Standalone? | Yes (patient organizes cases for self) | Yes (open-scope grants for ongoing access) |
+| Composable? | Linked to other cases (predecessor / parent) | Bound to zero, one, or many cases |
+
+A case has **filters** (which events fall in scope), **lifecycle** (start, end, auto-close), and **linkage** (parent / predecessor) — but no access rules. Grants own all access logic.
+
+A grant can reference zero, one, or many cases via `grant_cases`. Open-scope grants see all the user's events (subject to grant rules). Case-bound grants see the union of their referenced cases' scopes (subject to grant rules).
+
+**Linkage semantics:**
+- **Predecessor → successor** (handoff chain, e.g. EMS → admission). Successor inherits forward — it reads the predecessor's scope automatically.
+- **Children → parent** (sub-case rolls up, e.g. EKG referral under doctor's visit). Parent reads its children's scopes; the child does **not** see the parent's broader scope.
+
+To get bidirectional inheritance (e.g., child also sees parent), the user explicitly links the same case as both `parent_case_id` and `predecessor_case_id`.
+
+Schema and resolver semantics in [`storage-format.md`](storage-format.md) "Cases" and "Case scope resolution". User-facing flow in [`../components/emergency.md`](../components/emergency.md) and [`../components/care.md`](../components/care.md).
+
+Important properties:
+- Events themselves are case-agnostic at the schema level (no `events.case_id` column). Cases find their events via filters at read time. A single event can naturally participate in multiple cases without copying.
+- Filter expressions can include time ranges, explicit event-ULID lists, device-id filters, event-type filters, and combinations (full set in [`ohdc-protocol.md`](ohdc-protocol.md) "Filter language").
+- Auto-close after inactivity (default 12h for emergency cases; 30 days for admissions; NULL for user-curated cases — no auto-close). After close, new events are not retroactively added to the case for grant scope.
+- Reopen tokens let an active authority reopen a recently auto-closed case within a TTL without re-running the break-glass flow.
+- Patient can force-close any case at any time from OHD Connect.
+
+### Grants don't chain
+
+The user (self-session) is the only source of grants. Concretely:
+
+- `OhdcService.CreateGrant` requires self-session token; calls under grant or device tokens return `WRONG_TOKEN_KIND`.
+- A grantee cannot delegate, transfer, or sub-issue access from their grant.
+- A grantee cannot pass the grant to anyone else; the token is bearer but the issuance path is gated to self-session.
+
+This is a load-bearing simplification: the trust graph is one-hop (user → grantee), not transitive. A `delegate` grantee kind exists for "parent acts on behalf of child" / "caregiver acts on behalf of elderly parent" cases — that's an OAuth-level identity-assumption mechanism, not grant chaining.
+
+### Operator-side records and OHD's scope boundary
+
+Stated explicitly because it's a load-bearing scope decision:
+
+**OHD's scope:**
+
+- The patient's canonical record (events, channels, attachments, etc.).
+- The OHDC protocol of access (who reads / writes, with what scope, audited, revocable).
+- Lifecycle control over future access (revocation stops future OHDC reads).
+
+**Outside OHD's scope:**
+
+- Operator-side copies of data the operator legitimately processed under a valid grant. Hospitals' EHRs, EMS incident records, insurance claims systems, research data warehouses — all keep their own records under their own regulatory regimes.
+- Synchronization or consistency between OHD and operator-side copies. Operators chose to copy; operators manage their copies.
+- Retroactive deletion of operator-side copies via OHD revocation. Revoking a grant stops *future* reads, not the operator's historical records.
+
+OHD provides the audit trail (the user sees what the operator accessed) and forward-looking control (the user can prevent future accesses). The operator's regulatory obligations (HIPAA in the US, GDPR in the EU, similar elsewhere) govern what they do with their copies — including retention, access by their staff, and patient-requested deletion under jurisdictional law. OHD doesn't try to be a global enforcer of healthcare data law; it provides the patient-controlled spine on top of which operators operate.
 
 ### Revocation
 

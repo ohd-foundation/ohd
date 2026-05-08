@@ -1,47 +1,54 @@
 # 01 — Architecture
 
-OHD is a **four-component** system. **OHD Storage** is the core data layer, exposing a single external protocol (**OHDC**). Three other components surround it:
+OHD is a **five-component** system. **OHD Storage** is the core data layer, exposing a single external protocol (**OHDC**). Four other components surround it:
 
 - **OHD Connect** — the personal app that uses OHDC under self-session auth.
 - **OHD Care** — the reference clinical app that uses OHDC under grant-token auth.
-- **OHD Relay** — the bridging service that lets remote OHDC consumers reach storage instances behind NAT (phones, home servers without public IP).
+- **OHD Emergency** — the reference emergency-services app that uses OHDC under emergency grant tokens, with break-glass discovery via BLE.
+- **OHD Relay** — the bridging service that lets remote OHDC consumers reach storage instances behind NAT (phones, home servers without public IP), and (in emergency-authority mode) signs emergency-access requests for break-glass.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                            OHD STORAGE                                  │
 │                                                                         │
 │   on-disk format  │  permissions  │  audit  │  grants  │  sync          │
+│   cases  │  pending events  │  emergency-template grants                │
 │                                                                         │
 │   ┌─────────────────────────────────────────────────────────────┐       │
 │   │   OHDC protocol — three auth profiles                       │       │
 │   │     • self-session  (full scope on own data)                │       │
 │   │     • grant token   (scoped read / write, optional approval)│       │
 │   │     • device token  (write-only, attributed by device)      │       │
-│   └────▲──────────────────────▲──────────────────────▲─────────-┘       │
+│   └────▲──────────────────────▲──────────────────────▲──────────┘       │
 │        │                      │                      │                  │
 └────────┼──────────────────────┼──────────────────────┼──────────────────┘
          │                      │                      │
-         │                      │ ┌─── OHD Relay ───┐  │
-         │                      │ │  bridges remote │  │
-         │                      │ │  consumers ↔    │  │
-         │                      │ │  unreachable    │  │
-         │                      │ │  storage        │  │
-         │                      │ └─────────────────┘  │
+         │  ┌── OHD Relay ──────┴──┐  (with optional   │
+         │  │  bridges remote      │   emergency-       │
+         │  │  consumers ↔         │   authority mode   │
+         │  │  unreachable         │   for cert-signed  │
+         │  │  storage; signs      │   break-glass)     │
+         │  │  emergency requests  │                    │
+         │  └──────────────────────┘                    │
          │                      │                      │
-   ┌─────┴─────────────┐ ┌──────┴───────────────┐ ┌────┴──────────────────┐
-   │ OHD Connect       │ │ OHD Care             │ │ Third-party           │
-   │ (personal app)    │ │ (clinical EHR-shape) │ │ integrations          │
-   │                   │ │                      │ │                       │
-   │ • Android / iOS   │ │ • Web app            │ │ • Libre / Dexcom CGM  │
-   │   / web           │ │ • Multi-patient      │ │ • Lab providers       │
-   │ • OHDC CLI        │ │ • Care MCP           │ │ • Pharmacy systems    │
-   │ • Connect MCP     │ │ • Care CLI           │ │ • Hospital EHRs       │
-   │                   │ │ • Write-with-        │ │                       │
-   │ Health Connect /  │ │   approval flow      │ │ Each holds a per-user │
-   │ HealthKit bridge, │ │                      │ │ device token; pushes  │
-   │ manual logging,   │ │ Holds grant tokens   │ │ events on schedule.   │
-   │ personal dash     │ │ per patient          │ │                       │
-   └───────────────────┘ └──────────────────────┘ └───────────────────────┘
+   ┌─────┴─────────────┐ ┌──────┴────────┐ ┌──────────┴─────────────────────┐
+   │ OHD Connect       │ │ OHD Care      │ │ OHD Emergency                  │
+   │ (personal app)    │ │ (clinical app)│ │ (emergency-services app)       │
+   │                   │ │               │ │                                │
+   │ • Android / iOS   │ │ • Multi-      │ │ • Paramedic tablet (mobile)    │
+   │   / web           │ │   patient web │ │ • Dispatch console (web)       │
+   │ • OHDC CLI        │ │ • Care MCP    │ │ • Emergency MCP                │
+   │ • Connect MCP     │ │ • Care CLI    │ │ • BLE break-glass discovery    │
+   │ • Cases tab       │ │ • Cases       │ │ • Case handoff to OHD Care     │
+   │ • Emergency       │ │ • Predecessor │ │                                │
+   │   settings + dialog│ │   inheritance │ │ Holds emergency grant tokens  │
+   │ • Bystander proxy │ │               │ │ per case, issued via the       │
+   │   (Good Samaritan)│ │               │ │ station's certified relay.     │
+   │                   │ │               │ │                                │
+   └───────────────────┘ └───────────────┘ └────────────────────────────────┘
+
+   Plus third-party integrations (Libre, Dexcom, lab providers, pharmacy,
+   hospital EHRs) holding device tokens — push events on schedule via OHDC.
 ```
 
 ## OHD Storage — the core product
@@ -63,7 +70,7 @@ OHD is a **four-component** system. **OHD Storage** is the core data layer, expo
 
 ## OHDC — the protocol
 
-A single typed protocol for everything: read, write, aggregate, export, manage grants, view audit, run pending-event approvals. What an authenticated session can actually invoke is determined by its **token's auth profile**, not by the protocol layer. Three auth profiles flow through the same OHDC API:
+A single typed protocol for everything: read, write, aggregate, export, manage grants, view audit, run pending-event approvals. **Connect-RPC over HTTP/3 with Protobuf schemas** — see [`components/connect.md`](components/connect.md) "Wire format" for the protocol shape, encoding, and tooling. What an authenticated session can actually invoke is determined by its **token's auth profile**, not by the protocol layer. Three auth profiles flow through the same OHDC API:
 
 ### Self-session auth
 
@@ -101,11 +108,26 @@ What it does:
 - **Personal dashboard** — recent activity, charts, timelines, saved views.
 - **Grant management** — create / revoke / inspect grants, see what each grantee has queried, see what was silently filtered.
 - **Pending review** — when a grant submits a write under the approval queue, the user reviews via OHD Connect.
-- **Export / portability** — full portable export, doctor-PDF, migration to a different deployment mode.
+- **Export / portability** — full portable export, migration to a different deployment mode.
 
 Plus an MCP server (Connect MCP) and a CLI (`ohd-connect`) for LLM- and terminal-driven workflows respectively.
 
 See [`components/connect.md`](components/connect.md) for details.
+
+## OHD Emergency — the reference emergency-services app
+
+The professional-side counterpart to OHD Care for emergency response. A real, usable, lightweight EHR-shaped consumer designed for EMS organizations, hospital emergency departments, mobile-care services, paramedics, ambulance crews, ER triage staff. Open-source. Multi-actor; time-critical UX; mobile-first (ambulance-tablet form factor); BLE-discovery driven; case-bound grants issued via break-glass flow.
+
+The crucial properties:
+
+- **Break-glass discovery** — paramedic's tablet picks up the patient's BLE beacon, initiates a signed request via the station's certified relay, the patient's phone shows the dialog and either user approves or 30s timeout fires with default-allow.
+- **Case-bound grants** — every emergency access opens a case; reads / writes scoped to the case; handoff to the receiving facility transfers the active authority while the previous authority retains read-only access for records / billing.
+- **Authority cert chain** — each EMS / hospital deployment has an authority cert from a trust root the patient phones recognize. Trust is institutional (the station), not individual (the responder).
+- **Bystander-mediated transport** — patient phones broadcast BLE; nearby OHD Connect installations transparently proxy emergency requests to the responder's relay over the bystander's internet. Bystander sees only TLS ciphertext.
+
+OHD Emergency is **not** trying to replace ImageTrend / NEMSIS-compliant ePCR systems / full CAD platforms. It's the lightweight reference that small EMS orgs can deploy directly, or that big EMS vendors can integrate into existing platforms.
+
+See [`components/emergency.md`](components/emergency.md) for the full spec.
 
 ## OHD Care — the reference clinical app
 
@@ -187,15 +209,16 @@ Patient and doctor at the desk
   → When the phone disconnects, session ends
 ```
 
-## Why four components
+## Why five components
 
 1. **Single protocol surface.** OHDC is the one external contract. Easy to learn, easy to integrate, no synthetic combinations of multiple protocols for mixed-scope grants.
 2. **Auth-asymmetric scopes.** Self-session, grant, and device tokens have different damage caps. The protocol stays uniform; auth scope determines capability. This lets a cheap-to-issue device token coexist with a high-bar grant token without protocol-level distinctions.
-3. **Trust separation by component.** OHD Connect runs under user's full control. OHD Care holds grants the user issued and is operator-deployed. OHD Relay sees ciphertext only. Each component's compromise has a bounded blast radius.
-4. **Real apps, not just protocols.** OHD Connect (personal) and OHD Care (clinical) are reference implementations users actually run. Care is positioned as a real, lightweight, usable EHR-shaped consumer — not a demo, not a competitor to enterprise EHRs.
+3. **Trust separation by component.** OHD Connect runs under user's full control. OHD Care holds grants the user issued and is operator-deployed. OHD Emergency runs in time-critical contexts under cert-authenticated operators. OHD Relay sees ciphertext only. Each component's compromise has a bounded blast radius.
+4. **Real apps, not just protocols.** OHD Connect (personal), OHD Care (clinical), and OHD Emergency (responder) are reference implementations users actually run. Each is positioned as a real, lightweight, usable EHR-shaped consumer — not a demo, not a competitor to enterprise EHRs.
+5. **Distinct UX shapes for distinct workflows.** Personal (Connect), planned clinical (Care), and time-critical emergency (Emergency) each demand a different surface — but all share the same OHDC protocol underneath. Splitting at the app layer rather than the protocol layer keeps the wire model clean.
 
 ## Protocol versioning
 
-OHDC is versioned. Storage advertises supported versions; consumers pick the highest mutually supported. Breaking changes require a major bump and a documented migration. Additive changes don't.
+OHDC is versioned. The `.proto` package name carries the major version (`ohdc.v1`, `ohdc.v2`, …); storage advertises supported versions; consumers pick the highest mutually supported. Additive changes (new optional fields, new RPCs) stay within a major version and never break old clients — Protobuf's compatibility rules and Buf's `breaking` lint enforce it in CI. Breaking changes require a major bump (a new `.proto` package) and a documented migration; both versions can coexist on the wire during the transition.
 
 The portability promise — "any OHD instance can import any other instance's export" — applies across operators, across versions (within compatibility windows), and across deployments. The export format is the durable contract; components implement it.

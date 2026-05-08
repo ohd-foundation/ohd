@@ -1,6 +1,8 @@
 # Research: MCP Servers (with FastMCP 2.x)
 
-> How OHD exposes data to LLMs, for both entry (Connector-side) and retrieval (Cord-side). We use the standalone **FastMCP** framework (`fastmcp` on PyPI, `jlowin/fastmcp` on GitHub) rather than the smaller `mcp.server.fastmcp` that ships in the official MCP SDK.
+> How OHD exposes data to LLMs, for both entry (Connect-side) and retrieval (Care-side). We use the standalone **FastMCP** framework (`fastmcp` on PyPI, `jlowin/fastmcp` on GitHub) rather than the smaller `mcp.server.fastmcp` that ships in the official MCP SDK.
+
+> **Status note:** This research doc was written when OHD Storage was sketched as a Python/FastAPI service. The contracted architecture is Rust + Connect-RPC. The `FastMCP.from_fastapi(app)` auto-generation pattern doesn't apply directly anymore — but the surrounding ideas (two MCP servers split by purpose, hand-written high-level tools, OAuth proxy for remote MCPs, transport choices) carry over. The concrete tool catalog (`log_symptom`, `summarize`, `correlate`, etc.) is still good as a v1 starting set. When MCP work resumes, expect a Rust-side or Python-shim implementation against the OHDC Connect-RPC client library.
 
 ## Why standalone FastMCP (not the SDK one)
 
@@ -11,7 +13,7 @@ There are two things called "FastMCP":
 
 We want the standalone version because it gives us:
 
-1. **Auto-generation from FastAPI.** `FastMCP.from_fastapi(app)` converts a FastAPI app into an MCP server. Since OHD Core is FastAPI, a huge chunk of the Cord MCP is free.
+1. **Auto-generation from FastAPI.** `FastMCP.from_fastapi(app)` converts a FastAPI app into an MCP server. Since OHD Storage is FastAPI, a huge chunk of the Care MCP is free.
 2. **OAuth proxy.** Built-in handling for delegating auth to our OIDC providers — we don't have to reinvent bearer-token plumbing.
 3. **Server composition.** We can mount sub-servers (e.g., a read sub-server and a write sub-server) under one endpoint, making deployment simpler.
 4. **Tool transformation / search.** When we grow past ~15 tools, FastMCP 3's search transforms help LLMs find the right one without loading the whole catalog.
@@ -33,13 +35,13 @@ MCP is transport-agnostic. Three transports that matter:
 - **Streamable HTTP** — the modern HTTP transport. For remote servers. Single endpoint, bidirectional.
 - **SSE** — older HTTP transport, being superseded.
 
-For OHD we use **Streamable HTTP** for remote servers (SaaS Connector MCP, Cord MCP served alongside OHD Core) and **stdio** for locally installed tools.
+For OHD we use **Streamable HTTP** for remote servers (SaaS Connect MCP, Care MCP served alongside OHD Storage) and **stdio** for locally installed tools.
 
 ## Two distinct MCP servers
 
 OHD has two MCP surfaces with different purposes.
 
-### 1. Connector MCP — data entry
+### 1. Connect MCP — data entry
 
 **Purpose:** Let an LLM log health events on behalf of the user. "I have a headache" → event created.
 
@@ -53,7 +55,7 @@ OHD has two MCP surfaces with different purposes.
 
 **Transport:** stdio (local) or Streamable HTTP (remote).
 
-### 2. Cord MCP — data retrieval and analysis
+### 2. Care MCP — data retrieval and analysis
 
 **Purpose:** Let an LLM query and analyze the user's health data. "What's my glucose trend this month?" → runs aggregation, returns result.
 
@@ -63,18 +65,18 @@ OHD has two MCP surfaces with different purposes.
 - Doctor, configured with a grant token for a specific patient.
 - Researcher, configured with a study-scoped grant.
 
-**Auth:** Read token (own session) or grant token. Scope enforced server-side by OHD Core.
+**Auth:** Read token (own session) or grant token. Scope enforced server-side by OHD Storage.
 
 **Transport:** stdio or Streamable HTTP.
 
-## Cord MCP: auto-generated from FastAPI
+## Care MCP: auto-generated from FastAPI
 
-The Cord MCP can be built in two complementary ways, both supported by FastMCP:
+The Care MCP can be built in two complementary ways, both supported by FastMCP:
 
-### Approach A — auto-generate from the OHD Core FastAPI app
+### Approach A — auto-generate from the OHD Storage FastAPI app
 
 ```python
-# cord_mcp/server.py
+# care_mcp/server.py
 from fastmcp import FastMCP
 from ohd_core.app import app as ohd_fastapi_app
 
@@ -83,7 +85,7 @@ from ohd_core.app import app as ohd_fastapi_app
 # Pydantic models and summaries/descriptions from docstrings.
 mcp = FastMCP.from_fastapi(
     ohd_fastapi_app,
-    name="OHD Cord",
+    name="OHD Care",
     # Only expose read operations for Cord
     include_operations={"GET"},
     # Strip admin/internal routes
@@ -108,11 +110,11 @@ if __name__ == "__main__":
 ### Approach B — hand-written high-level tools
 
 ```python
-# cord_mcp/server.py
+# care_mcp/server.py
 from fastmcp import FastMCP
 from ohd_core.client import OHDClient
 
-mcp = FastMCP("OHD Cord")
+mcp = FastMCP("OHD Care")
 ohd = OHDClient.from_env()  # reads OHD_BASE_URL and OHD_TOKEN
 
 @mcp.tool
@@ -151,7 +153,7 @@ async def summarize(
 FastMCP supports server composition: mount multiple sub-servers under one. We use that.
 
 ```python
-# cord_mcp/server.py
+# care_mcp/server.py
 from fastmcp import FastMCP
 from ohd_core.app import app as ohd_fastapi_app
 from .high_level_tools import high_level_mcp  # hand-written
@@ -164,7 +166,7 @@ raw_mcp = FastMCP.from_fastapi(
 )
 
 # Top-level server
-mcp = FastMCP("OHD Cord")
+mcp = FastMCP("OHD Care")
 mcp.mount("raw", raw_mcp)
 mcp.mount("analysis", high_level_mcp)
 
@@ -174,19 +176,19 @@ if __name__ == "__main__":
 
 LLMs see both sets of tools namespaced (`raw.get_events`, `analysis.summarize`). For most tasks the hand-written tools are better; for odd edge cases the raw surface is available as a fallback.
 
-## Connector MCP tool definitions
+## Connect MCP tool definitions
 
-Connector MCP is hand-written. The tool surface is small and focused.
+Connect MCP is hand-written. The tool surface is small and focused.
 
 ```python
-# connector_mcp/server.py
+# connect_mcp/server.py
 import os
 from typing import Annotated
 import httpx
 from pydantic import Field
 from fastmcp import FastMCP
 
-mcp = FastMCP("OHD Connector")
+mcp = FastMCP("OHD Connect")
 
 OHD_BASE_URL = os.environ["OHD_BASE_URL"]
 OHD_WRITE_TOKEN = os.environ["OHD_WRITE_TOKEN"]
@@ -224,7 +226,7 @@ async def log_symptom(
             "location": location,
             "notes": notes,
         },
-        "metadata": {"source": "connector_mcp"},
+        "metadata": {"source": "connect_mcp"},
     }
     result = await _post_event(event)
     return {"event_id": result["id"], "status": "logged"}
@@ -316,18 +318,18 @@ if __name__ == "__main__":
     mcp.run()  # stdio
 ```
 
-## Cord MCP: the hand-written high-level tools
+## Care MCP: the hand-written high-level tools
 
 These live alongside the auto-generated ones.
 
 ```python
-# cord_mcp/high_level_tools.py
+# care_mcp/high_level_tools.py
 from typing import Annotated
 from pydantic import Field
 from fastmcp import FastMCP
 from ohd_core.client import OHDClient
 
-high_level_mcp = FastMCP("OHD Cord Analysis")
+high_level_mcp = FastMCP("OHD Care Analysis")
 _ohd = OHDClient.from_env()
 
 
@@ -427,24 +429,24 @@ async def chart(
 # Install the fastmcp CLI
 uv tool install fastmcp
 
-# Install the Connector MCP into Claude Desktop
-fastmcp install connector_mcp/server.py \
-    --name "OHD Connector" \
+# Install the Connect MCP into Claude Desktop
+fastmcp install connect_mcp/server.py \
+    --name "OHD Connect" \
     --env OHD_BASE_URL=https://ohd.example.com \
     --env OHD_WRITE_TOKEN=<token>
 
-# Install the Cord MCP
-fastmcp install cord_mcp/server.py \
-    --name "OHD Cord (self)" \
+# Install the Care MCP
+fastmcp install care_mcp/server.py \
+    --name "OHD Care (self)" \
     --env OHD_BASE_URL=https://ohd.example.com \
     --env OHD_TOKEN=<session_token>
 ```
 
 Claude Desktop then lists these servers and makes their tools available in chat.
 
-### Remote deployment (HTTP, part of OHD Core)
+### Remote deployment (HTTP, part of OHD Storage)
 
-In the OHD Core Docker deployment, we can run Cord MCP as a sibling service:
+In the OHD Storage Docker deployment, we can run Care MCP as a sibling service:
 
 ```yaml
 # docker-compose.yml (excerpt)
@@ -452,8 +454,8 @@ services:
   ohd-api:
     # ... the FastAPI service
 
-  cord-mcp:
-    image: ohd/cord-mcp:latest
+  ohd-care-mcp:
+    image: ohd/ohd-care-mcp:latest
     environment:
       OHD_BASE_URL: http://ohd-api:8000
       # Inherits auth from the incoming request; see OAuth proxy below
@@ -461,7 +463,7 @@ services:
       - "8001"
 
   caddy:
-    # ... route /mcp/cord/* to cord-mcp:8001
+    # ... route /mcp/cord/* to ohd-care-mcp:8001
 ```
 
 Then Claude.ai (or any MCP-aware client) connects to `https://ohd.example.com/mcp/cord/` with a grant token.
@@ -470,7 +472,7 @@ Then Claude.ai (or any MCP-aware client) connects to `https://ohd.example.com/mc
 
 ```bash
 # Interactive tool testing with the FastMCP inspector
-fastmcp dev connector_mcp/server.py
+fastmcp dev connect_mcp/server.py
 
 # List tools on a running server
 fastmcp list http://localhost:8001/mcp
@@ -483,22 +485,22 @@ fastmcp call http://localhost:8001/mcp summarize \
 
 ## Authentication with FastMCP's OAuth proxy
 
-FastMCP 2.x ships with an OAuth proxy that handles OIDC flows for MCP clients. For the remote Cord MCP, this means:
+FastMCP 2.x ships with an OAuth proxy that handles OIDC flows for MCP clients. For the remote Care MCP, this means:
 
 1. Claude.ai (or any MCP client) connects and needs auth.
-2. FastMCP redirects to the configured OIDC provider (the same one OHD Core uses).
+2. FastMCP redirects to the configured OIDC provider (the same one OHD Storage uses).
 3. User authenticates, receives a session.
 4. The MCP client includes the bearer token on subsequent calls.
-5. FastMCP validates the token via OHD Core's introspection endpoint before routing the request.
+5. FastMCP validates the token via OHD Storage's introspection endpoint before routing the request.
 
 ```python
 from fastmcp import FastMCP
 from fastmcp.server.auth import OAuthProxy
 
 mcp = FastMCP(
-    "OHD Cord",
+    "OHD Care",
     auth=OAuthProxy(
-        # Forward OAuth to OHD Core's OIDC flow
+        # Forward OAuth to OHD Storage's OIDC flow
         issuer_url="https://ohd.example.com/auth",
         token_introspection_url="https://ohd.example.com/auth/introspect",
         required_scopes=["ohd.read"],
@@ -506,7 +508,7 @@ mcp = FastMCP(
 )
 ```
 
-For the Connector MCP run locally, we skip OAuth entirely — the server is already authenticated by virtue of holding the write token in env.
+For the Connect MCP run locally, we skip OAuth entirely — the server is already authenticated by virtue of holding the write token in env.
 
 ## Handling time input
 
@@ -534,7 +536,7 @@ Once the tool count grows past ~15, LLMs start to struggle with discovery. FastM
 ```python
 from fastmcp.transforms import SearchTransform
 
-mcp = FastMCP("OHD Cord", transforms=[SearchTransform()])
+mcp = FastMCP("OHD Care", transforms=[SearchTransform()])
 ```
 
 With this, an LLM asking "how do I get medication data" gets back a short list focused on medication tools, not the whole catalog. Not Phase 1, but a nice escape valve.
@@ -542,18 +544,18 @@ With this, an LLM asking "how do I get medication data" gets back a short list f
 ## Testing strategy
 
 - **Unit tests:** test each tool function directly (FastMCP 3 keeps functions callable, so unit tests are trivial — no mocking of decorators).
-- **Integration tests:** spin up OHD Core in Docker Compose, point MCP servers at it, call tools via the FastMCP client library, assert effects.
+- **Integration tests:** spin up OHD Storage in Docker Compose, point MCP servers at it, call tools via the FastMCP client library, assert effects.
 - **Live testing:** `fastmcp dev` launches the inspector for manual poking; `fastmcp install` deploys to Claude Desktop for end-to-end LLM testing.
 
 ```python
 # Example integration test
 import pytest
 from fastmcp import Client
-from connector_mcp.server import mcp as connector_mcp
+from connect_mcp.server import mcp as connect_mcp
 
 @pytest.mark.asyncio
 async def test_log_symptom_end_to_end(ephemeral_ohd):
-    async with Client(connector_mcp) as c:
+    async with Client(connect_mcp) as c:
         result = await c.call_tool("log_symptom", {
             "symptom": "headache",
             "severity": "moderate",
@@ -581,6 +583,6 @@ dependencies = [
 ## Open questions
 
 - **OAuth proxy configuration.** FastMCP's OAuth proxy supports OIDC; we need to confirm it plays nicely with the OIDC providers we'll offer users (Google, Keycloak, Authentik).
-- **Per-component authorization.** FastMCP 3 supports per-component auth, so a single deployed Cord MCP could restrict specific tools to specific scopes ("chart" requires `ohd.read` but "find_patterns" requires `ohd.read+analysis"). Useful for tiered access.
+- **Per-component authorization.** FastMCP 3 supports per-component auth, so a single deployed Care MCP could restrict specific tools to specific scopes ("chart" requires `ohd.read` but "find_patterns" requires `ohd.read+analysis"). Useful for tiered access.
 - **Streaming results.** Large queries shouldn't block. FastMCP supports progressive responses via the Context object; use for `query_events` with large ranges and for `chart` with slow rendering.
 - **Apps (interactive UIs).** FastMCP 3 added "Apps" — interactive UIs rendered in the conversation. A "log this meal" app (barcode scanner, quantity input, nutrition display) could run inside a Claude.ai chat. Worth exploring once MVP is shipped.

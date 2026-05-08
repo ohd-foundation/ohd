@@ -1,409 +1,358 @@
-# Design: Data Model
+# Design: Event Vocabulary
 
-> How we represent health data in OHD.
+> The catalog of **standard event types and channels** that ship with OHD Storage. The "what events exist" doc.
 >
-> **Note**: this document describes the *conceptual* event model — vocabulary, types, what each kind of event means. The *on-disk* format (tables, indexes, sample blocks, channel registry, migrations) lives in [`storage-format.md`](storage-format.md), which supersedes the Postgres schema and storage-density sections below for implementation purposes.
+> Pairs with [`storage-format.md`](storage-format.md) (the on-disk schema and bit-level format) and the OHDC `.proto` (the wire format — see [`../components/connect.md`](../components/connect.md) "Wire format"). This doc is the conceptual vocabulary; those docs are the mechanics.
 
-## Design goals
+> **History:** earlier drafts of this file described a JSON event with `value`/`unit`/`data` JSONB columns on a Postgres backend. That was the v0 prototype model and is **superseded**. The current model is the typed channel-tree EAV described in [`storage-format.md`](storage-format.md). This file now contains only the vocabulary.
 
-1. **Flexible.** Any health-relevant data a person might want to record should fit.
-2. **Portable.** The schema defines an interchange format, not an implementation detail.
-3. **Queryable.** Common queries (by time range, by event type) must be fast.
-4. **Compact.** Store years of dense data without bloat, but *without lossy compression* in the general case.
-5. **Extensible.** New event types don't require schema migrations.
-6. **Auditable.** Every change is traceable.
+## How events are shaped (one-paragraph recap)
 
-## The core concept: everything is an event
+An OHD event is one occurrence at a `(timestamp_ms, optional duration_ms)` of a specific **event type** drawn from this registry. Each type has a tree of **channels** — typed, named, optionally-grouped scalar measurements. An event records zero or more of its type's leaf channels. Dense numeric streams (HR samples in a workout) are stored as **sample blocks** within an event. Large binary payloads (ECG raw, image, PDF) are **attachments** referenced by SHA-256.
 
-Every piece of health data in OHD is an **event**. An event is something that happened at a point (or span) in time. Examples:
+Full mechanics, indexes, and the SQL schema live in [`storage-format.md`](storage-format.md).
 
-- A glucose reading at 14:32 is an event (instantaneous).
-- Eating a meal from 18:00 to 18:45 is an event (with duration).
-- Taking a pill at 07:13 is an event (instantaneous).
-- A hospital stay from Monday to Friday is an event (with duration).
-- Being diagnosed with hypertension in 2019 is an event (a point in time, even though the condition persists).
-- A two-minute EKG recording is an event (with duration and an attached binary blob).
+## Naming conventions
 
-**Why "events" and not something more complex?** Because every health data type ultimately reduces to "something that happened to a person at a time." This is the simplest model that covers everything.
+- **Standard namespace** — `std`. Ships with the OHD format spec; identical across implementations. Stable IDs in the embedded registry catalog.
+- **Custom namespace** — `com.<owner>.<name>`. Lives in the user's file alongside standard types; round-trips through export/import. Examples: `com.openhealth.skin_lesion`, `com.acme.implant_telemetry`. Owner is a domain or organization slug; name is the type's local identifier.
+- **Channel paths** — dot-separated tree, e.g. `meal.nutrition.fat.saturated`. Group nodes (`is_group=1`) carry no value; only structure. Leaves carry typed values (`real` / `int` / `bool` / `text` / `enum`).
+- **Units** — each channel declares one **canonical unit** (the unit values are stored in). Submissions in other units are rejected at write time with `INVALID_UNIT`; consumers convert to canonical before submitting. Avoids mmol-vs-mg-dL ambiguity at the storage layer forever.
+- **Enums** — `enum_values` arrays are append-only; each entry's index is its on-disk ordinal forever. Renaming an enum value is allowed (display label only); reordering or removing is not.
 
-## Canonical event schema
+## Sensitivity classes
 
-```json
-{
-  "id": "01HF2K8XJQM4P5N7R9V3B2T6Y8",
-  "user_id": "01HF2K8XJQM4P5N7R9V3B2T6Y7",
-  "timestamp": "2025-01-15T14:32:18Z",
-  "duration_seconds": null,
-  "event_type": "glucose",
-  "value": 6.4,
-  "unit": "mmol/L",
-  "data": {
-    "measurement_method": "cgm",
-    "device_id": "libre3_serial_xxx"
-  },
-  "metadata": {
-    "source": "health_connect:com.librelinkup.app",
-    "confidence": 1.0,
-    "created_via": "ohdc_android_v0.1.0",
-    "tags": []
-  },
-  "created_at": "2025-01-15T14:33:01Z",
-  "updated_at": "2025-01-15T14:33:01Z",
-  "schema_version": "1.0"
-}
-```
+Every event type and channel has a `sensitivity_class` (see [`storage-format.md`](storage-format.md) "Privacy is structural, not annotative"). Grants reference these classes when defining read scope. Standard catalog:
 
-### Required fields
+| Class | Examples |
+|---|---|
+| `general` | Most measurements, food, exercise, lab results |
+| `biometric` | High-resolution biometric data (ECG raw, HR samples, glucose CGM streams) |
+| `mental_health` | Mood, anxiety scores, mental-state observations, psychotherapy notes |
+| `sexual_health` | Sexual activity, STI tests, contraception |
+| `substance_use` | Alcohol, nicotine, recreational substances |
+| `reproductive` | Menstrual cycle, pregnancy, fertility tracking |
+| `lifestyle` | Food, hydration, exercise (separable from clinical-grade biometrics) |
 
-| Field | Type | Meaning |
-|---|---|---|
-| `id` | UUID / ULID | Globally unique event ID |
-| `user_id` | UUID | The user this event belongs to |
-| `timestamp` | ISO 8601 (UTC) | When the measured event occurred |
-| `event_type` | string (from vocabulary) | What kind of event this is |
-| `created_at` | ISO 8601 | When the event was recorded in OHD |
-| `schema_version` | string | The protocol version of this event |
+A given event's effective sensitivity class comes from its event type's `default_sensitivity_class` plus the channel-level `sensitivity_class` of any present channels — `deny wins` on conflict per the resolution algorithm in [`storage-format.md`](storage-format.md).
 
-### Optional fields
+---
 
-| Field | Type | Meaning |
-|---|---|---|
-| `duration_seconds` | integer | For events with duration; null means instantaneous |
-| `value` | number | The primary measurement, if any |
-| `unit` | string | Unit of `value` |
-| `data` | object | Event-type-specific structured fields |
-| `metadata` | object | Source, confidence, provenance, tags, etc. |
-| `updated_at` | ISO 8601 | Last modification time |
+## Standard catalog
 
-### Identifiers
+The catalog below is normative for v1. New entries are additive; the registry version bumps when new entries are added (see [`storage-format.md`](storage-format.md) "Channel registry").
 
-We use **ULID** (`01HF2K8XJQM4P5N7R9V3B2T6Y8`) rather than UUIDv4. ULIDs are lexicographically sortable by creation time, which means indexes on `id` are naturally ordered and list scans are efficient. Postgres handles them fine as `CHAR(26)` or converted to UUID via ordered encoding.
+### Biometric measurements — instantaneous
 
-### Timestamps
+#### `std.blood_glucose`
+- `value` — real, **mmol/L**
+- `measurement_method` — enum: `cgm`, `fingerstick`, `lab`, `unknown`
+- `meal_relation` — enum: `fasting`, `pre_meal`, `post_meal`, `bedtime`, `random` (optional)
 
-- Always UTC in storage and on the wire.
-- Always ISO 8601 in JSON.
-- Client apps display in the user's local timezone.
-- `timestamp` is *when the measurement or event happened*. `created_at` is *when OHD received it*. These may differ by seconds (sync lag) or days (backfill).
+#### `std.blood_pressure`
+- `systolic` — real, mmHg
+- `diastolic` — real, mmHg
+- `pulse` — real, bpm (optional; many cuffs report it)
+- `position` — enum: `sitting`, `standing`, `supine` (optional)
+- `arm` — enum: `left`, `right` (optional)
 
-## Event type vocabulary
+#### `std.body_temperature`
+- `value` — real, **°C**
+- `location` — enum: `oral`, `axillary`, `tympanic`, `temporal`, `rectal`, `forehead` (optional)
 
-The protocol defines a standard vocabulary. Connectors should use these types. Custom types are allowed (see "Extension" below) but using standard types when possible maximizes interoperability.
+#### `std.oxygen_saturation`
+- `value` — real, % (0–100)
+- `pulse` — real, bpm (optional; oximeters report co-measured HR)
 
-### Biometric measurements (instantaneous)
+#### `std.respiratory_rate`
+- `value` — real, breaths/minute
 
-| Type | Typical unit | Notes |
-|---|---|---|
-| `glucose` | mmol/L or mg/dL | `data.measurement_method` = `cgm`/`fingerstick`/`lab` |
-| `heart_rate` | bpm | |
-| `blood_pressure_systolic` | mmHg | Usually logged together with diastolic |
-| `blood_pressure_diastolic` | mmHg | |
-| `body_temperature` | °C or °F | |
-| `oxygen_saturation` | % | SpO2 |
-| `respiratory_rate` | breaths/min | |
-| `weight` | kg or lb | |
-| `body_fat_percent` | % | |
-| `muscle_mass` | kg | |
-| `bone_mass` | kg | |
-| `hydration_percent` | % | |
-| `hrv` | ms | Heart rate variability |
-| `peak_flow` | L/min | For asthma tracking |
-| `blood_ketones` | mmol/L | |
-| `urine_marker` | (varies) | `data.marker` = `glucose`/`protein`/`ketones`/... |
+#### `std.heart_rate_resting`
+- `value` — real, bpm
 
-### Biometric measurements (continuous, aggregated)
+#### `std.heart_rate_variability`
+- `rmssd` — real, ms (canonical HRV metric)
+- `sdnn` — real, ms (optional)
 
-| Type | Typical unit | Notes |
-|---|---|---|
-| `heart_rate_series` | bpm | `data.samples` = array of `{t, v}`, `duration_seconds` set |
-| `glucose_series` | mmol/L | Same pattern |
-| `ecg_recording` | µV | `data.blob_ref` = attachment ID, `duration_seconds` set |
+#### `std.weight`
+- `value` — real, **kg**
+
+#### `std.height`
+- `value` — real, **cm**
+
+#### `std.body_composition`
+- `fat_percent` — real, %
+- `muscle_mass` — real, kg
+- `bone_mass` — real, kg
+- `water_percent` — real, %
+
+#### `std.peak_flow`
+- `value` — real, L/min
+
+#### `std.blood_ketones`
+- `value` — real, mmol/L
+
+#### `std.urine_strip`
+- `glucose` — enum: `negative`, `+`, `++`, `+++`, `++++`
+- `protein` — enum: `negative`, `trace`, `+`, `++`, `+++`
+- `ketones` — enum: `negative`, `+`, `++`, `+++`, `++++`
+- `blood` — enum: `negative`, `trace`, `+`, `++`, `+++`
+- `leukocytes` — enum: `negative`, `trace`, `+`, `++`, `+++`
+- `nitrites` — enum: `negative`, `positive`
+- `ph` — real (typically 4.5–8.0)
+- `specific_gravity` — real (typically 1.005–1.030)
+- `urobilinogen` — enum: `normal`, `+`, `++`, `+++`, `++++`
+- `bilirubin` — enum: `negative`, `+`, `++`, `+++`
+
+### Biometric measurements — continuous (sample blocks)
+
+These types use the dense **sample blocks** mechanism from [`storage-format.md`](storage-format.md). Each event covers a time window (typically 15 min by default, configurable per channel); the block stores the `(t_offset_ms, value)` pairs compressed.
+
+| Type | Sample channel | Unit | Sensitivity |
+|---|---|---|---|
+| `std.heart_rate_series` | `bpm` | bpm | `biometric` |
+| `std.glucose_series` | `value` | mmol/L | `biometric` |
+| `std.spo2_series` | `value` | % | `biometric` |
+| `std.respiratory_rate_series` | `value` | breaths/min | `biometric` |
+| `std.ecg_recording` | `µv` | µV | `biometric` (raw waveform usually as attachment when long) |
 
 ### Events with duration
 
-| Type | Notes |
+#### `std.sleep`
+- `quality` — enum: `very_poor`, `poor`, `fair`, `good`, `excellent` (subjective; optional)
+- `stages` — sample-blocks-like channel encoding stage transitions (`awake`, `light`, `deep`, `rem`); see storage-format.md
+- `interruptions` — int, count of mid-sleep wakings (optional)
+
+#### `std.exercise`
+- `activity` — enum: `running`, `cycling`, `swimming`, `walking`, `strength`, `yoga`, `hiit`, `hiking`, `other`
+- `distance` — real, m (optional, activity-dependent)
+- `calories` — real, kcal (optional)
+- `active_minutes` — int (optional)
+- `intensity` — enum: `low`, `moderate`, `high`, `vigorous` (optional)
+
+#### `std.meal`
+Channel tree — see [`storage-format.md`](storage-format.md) "Channels are a tree" for the full nested structure. Summary:
+
+- `nutrition.energy_kcal` — real, kcal
+- `nutrition.fat.total` — real, g
+- `nutrition.fat.saturated` — real, g
+- `nutrition.fat.unsaturated.mono` / `.poly` — real, g
+- `nutrition.fat.trans` — real, g
+- `nutrition.carbohydrates.total` — real, g
+- `nutrition.carbohydrates.sugars.total` / `.added` — real, g
+- `nutrition.carbohydrates.fiber` — real, g
+- `nutrition.protein` — real, g
+- `nutrition.salt` — real, g
+- `notes` — text (optional)
+
+Sensitivity: `lifestyle` by default.
+
+#### `std.food_item`
+A child of `meal` — for per-item logging when a meal has multiple components. Linked to the parent meal via `metadata.parent_event_ulid`. Same nutrition-tree channels.
+
+#### `std.hospital_stay`
+- `admission_reason` — text
+- `discharge_summary` — text or attachment
+- `facility` — text (operator-side identifier)
+
+### Medications
+
+#### `std.medication_prescribed`
+- `name` — text (free-form for v1; controlled-vocabulary linkage TBD)
+- `dose` — real
+- `dose_unit` — enum: `mg`, `mcg`, `g`, `ml`, `units`, `tablets`, `puffs`, `drops`
+- `schedule` — text (natural language for v1, e.g. "twice daily with meals"; structured schedule TBD)
+- `prescribed_by` — text
+- `reason` — text (optional)
+- `rxnorm_id` — text (optional; for normalized lookups)
+
+#### `std.medication_dose`
+- `name` — text
+- `dose` — real
+- `dose_unit` — enum (same as `medication_prescribed`)
+- `status` — enum: `taken`, `skipped`, `late`, `refused`
+- `notes` — text (optional)
+- `reference_prescription_ulid` — text (optional; links to a `medication_prescribed` event)
+
+### Symptoms
+
+#### `std.symptom`
+- `name` — text (free-form for v1; SNOMED CT mapping deferred)
+- `severity` — int, 1–10 scale (optional)
+- `location` — text (e.g. "frontal", "left lower abdomen")
+- `notes` — text
+
+### Mental health  (sensitivity_class=`mental_health`)
+
+#### `std.mood`
+- `mood` — enum: `very_low`, `low`, `neutral`, `good`, `very_good`
+- `energy` — enum: `exhausted`, `low`, `neutral`, `good`, `high` (optional)
+- `notes` — text (optional)
+
+#### `std.mental_state`
+- `anxiety_level` — int, 0–10
+- `depression_indicator` — int, 0–10
+- `irritability` — int, 0–10 (optional)
+- `notes` — text (optional)
+
+#### `std.therapy_session`
+- `provider` — text
+- `notes` — text (often kept private; sensitivity ensures grants must explicitly include `mental_health`)
+
+### Reproductive  (sensitivity_class=`reproductive`)
+
+#### `std.menstrual_flow`
+- `flow` — enum: `none`, `spotting`, `light`, `normal`, `heavy`
+
+#### `std.cycle_observation`
+- `cervical_mucus` — enum: `dry`, `sticky`, `creamy`, `watery`, `eggwhite` (optional)
+- `basal_temp` — real, °C (optional)
+- `ovulation_test` — enum: `positive`, `negative`, `peak` (optional)
+
+#### `std.intermenstrual_bleeding`
+- `severity` — enum: `spotting`, `light`, `moderate`, `heavy`
+
+#### `std.pregnancy`
+- `status` — enum: `confirmed`, `suspected`, `terminated`, `delivered`
+- `notes` — text
+
+### Sexual health  (sensitivity_class=`sexual_health`)
+
+#### `std.sexual_activity`
+- `protected` — bool (optional)
+- `notes` — text (optional)
+
+### Substance use  (sensitivity_class=`substance_use`)
+
+#### `std.alcohol`
+- `beverage` — text (e.g. "beer", "wine", "spirits")
+- `volume_ml` — real
+- `abv_percent` — real (optional, for accurate ethanol calc)
+- `grams_ethanol` — real (computed if `volume_ml` + `abv_percent` provided)
+
+#### `std.caffeine`
+- `beverage` — text (e.g. "coffee", "tea", "energy_drink")
+- `mg` — real
+
+#### `std.nicotine`
+- `product` — enum: `cigarette`, `cigar`, `pipe`, `vape`, `pouch`, `nrt`
+- `count` — int (units-of-product; cigarettes, pouches, etc.)
+
+#### `std.substance_use`
+- `substance` — text
+- `dose` — real
+- `dose_unit` — enum: `mg`, `g`, `ml`, `units`, `pieces`
+- `route` — enum: `oral`, `inhaled`, `intranasal`, `iv`, `im`, `transdermal`, `other` (optional)
+- `notes` — text (optional)
+
+### Lifestyle  (sensitivity_class=`lifestyle`)
+
+#### `std.hydration`
+- `ml` — real
+- `beverage` — text (optional)
+
+### Medical records (sensitivity_class=`general` unless noted)
+
+#### `std.diagnosis`
+- `condition_name` — text
+- `icd10_code` — text (optional)
+- `diagnosed_by` — text
+- `notes` — text (optional)
+- `status` — enum: `active`, `resolved`, `chronic`, `in_remission` (optional)
+
+#### `std.lab_result`
+- `test_name` — text
+- `loinc_code` — text (optional)
+- `value` — real
+- `value_unit` — text (free-form; lab conventions vary widely)
+- `reference_range` — text
+- `notes` — text (optional)
+
+#### `std.imaging`
+- `modality` — enum: `MRI`, `CT`, `X-ray`, `US`, `PET`, `mammography`, `dexa`, `endoscopy`, `other`
+- `body_region` — text
+- `report` — text (radiologist's read)
+- `image_attachment_ulid` — text (optional; references an attachment with the image/DICOM)
+
+#### `std.procedure`
+- `procedure_name` — text
+- `cpt_code` — text (optional)
+- `performed_by` — text
+- `notes` — text (optional)
+
+#### `std.vaccination`
+- `vaccine_name` — text
+- `dose_number` — int
+- `lot_number` — text (optional)
+- `given_by` — text
+- `notes` — text (optional)
+
+#### `std.allergy`
+- `allergen` — text
+- `severity` — enum: `mild`, `moderate`, `severe`, `anaphylactic`
+- `reaction` — text
+
+#### `std.clinical_note`
+- `provider` — text
+- `text` — text
+
+#### `std.referral`
+- `to_provider` — text
+- `reason` — text
+- `notes` — text (optional)
+
+### Case lifecycle markers
+
+These are events that record case state transitions for **timeline display**. Cases themselves are a separate primitive (see [`storage-format.md`](storage-format.md) "Cases"); these events are *not* how a case knows its own membership (that's `case_filters`). They simply make case lifecycle visible in the patient's chronological event view.
+
+Each lifecycle marker references the case by ULID via the `case_ref_ulid` channel (text, the Crockford-base32 form of the case's ULID). Storage doesn't enforce referential integrity here — these events are informational; the canonical case state lives in the `cases` table.
+
+#### `std.case_started`
+- `case_ref_ulid` — text (the case's ULID)
+- `kind` — enum: `clinical_visit`, `hospital_stay`, `episode_of_care`, `cycle`, `study`, `emergency`, `user_custom`
+- `label` — text
+
+#### `std.case_closed`
+- `case_ref_ulid` — text
+- `outcome` — text (optional)
+
+#### `std.case_handoff`
+- `case_ref_ulid` — text (the closing case)
+- `successor_case_ref_ulid` — text (the new case)
+- `handed_to_label` — text
+
+### Free / custom
+
+#### `std.note`
+A general-purpose freeform timeline note. Use sparingly — prefer specific types so structured queries work. For genuinely-novel concepts, register a custom `com.<owner>.<name>` type.
+
+- `text` — text
+- `tags_csv` — text (optional, comma-separated; not normative for queries — for the user's organization)
+
+---
+
+## Custom event types
+
+Any user, app, or vendor can register custom event types in their `com.<owner>.<name>` namespace at any time. The registration mechanism is the storage library's `registry.add_event_type()` / `add_channel()` API; see [`storage-format.md`](storage-format.md) "Channel registry."
+
+Custom types **round-trip through export/import**. An OHD instance receiving an export with custom types it doesn't understand stores them verbatim and can re-export them; queries against unknown types return empty without error.
+
+If a custom type proves broadly useful, the project promotes it to `std.*` via a versioned registry update; existing custom-type rows resolve through `type_aliases` to the new standard ID with no rewrite. See [`storage-format.md`](storage-format.md) "Migrations."
+
+## What this doc deliberately does NOT contain
+
+| | Where it lives |
 |---|---|
-| `sleep` | `data.stages` = array of `{start, end, stage}` |
-| `exercise` | `data.activity`, `data.distance`, `data.calories` |
-| `meal` | See "Food" below |
-| `medication_dose` | See "Medications" below |
-| `hospital_stay` | `data.admission_reason`, `data.discharge_summary` |
+| Wire format (Protobuf / JSON / encoding) | OHDC `.proto`; see [`../components/connect.md`](../components/connect.md) |
+| On-disk SQL schema (events / event_channels / event_samples / etc.) | [`storage-format.md`](storage-format.md) |
+| Sample-block compression encoding | [`storage-format.md`](storage-format.md) "Sample blocks" |
+| Storage density numbers and capacity planning | [`storage-format.md`](storage-format.md) |
+| Export/import file format | OHDC v1 protocol spec (Task #8) when it lands |
+| Postgres schema | Was in this doc's v0; does not exist in the contracted architecture |
 
-### Food events (`meal` or `food_item`)
+## Cross-references
 
-```json
-{
-  "event_type": "meal",
-  "timestamp": "2025-01-15T18:00:00Z",
-  "duration_seconds": 2700,
-  "data": {
-    "items": [
-      {
-        "openfoodfacts_id": "3017620422003",
-        "name": "Nutella",
-        "quantity_grams": 30,
-        "nutrition": {
-          "energy_kcal": 161,
-          "fat_g": 9.3,
-          "saturated_fat_g": 3.2,
-          "carbohydrates_g": 17.3,
-          "sugars_g": 16.8,
-          "fiber_g": 0,
-          "proteins_g": 1.8,
-          "salt_g": 0.03
-        }
-      }
-    ],
-    "total_nutrition": { "energy_kcal": 161, "..." : "..." },
-    "notes": "with toast"
-  }
-}
-```
-
-### Medication events
-
-Two related types:
-
-**`medication_prescribed`** — a medication is prescribed / added to the user's list.
-```json
-{
-  "event_type": "medication_prescribed",
-  "timestamp": "2025-01-10T10:00:00Z",
-  "data": {
-    "medication_id": "user_defined_id_or_rxnorm",
-    "name": "metformin",
-    "dose": 500,
-    "dose_unit": "mg",
-    "schedule": "twice daily with meals",
-    "prescribed_by": "Dr. Smith",
-    "reason": "type 2 diabetes"
-  }
-}
-```
-
-**`medication_dose`** — the user actually took (or skipped) a dose.
-```json
-{
-  "event_type": "medication_dose",
-  "timestamp": "2025-01-15T07:13:00Z",
-  "data": {
-    "medication_id": "ref to prescribed event",
-    "name": "metformin",
-    "dose": 500,
-    "dose_unit": "mg",
-    "status": "taken",
-    "notes": "with breakfast"
-  }
-}
-```
-
-Status can be `taken`, `skipped`, `late`, `refused`.
-
-### Symptom events
-
-```json
-{
-  "event_type": "symptom",
-  "timestamp": "2025-01-15T09:00:00Z",
-  "duration_seconds": null,
-  "data": {
-    "symptom": "headache",
-    "severity": "moderate",
-    "severity_scale": "1-10:5",
-    "location": "frontal",
-    "notes": "worse with bright light"
-  }
-}
-```
-
-### Medical records
-
-| Type | Notes |
-|---|---|
-| `diagnosis` | `data.icd10_code`, `data.condition_name`, `data.diagnosed_by` |
-| `lab_result` | `data.test_name`, `data.loinc_code`, `data.reference_range`, value in `value`/`unit` |
-| `imaging` | `data.modality` (MRI/CT/X-ray), `data.report`, `data.blob_ref` for image |
-| `procedure` | `data.procedure_name`, `data.cpt_code`, `data.performed_by` |
-| `vaccination` | `data.vaccine_name`, `data.dose_number`, `data.lot_number` |
-| `allergy` | `data.allergen`, `data.severity`, `data.reaction` |
-| `consultation_note` | `data.provider`, `data.text` |
-
-### Lifestyle / context
-
-| Type | Notes |
-|---|---|
-| `hydration` | `value` = ml of water/beverage |
-| `alcohol` | `data.beverage`, `value` = grams of ethanol |
-| `caffeine` | `value` = mg of caffeine |
-| `mood` | `data.mood`, `data.energy`, `data.notes` |
-| `substance_use` | `data.substance`, `value` = dose |
-| `menstrual_flow` | `data.flow` = none/light/normal/heavy |
-
-### Generic fallback
-
-| Type | Notes |
-|---|---|
-| `custom` | `data.custom_type` describes the user-defined type. Use sparingly; prefer standard types. |
-
-## Extensions
-
-The vocabulary is not exhaustive. Any Connector can add event types by using a namespaced identifier:
-
-```
-event_type: "com.mycompany.sleep_apnea_event"
-```
-
-Or by using the `custom` type with a user-defined sub-type:
-
-```json
-{
-  "event_type": "custom",
-  "data": {
-    "custom_type": "post_surgery_wound_check",
-    "attributes": {
-      "redness": "mild",
-      "swelling": "none",
-      "pain": 3
-    }
-  }
-}
-```
-
-**Portability rule:** Extensions must be preserved through export/import. An OHD instance that doesn't understand a custom type must still round-trip the raw data.
-
-**Contribution rule:** If an extension is broadly useful, contribute it upstream and it becomes part of the standard vocabulary.
-
-## Postgres schema (reference implementation)
-
-```sql
-CREATE EXTENSION IF NOT EXISTS "pgcrypto";
-
-CREATE TABLE users (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    oidc_provider TEXT NOT NULL,
-    oidc_subject TEXT NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    UNIQUE (oidc_provider, oidc_subject)
-);
-
-CREATE TABLE health_events (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    timestamp TIMESTAMPTZ NOT NULL,
-    duration_seconds INTEGER,
-    event_type TEXT NOT NULL,
-    value NUMERIC,
-    unit TEXT,
-    data JSONB NOT NULL DEFAULT '{}'::jsonb,
-    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
-    schema_version TEXT NOT NULL DEFAULT '1.0',
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    deleted_at TIMESTAMPTZ  -- soft delete
-);
-
-CREATE INDEX idx_events_user_time
-    ON health_events (user_id, timestamp DESC)
-    WHERE deleted_at IS NULL;
-
-CREATE INDEX idx_events_user_type_time
-    ON health_events (user_id, event_type, timestamp DESC)
-    WHERE deleted_at IS NULL;
-
--- Useful for source-based deduplication
-CREATE INDEX idx_events_source_hash
-    ON health_events ((metadata->>'source'), (metadata->>'source_id'))
-    WHERE metadata ? 'source_id';
-
--- JSONB indexes are added later if specific queries need them.
--- Start without them to keep writes cheap.
-```
-
-Plus tables for grants, audit log, attachments (blobs for EKGs etc.), and OIDC sessions — detailed in `../design/privacy-access.md`.
-
-## Storage density
-
-Rough numbers for reasonable sampling rates:
-
-| Data type | Rate | Raw size/day | After Postgres overhead |
-|---|---|---|---|
-| Glucose (CGM) | 1/20s = 4,320/day | ~17 KB as floats | ~200 KB with row metadata |
-| Heart rate | 1/3s = 28,800/day | ~115 KB | ~2 MB |
-| Steps / activity aggregate | ~100/day | ~4 KB | ~50 KB |
-| Sleep stages | ~100/night | ~4 KB | ~50 KB |
-| Meals | ~5/day | ~5 KB (with nutrition) | ~50 KB |
-| Medications | ~10/day | trivial | trivial |
-| Manual entries | ~20/day | trivial | trivial |
-
-**Per-user per-day total: ~2.5 MB uncompressed in Postgres.**
-
-Per year: ~900 MB. Per decade: ~9 GB. Per lifetime (80 years): ~72 GB.
-
-**Per-row overhead would dominate at these sampling rates** if we stored one DB row per sample. Instead, dense continuous series (heart rate, glucose, ECG) are stored as **sample blocks** — one row per ~15-minute window, with the samples as a compressed binary blob inside that row. See [`storage-format.md`](storage-format.md) "Sample blocks" for the on-disk encoding.
-
-### Series events — illustration
-
-Instead of ~28,800 rows per day for heart rate, one row per 15-minute window (96/day) holds 900 seconds of samples as a compressed `(t_offset, value)` stream:
-
-```json
-{
-  "event_type": "heart_rate_series",
-  "timestamp": "2025-01-15T14:00:00Z",
-  "duration_seconds": 900,
-  "data": {
-    "sampling_interval_seconds": 3,
-    "samples": [72, 73, 74, 72, ..., 78]
-  }
-}
-```
-
-- ~300 rows/day instead of ~30,000.
-- The compressed sample blocks deliver ≥100× density gain over per-sample rows.
-- `AVG(heart_rate) over last week` decodes block by block; latency stays well under what's needed for interactive use.
-- Round-trippable to per-sample events for users or analyses that want them.
-
-## Export/import format
-
-The portable export is a JSON file with this structure:
-
-```json
-{
-  "ohd_export": {
-    "schema_version": "1.0",
-    "exported_at": "2025-01-15T12:00:00Z",
-    "exporter": "ohd-core v0.1.0",
-    "user_id_opaque": "hash-of-original-user-id",
-    "extensions_used": ["com.mycompany.sleep_apnea_event"],
-    "events": [
-      { /* event objects as above */ }
-    ],
-    "attachments": [
-      {
-        "id": "...",
-        "event_id": "...",
-        "mime_type": "application/octet-stream",
-        "content_base64": "..."
-      }
-    ],
-    "grants_historical": [
-      { /* grant records, for audit completeness */ }
-    ],
-    "audit_log": [
-      { /* audit entries, for accountability */ }
-    ]
-  }
-}
-```
-
-For large exports, the format also supports streaming / chunked variants (NDJSON), but the signed root manifest structure is the same.
-
-**Signatures.** The export is signed by the source OHD instance's key. Importing instances verify the signature (if they trust the source) or surface a warning (if they don't).
-
-**Lossy-but-portable rule.** If an extension can't be represented in the target instance, it's moved to `metadata._imported_extensions` as raw JSON and preserved through any re-export. No silent data loss.
-
-## Open questions
-
-- **Time-zone annotations.** Should we store the original timezone alongside UTC? Probably yes — "I ate dinner at 19:00 local" is different information from "I ate dinner at 03:00 UTC while on an intercontinental flight."
-- **Measurement uncertainty.** Some readings have known error bars. Should we represent them? Proposal: `metadata.uncertainty = { method: "±5%", range: [value-error, value+error] }`. Optional, not required.
-- **Immutability of historical data.** If a user edits an event, do we version it (keep both)? Probably yes — with `previous_version_id` links. Edits are rare; storage cost is low.
-- **Binary attachments (EKGs, images).** Stored separately in object storage, referenced by `data.blob_ref`. Not in the event row. Exported as base64 for portability.
+- On-disk format and channel-tree mechanics: [`storage-format.md`](storage-format.md)
+- Privacy / sensitivity-class semantics: [`privacy-access.md`](privacy-access.md)
+- OHDC protocol (wire format): [`../components/connect.md`](../components/connect.md)
+- Authentication and tokens: [`auth.md`](auth.md)

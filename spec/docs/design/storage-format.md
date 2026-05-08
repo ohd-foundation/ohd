@@ -186,6 +186,16 @@ CREATE TABLE _meta (
 --   registry_version     the standard registry version baked in
 --   audit_retention_days optional; NULL = forever; otherwise rolling cleanup window
 --   cipher_kdf           (if encrypted) KDF parameters
+--
+-- Optional keys for the emergency / break-glass feature (see "Emergency access"):
+--   emergency_enabled               '0' | '1' (default '0' — feature opt-in)
+--   emergency_ble_beacon            '0' | '1' (default '1' if feature enabled)
+--   emergency_timeout_s             '10'..'300' (default '30')
+--   emergency_default_allow_on_timeout '0' | '1' (default '1')
+--   emergency_lock_screen_basic_only '0' | '1' (default '0')
+--   emergency_location_share        '0' | '1' (default '0')
+--   emergency_history_hours         '0' | '3' | '12' | '24' (default '24')
+--   emergency_template_grant_id     references grants.id of the user's emergency-template grant
 
 -- Event types (registry)
 CREATE TABLE event_types (
@@ -251,7 +261,11 @@ CREATE TABLE app_versions (
   UNIQUE (app_name, version, platform)
 );
 
--- Events
+-- Events.
+-- Events are case-agnostic at the schema level. Cases reference events via
+-- their filter expressions (see `case_filters`); there is no `case_id` column
+-- on events. This keeps events independent of organizational containers and
+-- lets a single event participate in multiple cases without copying.
 CREATE TABLE events (
   id                 INTEGER PRIMARY KEY AUTOINCREMENT,
   ulid_random        BLOB NOT NULL,                       -- 10 bytes, 80 random bits
@@ -277,6 +291,8 @@ CREATE INDEX idx_events_time
   ON events (timestamp_ms DESC) WHERE deleted_at_ms IS NULL;
 CREATE INDEX idx_events_type_time
   ON events (event_type_id, timestamp_ms DESC) WHERE deleted_at_ms IS NULL;
+CREATE INDEX idx_events_device_time
+  ON events (device_id, timestamp_ms DESC) WHERE device_id IS NOT NULL AND deleted_at_ms IS NULL;
 
 -- Channel values (EAV, sparse)
 CREATE TABLE event_channels (
@@ -324,19 +340,31 @@ CREATE INDEX idx_attachments_event ON attachments (event_id);
 
 -- Grants (per-user). Policy fields are typed columns; scope is in rule tables below.
 -- A grant is the universal access primitive: read grants for third-party readers,
--- write grants for clinical workflows (with optional approval queue), and device
--- tokens which are grants with kind='device' and write-only-no-expiry policy.
+-- write grants for clinical workflows (with optional approval queue), device
+-- tokens which are grants with kind='device' and write-only-no-expiry policy,
+-- and emergency-template grants (is_template=1) that get cloned at break-glass time.
+--
+-- A grant is "open-scope" if no rows exist in `grant_cases` for it — its read
+-- scope spans all the user's events (subject to the grant's access rules).
+-- A grant is "case-bound" if `grant_cases` lists one or more cases — its read
+-- scope is the union of those cases' scopes (each case's own filters, plus
+-- predecessor inheritance forward, plus parent inheritance up from children),
+-- intersected with the grant's access rules. See "Privacy and access control".
+--
+-- Grants do NOT chain: only the user (self-session) can call CreateGrant; a
+-- grantee cannot delegate or sub-issue access from their grant.
 CREATE TABLE grants (
   id                         INTEGER PRIMARY KEY AUTOINCREMENT,
   ulid_random                BLOB NOT NULL UNIQUE,
   grantee_label              TEXT NOT NULL,           -- e.g. "Dr. Smith — primary care"
-  grantee_kind               TEXT NOT NULL,           -- 'human'|'app'|'service'|'emergency'|'device'|'self'|'delegate'
+  grantee_kind               TEXT NOT NULL,           -- 'human'|'app'|'service'|'emergency'|'device'|'delegate'|'emergency_template'
   grantee_ulid               BLOB,                    -- if grantee has its own OHD identity
+  is_template                INTEGER NOT NULL DEFAULT 0,    -- 1 = template (e.g. emergency_template), cloned on break-glass; 0 = active grant
   created_at_ms              INTEGER NOT NULL,
   expires_at_ms              INTEGER,
   revoked_at_ms              INTEGER,
   purpose                    TEXT,
-  -- Read scope behaviour
+  -- Read scope behaviour (applies AFTER case-scope union for case-bound grants)
   default_action             TEXT NOT NULL DEFAULT 'deny',  -- 'allow' (denylist) | 'deny' (allowlist) for reads
   aggregation_only           INTEGER NOT NULL DEFAULT 0,
   strip_notes                INTEGER NOT NULL DEFAULT 1,
@@ -347,12 +375,25 @@ CREATE TABLE grants (
   notify_on_access           INTEGER NOT NULL DEFAULT 0,
   max_queries_per_day        INTEGER,
   max_queries_per_hour       INTEGER,
-  rolling_window_days        INTEGER                  -- if set, only events in last N days visible
+  rolling_window_days        INTEGER                  -- if set, only events in last N days visible (composes with case scope by intersection)
 );
 
 CREATE INDEX idx_grants_active  ON grants (revoked_at_ms, expires_at_ms);
 CREATE INDEX idx_grants_grantee ON grants (grantee_ulid) WHERE grantee_ulid IS NOT NULL;
 CREATE INDEX idx_grants_kind    ON grants (grantee_kind);
+CREATE INDEX idx_grants_template ON grants (grantee_kind, is_template) WHERE is_template = 1;
+
+-- Grant ↔ case binding. Many-to-many: a grant references zero, one, or many
+-- cases. Zero rows = open-scope grant. >=1 rows = case-bound grant whose read
+-- scope is the union of those cases' scopes.
+CREATE TABLE grant_cases (
+  grant_id      INTEGER NOT NULL REFERENCES grants(id) ON DELETE CASCADE,
+  case_id       INTEGER NOT NULL REFERENCES cases(id),
+  added_at_ms   INTEGER NOT NULL,
+  PRIMARY KEY (grant_id, case_id)
+);
+
+CREATE INDEX idx_grant_cases_case ON grant_cases (case_id);
 
 -- Grant read rules: by event type
 CREATE TABLE grant_event_type_rules (
@@ -419,11 +460,88 @@ CREATE TABLE pending_events (
 CREATE INDEX idx_pending_status ON pending_events (status, submitted_at_ms);
 CREATE INDEX idx_pending_grant  ON pending_events (submitting_grant_id, status);
 
+-- Cases: labeled, curated containers of events. A case is defined by:
+--   - a list of filter expressions (`case_filters`) that select which events
+--     fall within the case's scope.
+--   - lifecycle (started/ended/auto-close).
+--   - optional linkage to other cases:
+--       * `parent_case_id`  — structural sub-case relationship (ICU under
+--         admission; EKG referral under doctor's visit). The PARENT reads
+--         the children's scopes (rolls up); the child does NOT see the
+--         parent's broader scope. Direction: children → parent.
+--       * `predecessor_case_id` — handoff chain (EMS → admission → ICU
+--         transfer → discharge). The SUCCESSOR reads the predecessor's
+--         scope automatically. Direction: predecessor → successor.
+-- A case's effective scope is the recursive union of its own filters,
+-- its predecessor chain (forward inheritance), and its descendants
+-- (children's filters roll up). See "Case scope resolution" below.
+--
+-- Cases own NO access rules — those live entirely on grants. Cases describe
+-- "what is in this episode"; grants describe "who can see it and how."
+-- Grants reference cases via `grant_cases`. A patient can also create cases
+-- with no associated grant (personal organization) — `opening_authority_grant_id`
+-- is nullable.
+CREATE TABLE cases (
+  id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+  ulid_random              BLOB NOT NULL UNIQUE,
+  case_type                TEXT NOT NULL,        -- 'emergency'|'admission'|'outpatient'|'ongoing'|'trial'|'ward'|'icu'|'surgery'|'visit'|'cycle'|'condition'|'user_custom'|...
+  case_label               TEXT,                  -- "Stroke response 2026-05-08"
+  started_at_ms            INTEGER NOT NULL,
+  ended_at_ms              INTEGER,                -- NULL while ongoing; set on close
+  ended_by_grant_id        INTEGER REFERENCES grants(id),
+  parent_case_id           INTEGER REFERENCES cases(id),       -- structural sub-case relationship; parent rolls children up (NOT downward)
+  predecessor_case_id      INTEGER REFERENCES cases(id),       -- handoff chain; successor inherits forward
+  opening_authority_grant_id INTEGER REFERENCES grants(id),    -- the authority that opened the case (NULL for patient-curated)
+  inactivity_close_after_h INTEGER,             -- auto-close after this many hours of no activity (NULL = no auto-close)
+  last_activity_at_ms      INTEGER NOT NULL       -- updated on each access within the case
+  -- Cycle-prevention invariant: parent_case_id and predecessor_case_id chains
+  -- must form a DAG. Implementations validate on create/update.
+);
+
+CREATE INDEX idx_cases_active     ON cases (ended_at_ms) WHERE ended_at_ms IS NULL;
+CREATE INDEX idx_cases_parent     ON cases (parent_case_id) WHERE parent_case_id IS NOT NULL;
+CREATE INDEX idx_cases_predecessor ON cases (predecessor_case_id) WHERE predecessor_case_id IS NOT NULL;
+
+-- Filters that define which events belong to a case. The `filter_json` field
+-- carries a canonical EventFilter (see ohdc-protocol.md "Filter language") in
+-- Protobuf-JSON encoding. A case's scope is the UNION of all its filters'
+-- matches. Each filter row is independently labeled and audited so the
+-- patient can see "I added the headache-symptoms filter; the ER device added
+-- the time-range monitoring filter."
+CREATE TABLE case_filters (
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  case_id           INTEGER NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
+  filter_json       TEXT NOT NULL,             -- Protobuf-JSON of EventFilter
+  filter_label      TEXT,                       -- optional user-facing label, e.g. "Headache symptoms Jan-Feb"
+  added_at_ms       INTEGER NOT NULL,
+  added_by_grant_id INTEGER REFERENCES grants(id),  -- NULL when added by user via self-session
+  removed_at_ms     INTEGER                    -- soft-delete; once set, filter no longer contributes to scope
+);
+
+CREATE INDEX idx_case_filters_case ON case_filters (case_id) WHERE removed_at_ms IS NULL;
+
+-- Reopen tokens: when a case auto-closes after inactivity, the closing authority
+-- can be issued a token that allows reopening the case within a TTL without
+-- re-running the break-glass / patient-approval flow.
+CREATE TABLE case_reopen_tokens (
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  ulid_random       BLOB NOT NULL UNIQUE,
+  case_id           INTEGER NOT NULL REFERENCES cases(id),
+  authority_grant_id INTEGER NOT NULL REFERENCES grants(id),
+  issued_at_ms      INTEGER NOT NULL,
+  expires_at_ms     INTEGER NOT NULL,
+  used_at_ms        INTEGER,                    -- set when redeemed
+  revoked_at_ms     INTEGER                     -- user can revoke before redemption
+);
+
+CREATE INDEX idx_reopen_active ON case_reopen_tokens (case_id) WHERE used_at_ms IS NULL AND revoked_at_ms IS NULL;
+
 -- Per-user audit log
 CREATE TABLE audit_log (
   id                INTEGER PRIMARY KEY AUTOINCREMENT,
   ts_ms             INTEGER NOT NULL,
   actor_type        TEXT NOT NULL,           -- 'self'|'grant'|'system' (device tokens recorded as grant with grants.kind='device')
+  auto_granted      INTEGER NOT NULL DEFAULT 0,  -- 1 = grant fired without user approval (timeout-default-allow); shown distinctly in user audit view
   grant_id          INTEGER REFERENCES grants(id),  -- null when actor_type='self' or 'system'
   action            TEXT NOT NULL,           -- 'read'|'write'|'delete'|'export'|'import'|'grant_*'|'login'|'config'
   query_kind        TEXT,                    -- for reads: 'list_events'|'aggregate'|'sample_read'|'export'
@@ -462,7 +580,7 @@ JSON appears only in four places, all of which are deliberate:
 - `channels.enum_values` — small static enum list, set once per channel definition.
 - `audit_log.query_params_json` — canonicalized request payload for forensics/replay; never a query target.
 - `devices.metadata_json` — opaque vendor-specific device metadata; rarely accessed.
-- `pending_events.payload_json` — the full event submission held for user review; consumed once when promoted to `events` (or rejected/expired).
+- `pending_events.payload_json` — the canonical OHDC event-write payload, verbatim, held for user review. Encoded as Protobuf-JSON (the JSON wire encoding of the OHDC event message; see [`../components/connect.md`](../components/connect.md) "Wire format"). On approval it's parsed into `events` / `event_channels` / `event_samples` rows, retaining the originally-allocated ULID. On rejection or expiry it's retained as a record. JSON (rather than binary Protobuf) so the user's review UI and the audit forensics path can render it without extra schema lookup.
 
 Hot-path event data, grant rules, and access control all live in typed columns. No `data JSONB` anywhere; rule evaluation is pure SQL.
 
@@ -512,11 +630,14 @@ These are written to the same `event_types` / `channels` tables and round-trip t
 
 - Each event's type must resolve to a known `event_type_id` (directly or via `type_aliases`).
 - Each channel value must resolve to a known leaf `channel_id` for that type (directly or via `channel_aliases`).
-- The value must match the channel's `value_type`.
-- For `enum` channels, the value must be one of `enum_values`.
-- Required channels must be present.
+- The value must match the channel's `value_type` (`real`, `int`, `bool`, `text`, `enum`, `group` is never written).
+- For `enum` channels, the value must be one of `enum_values` (the in-disk representation is the ordinal index, set at registry definition time and **append-only forever** — old ordinals never get reused even if a value's display label is renamed).
+- **Units are canonical per channel.** Each channel declares one canonical unit; submissions in any other unit are rejected with `INVALID_UNIT`. Conversion is the consumer's responsibility — never the storage's. (Avoids "stored 5.4 mmol/L or 5.4 mg/dL?" ambiguity at the engine layer for the lifetime of the data.)
+- **`is_required=1` semantics.** A required channel must be present whenever its parent group is present. Top-level required channels (no group ancestor) must always be present. A meal that doesn't record `nutrition.fat.saturated` is fine because `nutrition.fat` is absent; a meal that records `nutrition.fat.total` but omits a required `nutrition.fat.saturated` is rejected.
+- **Numeric domain checks** (e.g. SpO₂ in [0, 100], systolic > diastolic) are **out of scope for the storage layer in v1.** Consumers validate ranges; storage stores any value the channel's `value_type` accepts. Domain checks may be added per-channel as a registry feature in a future format version.
+- **Backdated writes under a grant.** A grant token submitting an event with `timestamp_ms` must respect the grant's effective time bounds. If the grant has `rolling_window_days=N`, the event's `timestamp_ms` must be within `now - N*86400_000` to `now`. Outside the window → `OUT_OF_SCOPE`. Self-session writes have no time bound — the user can backdate freely.
 
-Violations are rejected at the API boundary, never silently coerced.
+Violations are rejected at the API boundary, never silently coerced. Errors carry a structured code (`INVALID_UNIT`, `UNKNOWN_TYPE`, `UNKNOWN_CHANNEL`, `WRONG_VALUE_TYPE`, `INVALID_ENUM`, `MISSING_REQUIRED_CHANNEL`, `OUT_OF_SCOPE`) plus a human-readable message.
 
 ## Migrations
 
@@ -603,6 +724,43 @@ If allowed, channel-level filtering then determines which channels are returned 
 
 **Deny wins on conflict.** If an event matches both an allow rule and a deny rule (e.g. allowlisted by type but denylisted by sensitivity class), deny wins. This makes "I gave Dr. Skin access to skin events but later globally flagged `sexual_health` as hidden" do the safe thing without re-checking every grant.
 
+### Combination precedence (resolution edge cases)
+
+When multiple rules match a single event or channel, the precedence is **explicit and ordered**:
+
+1. **Sensitivity-class deny** (any deny in `grant_sensitivity_rules` matching the event's or channel's sensitivity class)
+2. **Channel deny** (any deny in `grant_channel_rules` matching a present channel)
+3. **Event-type deny** (deny in `grant_event_type_rules` for this type)
+4. **Sensitivity-class allow**
+5. **Channel allow**
+6. **Event-type allow**
+7. `grants.default_action` (the fallback)
+
+Higher in the list wins. So a grant with `default_action='allow'` plus a `mental_health` sensitivity deny correctly hides every mental-health-classed event regardless of any type-level allows. A grant with `default_action='deny'` plus an event-type allow for `glucose` plus a channel deny on `glucose.notes` returns the glucose events with `notes` stripped.
+
+There is exactly one row per grant in each rule table per (grant_id, event_type_id) / (grant_id, channel_id) / (grant_id, sensitivity_class) — enforced by the table PRIMARY KEYs. Same-tier conflicts can't happen.
+
+### Operation-level scope (which OHDC operations the grant can call)
+
+Beyond per-event filtering, the grant's policy fields gate which OHDC operations even reach the resolver:
+
+| Policy field | Effect |
+|---|---|
+| `aggregation_only=1` | **Blocks** `query_events`, `get_event_by_ulid`, `read_samples`, `read_attachment`. **Allows** `aggregate`, `correlate`, `summarize` (server-side computed). Blocked operations return `OUT_OF_SCOPE` with no details. The grantee can compute aggregates over channels they're allowed to see; sensitive channels remain stripped from the inputs to those aggregates. |
+| `strip_notes=1` | The `events.notes` text column is replaced with NULL on returned rows. Does **not** affect `pending_events.payload_json` (that's the user's view, not the grantee's), `audit_log.query_params_json` (the user's audit), or fields named "notes" inside `metadata_json` blobs. Only the structured `events.notes` field is stripped. |
+| `require_approval_per_query=1` | Every read RPC under this grant first generates a notification + waits for the user to approve in Connect. Timeout (default 5 min) → `APPROVAL_TIMEOUT`. Heavyweight; intended for extreme-privacy mode. |
+| `notify_on_access=1` | Read RPC produces a push notification but doesn't block. The user gets visibility without latency. |
+| `max_queries_per_day` / `max_queries_per_hour` | Token-bucket rate limiting per grant. Exceeding → `RATE_LIMITED` with a `Retry-After`-equivalent hint. |
+
+### Write-scope edge cases
+
+For grant tokens with write scope:
+
+- **Channel-level write rules are deferred to v2.** v1 enforces only `grant_write_event_type_rules` (per event type). A grantee allowed to write `lab_result` may set any channel of that type. Sensitivity-class write filtering is not enforced (sensitivity classes are read-side concerns in v1).
+- **Required-channel rule on writes.** If the registry says a channel is required (per the `is_required=1` semantics in "Validation on write"), a write that omits it is rejected even if the grant otherwise allows the type. The user cannot receive a structurally-invalid event into their record.
+- **Backdated writes.** Bounded by `rolling_window_days` and `grant_time_windows` — same as reads (see "Validation on write"). A grantee with `rolling_window_days=365` cannot submit an event with `timestamp_ms` more than 365 days old.
+- **Approval-mode interaction with backdating.** A backdated write that is otherwise in scope still routes through the grant's `approval_mode` — being old doesn't auto-approve it.
+
 ### Write-with-approval
 
 Grant tokens with write scope can be configured to route submissions through an approval queue. The grant's `approval_mode` determines per-submission behaviour:
@@ -667,22 +825,97 @@ Because rules are structured, the user (or their personal dashboard) can ask:
 
 All single-table or small-join queries because no JSON unpack is involved.
 
-### Emergency access
+### Emergency access (break-glass)
 
-The "break-glass" emergency grant from `privacy-access.md` is just a normal grant with a curated rule set. The library ships a helper:
+The break-glass feature lets first responders access a curated subset of the user's data in an emergency without a pre-issued grant. Architecture and full UX described in [`../components/emergency.md`](../components/emergency.md) and [`privacy-access.md`](privacy-access.md). The storage-side mechanics:
 
-```python
-store.grants.create_emergency(
-    label="Emergency responders",
-    expires_at=None,                # long-lived
-    notify_on_access=True,          # always notify
-    allowed_types=["allergy", "medication_prescribed", "diagnosis", "vaccination",
-                   "blood_type", "advance_directive"],
-    denied_sensitivity=["mental_health", "substance_use", "sexual_health", "reproductive"],
-)
+**Configuration via `_meta` keys.** The user's emergency settings live in `_meta` (see the "Optional keys" comment on `_meta` above): `emergency_enabled`, `emergency_ble_beacon`, `emergency_timeout_s`, `emergency_default_allow_on_timeout`, `emergency_lock_screen_basic_only`, `emergency_location_share`, `emergency_history_hours`, plus `emergency_template_grant_id` referencing the user's emergency-template grant.
+
+**Emergency-template grant.** The user pre-configures an "emergency template" grant: `grants.is_template=1`, `grantee_kind='emergency_template'`. Its rules tables (`grant_event_type_rules`, `grant_channel_rules`, `grant_sensitivity_rules`) define the user's emergency profile — what a first responder can see when break-glass fires. Per-channel granularity available; defaults to a curated subset (allergies, active medications, blood type, advance directives, recent vitals, current diagnoses) with sensitive classes (`mental_health`, `substance_use`, `sexual_health`, `reproductive`) denied.
+
+**Template tokens are not redeemable.** Token resolution rejects rows with `is_template=1` (returns `OUT_OF_SCOPE`). Templates exist only to be cloned at break-glass time; they're never bearer-presentable.
+
+**Break-glass flow:**
+
+1. Responder's certified-authority relay sends a signed emergency-access request to the patient's storage. The request's signature must verify against the storage's trusted authority root list (see `privacy-access.md`).
+2. Storage shows the dialog (above lock screen by default) with the authority's certified label, a `_meta.emergency_timeout_s` countdown, vibration. Below-lock-screen UI shows only basic info if `_meta.emergency_lock_screen_basic_only=1`.
+3. User Approves / Rejects, or the timeout fires. On timeout: action is `_meta.emergency_default_allow_on_timeout` ? approve : reject.
+4. On approve (interactive or auto-granted via timeout):
+   - A new active grant is created by **cloning** the emergency-template's rules into a fresh `grants` row. The new grant's `grantee_kind='emergency'`, `is_template=0`. Its `grantee_label` is the authority's certified name; `grantee_ulid` is the authority's identity.
+   - A new `cases` row is opened with `case_type='emergency'`, `started_at_ms=now`, `opening_authority_grant_id=` the new grant.
+   - A `case_filters` row is added with the time-range + profile-types filter for the case (using `_meta.emergency_history_hours` as the lookback for inclusion of pre-emergency context).
+   - A `grant_cases` row binds the new grant to the new case.
+   - An `audit_log` row records the break-glass with `auto_granted=1` if the timeout path was taken (the user's audit view renders these distinctly so they can review).
+5. Subsequent OHDC traffic from the responder uses the issued grant token; reads return events per the case's filters intersected with the cloned access rules. Writes from the responder are normal `put_events` calls — they happen to land in the case's scope because the case's filter (typically a time-range or device-id filter covering the responder's `device_id`) matches them automatically. No `case_id` is set on events; the case finds them via filter at read time.
+
+**Authority cert chain.** The storage holds a list of trusted authority roots in the `trusted_authorities` table (per-user file). An emergency request must be signed by an X.509 cert chain that terminates at one of those roots. Full trust mechanism (Fulcio-issued short-lived certs, X.509 verification, optional Rekor transparency log) is specified in [`emergency-trust.md`](emergency-trust.md). For v1.0 the OHD Project Root is pre-installed; users can add country-specific or remove defaults.
+
+**Audit visibility.** Auto-granted (timeout-allow) accesses are flagged via `audit_log.auto_granted=1`. The user's audit view shows these distinctly (different color / icon) so the user can identify accesses that fired without their explicit consent and take action (revoke retroactively, file a dispute, refine settings).
+
+**Opt-out.** `emergency_enabled='0'` disables the feature wholesale: no BLE beacon, no dialog rendering, all break-glass requests are rejected. The user can also delete the emergency-template grant entirely.
+
+### Cases
+
+Cases are labeled containers of events with optional parent (subcase) and predecessor (handoff) linkage. Events themselves are case-agnostic; the case finds its events through filters at query time.
+
+- `cases.started_at_ms` is required (a label has to start somewhere). `ended_at_ms` is NULL while ongoing.
+- `case_filters` rows define which events belong to this case. Each filter is an OHDC `EventFilter` (Protobuf-JSON encoded) — typically a time range, a list of explicit event ULIDs, a device-id filter, or a combination. The case's scope is the **union** of all its filters' matches.
+- `parent_case_id` is structural (ICU sub-case under admission; EKG referral under doctor's visit). The parent rolls up its children's scopes; the child does **not** see the parent's broader scope. Direction: children → parent.
+- `predecessor_case_id` is the handoff chain (EMS → admission → ICU transfer). The successor inherits the predecessor's scope. Direction: predecessor → successor.
+
+**Case scope resolution.** A case's effective scope is the recursive union of:
+
+1. The events matching any of the case's own non-removed `case_filters`.
+2. The case_scope of its `predecessor_case_id` (if any) — recursive.
+3. The case_scope of every direct child case (any case whose `parent_case_id = this.id`) — recursive.
+
+Pseudocode:
+
+```
+case_scope(C) =
+   ⋃_{f in C.case_filters where removed_at_ms IS NULL} match(f)
+ ∪ (C.predecessor_case_id ? case_scope(predecessor) : ∅)
+ ∪ ⋃_{child where child.parent_case_id == C.id} case_scope(child)
 ```
 
-The user reviews the resulting rules and can adjust before issuing the token (typically encoded as a QR on a wristband or lock screen).
+**Cycle prevention.** `parent_case_id` and `predecessor_case_id` chains must form a DAG (a case is not its own ancestor or descendant). Implementations validate on every create/update; violation → `INVALID_ARGUMENT`.
+
+**Case-bound grant resolution.** A grant with one or more rows in `grant_cases` is case-bound. Its candidate event set is:
+
+```
+candidates = ⋃_{(g, c) in grant_cases where g = this_grant} case_scope(c)
+final      = candidates ∩ standard_grant_resolution(grant)
+```
+
+The standard grant resolution applies the grant's `grant_event_type_rules`, `grant_channel_rules`, `grant_sensitivity_rules`, `grant_time_windows`, `rolling_window_days`, `aggregation_only`, `strip_notes`, etc. Cases provide candidate events; grants provide access rules; the final result is their intersection.
+
+A grant with **no** rows in `grant_cases` is open-scope: candidates = all the user's events; resolution proceeds as before.
+
+**Case lifecycle markers.** `std.case_started` / `std.case_closed` / `std.case_handoff` events (per `data-model.md`) are written into the events table for timeline display. They reference the case by ULID via a `case_ref_ulid` channel (text). They are NOT how the case knows its own membership — the case still uses `case_filters` for that. The lifecycle events are purely for the patient's chronological view.
+
+**Writes are case-agnostic.** Events submitted via any token write into `events` normally — no `case_id` field. Case membership is resolved at read time via filters. If a responder wants their writes to land in a specific case, the case has a filter matching the responder's `device_id` (the typical pattern for emergency-case device monitoring).
+
+**Case lifecycle.**
+
+- **Open**: explicit `OhdcService.CreateCase` (self-session) or auto-open under break-glass / Care visit. Records a `std.case_started` marker event in `events` for the patient's timeline.
+- **Auto-close on inactivity**: every read or write that resolves into the case (i.e. matches a `case_filters` row) updates `cases.last_activity_at_ms`. A background pass closes cases where `now - last_activity_at_ms > inactivity_close_after_h` (defaults: emergency 12h, admission 30 days, user-curated cases NULL = no auto-close). On close, `ended_at_ms` is set.
+- **Writes after close**: any new event written into `events` whose data would have matched a closed case's filters is **not retroactively added to the case** for grant scope (`grant_cases` resolution at query time uses the case's filter set as it stood when the case was open; writes after `ended_at_ms` are not added even if filters would match). Implementation: `case_scope` for closed cases excludes `events.timestamp_ms > cases.ended_at_ms`. This is the read-only-after-close semantic.
+- **Manual close**: the active authority can explicitly close. The patient can also force-close from their personal app at any time.
+- **Reopen via token**: when a case auto-closes, the active authority is issued a `case_reopen_tokens` row with TTL (default 24h). The authority can present this token within the TTL to clear `ended_at_ms` and resume the case without re-running the break-glass flow. After TTL, the case stays closed; reopening requires a fresh emergency or grant flow.
+
+**Handoff.** A handoff opens a successor case linked to the current one and transfers the active authority. Mechanics:
+1. Current authority calls `handoff_case` with the next authority's identifier (or grant ID).
+2. Storage opens a new case with `predecessor_case_id` = current case, `case_type` = next type, `started_at_ms = now`.
+3. Issues a grant for the new authority on the new case.
+4. Closes the previous case (sets `ended_at_ms`); previous authority's grant transitions to read-only on its span.
+5. Records the handoff in `audit_log` with both case IDs.
+6. Patient's audit view shows the handoff chain ("EMS Prague → ER Motol → ICU Motol Floor 4") so the user can see the full episode flow.
+
+**Emergency-case auto-handoff** doesn't require patient confirmation (per the unconscious-patient case). Patient sees the chain in audit retroactively; can dispute (which flags the handoff but doesn't undo it).
+
+**Patient close.** The patient can force-close any case from their personal app at any time. Force-close revokes the active authority's grant, sets `ended_at_ms`, and adds a `force_closed_by_patient=1` audit entry.
+
+**Operator-side records.** Authorities (EMS, hospitals, etc.) typically maintain their own copies of case data on their side per their regulatory obligations (HIPAA / GDPR / equivalent). This is **outside OHD's scope**; the protocol provides the audit trail and lifecycle control over OHDC reads, not over operator-side copies. See `privacy-access.md` "Operator-side records and OHD's scope boundary" for details.
 
 ## Deployment modes and sync
 
@@ -742,25 +975,30 @@ SQLite WAL mode allows one writer + many readers per file. The library enforces 
 
 ## Wire format and transport
 
-The storage library exposes a transport-agnostic API:
+The storage library exposes a transport-agnostic Rust API; uniffi mirrors it to Kotlin (Android) and Swift (iOS), PyO3 mirrors it to Python:
 
-```python
-store.put_events(events: list[Event]) -> list[Ulid]
-store.query_events(filter: Query, cursor: Cursor | None = None) -> Page[Event]
-store.aggregate(channel: str, frm: int, to: int, op: str, bucket: str) -> list[Bucket]
-store.attach(event_id: Ulid, blob: bytes, mime: str) -> AttachmentRef
-store.export(sink: BinaryIO) -> ExportManifest
-store.import_(source: BinaryIO) -> ImportReport
+```rust
+store.put_events(events: Vec<Event>) -> Result<Vec<Ulid>>
+store.query_events(filter: Query, cursor: Option<Cursor>) -> Result<Page<Event>>
+store.aggregate(channel: &str, from: i64, to: i64, op: AggOp, bucket: Bucket) -> Result<Vec<BucketResult>>
+store.attach(event_id: Ulid, blob: impl Read, mime: &str) -> Result<AttachmentRef>
+store.export(sink: impl Write) -> Result<ExportManifest>
+store.import(source: impl Read) -> Result<ImportReport>
 ```
 
-Transport choice is the API server's concern, not the storage library's. Recommended:
+The external protocol layered on top is **OHDC** — Connect-RPC over HTTP, Protobuf schemas. See [`../components/connect.md`](../components/connect.md) "Wire format" for the protocol definition, encoding negotiation, release artifacts, and tooling.
 
-- **HTTP/3 (QUIC) preferred, HTTP/2 over TCP fallback**. Caddy 2.6+ handles negotiation. Connectors use platform-native HTTP/3 stacks (URLSession on iOS, Cronet on Android).
+Operational properties:
+
+- **Transport**: HTTP/3 (QUIC) preferred, HTTP/2 fallback. Caddy 2.6+ fronts deployments. Mobile clients use platform-native HTTP/3 stacks (URLSession on iOS, Cronet on Android).
+- **Wire encoding**: Protobuf binary by default (`application/proto`); JSON via `Content-Type: application/json` for debugging.
 - **Per-event idempotency** via `(source, source_id)` and ULID. Retries are safe.
-- **Batch writes** are first-class: `put_events([...])` is one transaction.
-- **Blobs** travel over HTTPS as separate uploads (chunked if needed); the event references the resulting SHA-256.
+- **Batch writes** are first-class: `PutEvents` takes a list and is one transaction.
+- **Streaming**: server-streaming RPCs for `ReadSamples` over long ranges, sync replay, `AuditQuery` tail-follow. Client-streaming for large `Import` and chunked `AttachBlob`. Native to Connect-RPC, defined in the `.proto`.
+- **Blobs** travel over the same Connect-RPC transport as a separate `AttachBlob` operation (chunked client-streaming for large payloads); the event references the resulting SHA-256.
+- **Errors** are returned as standard HTTP status codes plus a structured Protobuf error message in the body (`OUT_OF_SCOPE`, `INVALID_UNIT`, `RATE_LIMITED`, `NOT_FOUND`, etc.).
 
-Custom UDP / message-bus protocols are possible but unnecessary for OHD's projected scale. Revisit only if QUIC overhead becomes a measured bottleneck.
+Custom UDP / message-bus protocols are out of scope. Revisit only if QUIC overhead becomes a measured bottleneck.
 
 ## Implementation
 
