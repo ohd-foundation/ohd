@@ -1,0 +1,50 @@
+#!/bin/sh
+# postinst maintainer script for ohd-storage.
+#
+# - Creates the system user `ohd-storage` (group + home).
+# - Tightens perms on /var/lib/ohd-storage and /etc/ohd-storage.
+# - Reloads systemd + enables (but does NOT start) the unit on first install.
+#
+# Idempotent; safe to re-run.
+
+set -e
+
+USER=ohd-storage
+GROUP=ohd-storage
+DATA_DIR=/var/lib/ohd-storage
+CONF_DIR=/etc/ohd-storage
+
+case "$1" in
+    configure)
+        if ! getent group "$GROUP" >/dev/null; then
+            addgroup --system "$GROUP"
+        fi
+        if ! getent passwd "$USER" >/dev/null; then
+            adduser --system \
+                --ingroup "$GROUP" \
+                --home "$DATA_DIR" \
+                --no-create-home \
+                --shell /usr/sbin/nologin \
+                --gecos "OHD Storage server" \
+                "$USER"
+        fi
+
+        mkdir -p "$DATA_DIR" "$CONF_DIR"
+        chown -R "$USER:$GROUP" "$DATA_DIR"
+        chmod 0750 "$DATA_DIR"
+        chmod 0755 "$CONF_DIR"
+
+        if [ -d /run/systemd/system ]; then
+            systemctl daemon-reload >/dev/null 2>&1 || true
+            # Enable on first install only; respect operator's choice on upgrade.
+            if [ -z "$2" ]; then
+                systemctl enable ohd-storage.service >/dev/null 2>&1 || true
+            else
+                systemctl try-restart ohd-storage.service >/dev/null 2>&1 || true
+            fi
+        fi
+        ;;
+    abort-upgrade|abort-remove|abort-deconfigure) ;;
+esac
+
+exit 0

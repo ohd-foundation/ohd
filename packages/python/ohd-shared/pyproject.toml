@@ -1,0 +1,64 @@
+[project]
+name = "ohd-shared"
+version = "0.1.0"
+description = "OHD shared Python helpers — Connect-RPC transport, OHDC proto<->dict helpers, canonical query hash, OAuth proxy bootstrap."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0 OR MIT"
+authors = [
+    { name = "OHD Project" },
+]
+keywords = ["ohd", "ohdc", "connect-rpc", "shared"]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Intended Audience :: Healthcare Industry",
+    "License :: OSI Approved :: Apache Software License",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Medical Science Apps.",
+]
+dependencies = [
+    "httpx>=0.27",
+    "protobuf>=5.0",
+]
+
+[project.optional-dependencies]
+# Consumers that need the OAuthProxy helper pull in fastmcp themselves;
+# the shared package keeps it as an optional dep so the CLI doesn't drag
+# fastmcp in.
+oauth = [
+    "fastmcp>=2.11,<4",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.6",
+    "grpcio-tools>=1.60",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ohd_shared"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"src/ohd_shared/_gen" = "ohd_shared/_gen"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = []
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"

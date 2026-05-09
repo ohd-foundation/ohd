@@ -1,0 +1,59 @@
+# Maintainer: OHD Project <maintainers@ohd.example>
+#
+# OHD Emergency operator CLI — cert lifecycle, roster, audit, case-export.
+# Operator-facing CLI; no daemon, no system config.
+#
+# Build with:
+#   cd packaging/arch/ohd-emergency && makepkg -si
+
+pkgname=ohd-emergency
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="OHD Emergency operator CLI — cert lifecycle, roster, audit, case-export"
+arch=('x86_64' 'aarch64')
+url="https://github.com/openhealth-data/ohd"
+license=('Apache' 'MIT')
+depends=('gcc-libs' 'ca-certificates')
+makedepends=('cargo' 'rust' 'protobuf')
+
+source=(
+    "ohd-$pkgver.tar.gz::https://github.com/openhealth-data/ohd/archive/emergency-v$pkgver.tar.gz"
+)
+sha256sums=(
+    'SKIP'
+)
+
+prepare() {
+    cd "$srcdir/ohd-$pkgver/emergency/cli"
+    export CARGO_HOME="$srcdir/cargo-home"
+    cargo fetch --target "$CARCH-unknown-linux-gnu" --locked
+}
+
+build() {
+    cd "$srcdir/ohd-$pkgver/emergency/cli"
+    export CARGO_HOME="$srcdir/cargo-home"
+    export RUSTUP_TOOLCHAIN=stable
+    cargo build --release --frozen
+}
+
+check() {
+    cd "$srcdir/ohd-$pkgver/emergency/cli"
+    export CARGO_HOME="$srcdir/cargo-home"
+    cargo test --release --frozen || true
+}
+
+package() {
+    cd "$srcdir/ohd-$pkgver/emergency/cli"
+
+    install -Dm755 \
+        "target/release/ohd-emergency" \
+        "$pkgdir/usr/bin/ohd-emergency"
+
+    install -Dm644 README.md \
+        "$pkgdir/usr/share/doc/$pkgname/README.md"
+
+    install -Dm644 "../../spec/LICENSE-APACHE" \
+        "$pkgdir/usr/share/licenses/$pkgname/LICENSE-APACHE"
+    install -Dm644 "../../spec/LICENSE-MIT" \
+        "$pkgdir/usr/share/licenses/$pkgname/LICENSE-MIT"
+}

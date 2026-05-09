@@ -1,0 +1,54 @@
+# Maintainer: OHD Project <maintainers@ohd.example>
+#
+# OHD Care CLI — Python wheel wrapped as an Arch package.
+# Depends on system Python 3.11+; installs into /usr/lib/ohd-care via
+# python's `installer` tool.
+
+pkgname=ohd-care
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="OHD Care CLI — terminal interface for the OHD reference clinical app"
+arch=('any')
+url="https://github.com/openhealth-data/ohd"
+license=('Apache' 'MIT')
+depends=(
+    'python>=3.11'
+    'python-click'
+    'python-httpx'
+    'python-keyring'
+    'python-protobuf'
+    'python-pydantic'
+)
+makedepends=(
+    'python-build'
+    'python-installer'
+    'python-hatchling'
+)
+
+source=(
+    "ohd-$pkgver.tar.gz::https://github.com/openhealth-data/ohd/archive/care-v$pkgver.tar.gz"
+)
+sha256sums=(
+    'SKIP'
+)
+
+build() {
+    cd "$srcdir/ohd-$pkgver/care/cli"
+    python -m build --wheel --no-isolation
+}
+
+package() {
+    cd "$srcdir/ohd-$pkgver/care/cli"
+
+    python -m installer \
+        --destdir="$pkgdir" \
+        dist/*.whl
+
+    install -Dm644 README.md \
+        "$pkgdir/usr/share/doc/$pkgname/README.md"
+
+    install -Dm644 "../../spec/LICENSE-APACHE" \
+        "$pkgdir/usr/share/licenses/$pkgname/LICENSE-APACHE"
+    install -Dm644 "../../spec/LICENSE-MIT" \
+        "$pkgdir/usr/share/licenses/$pkgname/LICENSE-MIT"
+}

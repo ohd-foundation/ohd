@@ -47,7 +47,7 @@ The single protocol — **OHDC** — has three auth profiles: self-session (the 
 ### Design
 - [`docs/design/data-model.md`](docs/design/data-model.md) — Conceptual event vocabulary
 - [`docs/design/storage-format.md`](docs/design/storage-format.md) — On-disk format, schema, sample blocks, channel registry, grants, sync
-- [`docs/design/ohdc-protocol.md`](docs/design/ohdc-protocol.md) — OHDC v1 wire spec: services, messages, error model, pagination, idempotency, filter language, streaming, `.proto` source
+- [`docs/design/ohdc-protocol.md`](docs/design/ohdc-protocol.md) — OHDC v0 wire spec: services, messages, error model, pagination, idempotency, filter language, streaming, `.proto` source
 - [`docs/design/auth.md`](docs/design/auth.md) — OIDC self-session, OAuth flows, token formats, account-join modes, on-device sub-modes
 - [`docs/design/care-auth.md`](docs/design/care-auth.md) — OHD Care operator auth, per-patient grant-token vault, two-sided audit, patient-curated case workflow
 - [`docs/design/encryption.md`](docs/design/encryption.md) — Per-user file encryption, key hierarchy, recovery (BIP39), multi-device pairing, key rotation, export encryption
@@ -55,9 +55,12 @@ The single protocol — **OHDC** — has three auth profiles: self-session (the 
 - [`docs/design/notifications.md`](docs/design/notifications.md) — Push delivery (FCM/APNs/email), no-PHI payload contract, quiet hours, system-DB tables
 - [`docs/design/relay-protocol.md`](docs/design/relay-protocol.md) — Relay tunnel wire spec: TLS-through-tunnel cert pin, frame format, session multiplexing, registration & lifecycle
 - [`docs/design/sync-protocol.md`](docs/design/sync-protocol.md) — Cache↔primary sync wire spec: SyncService RPCs, frame stream, watermarks, attachment payload sync, grant lifecycle out-of-band
-- [`docs/design/conformance.md`](docs/design/conformance.md) — OHDC v1 conformance corpus: structure, categories, runner, what claiming "v1" means
+- [`docs/design/conformance.md`](docs/design/conformance.md) — OHDC v0 conformance corpus: structure, categories, runner, what claiming "v0" means
 - [`docs/design/privacy-access.md`](docs/design/privacy-access.md) — Identity, permissions, audit trails
 - [`docs/design/deployment.md`](docs/design/deployment.md) — Docker Compose, Hetzner, Caddy
+
+### Governance
+- [`docs/governance/registry.md`](docs/governance/registry.md) — Process for adding new `std.*` event types to the canonical registry
 
 ### Research (external systems we integrate with)
 - [`docs/research/health-connect.md`](docs/research/health-connect.md) — Android Health Connect integration

@@ -1,0 +1,241 @@
+# OHD Relay — example deployment config
+#
+# Copy to `relay.toml` and edit. Secrets should NOT live here — reference
+# them via filesystem paths to mounted secrets (Docker secrets,
+# Kubernetes sealed-secrets, systemd LoadCredential=, etc.).
+#
+# CLI flags (`--bind`, `--port`, `--db`, `--http3-listen`, `--http3-cert`,
+# `--http3-key`) override the equivalent file values where they overlap.
+# The CLI is the source of truth for transport bindings; this file is the
+# source of truth for push providers and authority-mode wiring.
+
+# -----------------------------------------------------------------------------
+# Public hostname
+# -----------------------------------------------------------------------------
+# Used to compose `rendezvous_url` in register responses:
+#   wss://<public_host>/v1/tunnel/<rendezvous_id>
+#
+# The relay sits behind Caddy in production; Caddy terminates outer TLS,
+# so consumers see `wss://` regardless of the relay's HTTP listener.
+# When omitted, the relay uses its bind address — fine for dev / tests.
+public_host = "relay.example.com"
+
+# -----------------------------------------------------------------------------
+# Push providers
+# -----------------------------------------------------------------------------
+#
+# The relay touches push only on the silent tunnel-wake path: when a
+# consumer attaches but the storage's tunnel is down, the relay sends a
+# data-only `{"category":"tunnel_wake","ref_ulid":"<rendezvous_id>"}`
+# payload to wake the device. NEVER any PHI in push payloads — see
+# `spec/notifications.md`.
+#
+# Authority mode additionally sends iOS Critical Alerts for the loud
+# emergency-access wake path (gated by Apple's Critical Alert
+# entitlement, applied for separately on the OHD Connect bundle ID).
+
+[push.fcm]
+# Firebase / GCP project ID. Substituted into the messages:send URL:
+#   https://fcm.googleapis.com/v1/projects/<project_id>/messages:send
+project_id = "ohd-cloud"
+# Service-account JSON, mounted as a secret.
+# Generated via `gcloud iam service-accounts keys create ...` on a
+# service account that has `roles/firebasecloudmessaging.messageDeliverer`.
+service_account_path = "/run/secrets/fcm_service_account.json"
+
+[push.apns]
+team_id   = "ABC123XYZ4"           # Apple Developer team ID
+key_id    = "DEF456UVW9"           # APNs auth-key ID (.p8 filename suffix)
+bundle_id = "org.ohd.connect"      # OHD Connect iOS bundle ID
+# .p8 token-auth key, mounted as a secret. Created in the Apple Developer
+# console under "Keys" → "Apple Push Notification service".
+key_path  = "/run/secrets/apns_key.p8"
+# `production` (default) talks to api.push.apple.com.
+# `sandbox` / `development` talks to api.development.push.apple.com.
+environment = "production"
+
+# -----------------------------------------------------------------------------
+# Emergency-authority mode (only honored when built with
+# `--features authority`).
+#
+# When enabled, the relay:
+#   - daily-refreshes a 24h Fulcio-issued authority cert,
+#   - signs `EmergencyAccessRequest` Protobuf payloads,
+#   - exposes `POST /v1/emergency/initiate`.
+#
+# OIDC token rotation is handled by the deployment system (sealed-secret
+# rotator, k8s OIDC mount, etc.); the relay re-reads the file on each
+# refresh.
+#
+# See `spec/emergency-trust.md` for the full trust model + cert chain.
+# -----------------------------------------------------------------------------
+[authority]
+enabled = false
+
+# OHD-operated Fulcio. One per trust root; Czech / German / Global etc.
+# share the same wire surface; the per-region URL pins to the issuing
+# intermediate.
+fulcio_url   = "https://fulcio.openhealth-data.org"
+oidc_idp_url = "https://idp.openhealth-data.org/emergency"
+
+# Optional Rekor transparency-log endpoint. Failures are soft-logged, not
+# fatal — Rekor is auditing infrastructure, not gating infrastructure.
+rekor_url = "https://rekor.openhealth-data.org"
+
+# Mounted OIDC ID-token. The relay re-reads this on every refresh. Token
+# rotation is the deployment system's job (cert-manager, sealed-secrets,
+# OIDC sidecar, etc.).
+oidc_id_token_path = "/run/secrets/authority_oidc_id_token"
+
+# Subject CN baked into the issued cert. Surfaced as `operator_label` on
+# patient-side break-glass dialogs.
+org_label   = "EMS Example Region"
+org_country = "CZ"
+
+# -----------------------------------------------------------------------------
+# Per-OIDC registration gating  (`[auth.registration]`)
+# -----------------------------------------------------------------------------
+#
+# Controls who can register a storage instance with this relay. Three
+# common deployment shapes:
+#
+# (1) PUBLIC RELAY — permissive (default).
+#     Anyone who can reach the relay can register. Backwards-compatible;
+#     this is what you get if you omit the section entirely.
+#
+#       # (no [auth.registration] block at all)
+#
+# (2) OHD CLOUD RELAY — single OHD-issued OIDC issuer.
+#     Only operators with an `accounts.ohd.org` account can register.
+#     `expected_audience` is the audience claim the IdP issues for tokens
+#     intended for this relay (configure on the IdP side; it's a string
+#     label, e.g. the cloud relay's hostname or "ohd-relay-cloud").
+#
+#       [auth.registration]
+#       allowed_issuers = [
+#         { issuer = "https://accounts.ohd.org", expected_audience = "ohd-relay-cloud" },
+#       ]
+#       require_oidc = true
+#
+# (3) CLINIC RELAY — multi-issuer (clinic SSO + OHD).
+#     Clinic staff register via Okta/AzureAD; OHD support staff register
+#     via accounts.ohd.org. Each issuer mints tokens with the SAME
+#     audience (chosen by the operator) so the relay-side check stays
+#     uniform. Storage's discovery flow can read this from
+#     `GET /v1/auth/info` to surface the right "log in with X" button.
+#
+#       [auth.registration]
+#       allowed_issuers = [
+#         { issuer = "https://clinic.okta.com",  expected_audience = "ohd-relay-clinic-prague" },
+#         { issuer = "https://accounts.ohd.org", expected_audience = "ohd-relay-clinic-prague" },
+#       ]
+#       require_oidc = true
+#
+# Verification details:
+# - The relay fetches the issuer's JWKS via the standard OIDC discovery
+#   path: `<issuer>/.well-known/openid-configuration` -> `jwks_uri`.
+# - JWKS is cached for `jwks_cache_ttl_secs` (default 3600). On a `kid`
+#   miss the relay refreshes once before failing — handles key rotation.
+# - The JWT's `iss` must match exactly; `aud` must include
+#   `expected_audience`; `exp` and `nbf` are honored with 30s leeway.
+# - On success, `(iss, sub)` is recorded alongside the registration as
+#   the operator-side identity for audit (via SQLite columns `oidc_iss`
+#   / `oidc_sub`).
+# - On failure, the relay returns HTTP 401 with one of two codes:
+#   `OIDC_REQUIRED` (no token presented when require_oidc=true) or
+#   `OIDC_VERIFY_FAILED` (token present but invalid; reason in body).
+#
+# `require_oidc=false` with `allowed_issuers` set is a soft-gate: tokens
+# are verified when present but registration without a token still
+# succeeds. Useful during a clinic's rollout / migration window.
+#
+# This block has NO effect when `allowed_issuers` is empty — the relay
+# stays fully permissive.
+
+# [auth.registration]
+# allowed_issuers = [
+#   { issuer = "https://accounts.ohd.org", expected_audience = "ohd-relay-cloud" },
+# ]
+# jwks_cache_ttl_secs = 3600
+# require_oidc        = false
+
+# -----------------------------------------------------------------------------
+# Raw QUIC tunnel mode  (`[tunnel.quic]`)
+# -----------------------------------------------------------------------------
+#
+# The relay's preferred storage→relay tunnel transport. Storage opens a
+# QUIC connection (ALPN `ohd-tnl1`) and keeps it alive across phone
+# WiFi↔cellular handoffs via QUIC's built-in connection migration —
+# without the 1–3 s reconnect+push-wake stall the WS-over-HTTP/2 fallback
+# incurs on each network change.
+#
+# The WS-over-HTTP/2 tunnel at `WS /v1/tunnel/:rid` STAYS WIRED as a
+# fallback for networks that block UDP/443 (some corporate proxies). When
+# both transports are configured, storage tries QUIC first and falls back
+# on UDP-block detection.
+#
+# CLI overrides for the bind address + cert paths:
+#   --quic-tunnel-listen 0.0.0.0:9001
+#   --quic-tunnel-cert   /run/secrets/relay-fullchain.pem
+#   --quic-tunnel-key    /run/secrets/relay-privkey.pem
+#
+# We deliberately bind on a SEPARATE UDP port from `--http3-listen`
+# (which carries the REST endpoints). quinn supports multi-ALPN dispatch
+# on a single endpoint, but routing each accepted connection to the
+# right handler couples two otherwise-independent listeners. Running the
+# tunnel on its own port keeps the surfaces operationally + code-wise
+# distinct. Document the chosen port for the operator's L4 firewall /
+# Cloudflare Spectrum config.
+#
+# When `--quic-tunnel-cert` / `--quic-tunnel-key` are absent the listener
+# falls back to a dev self-signed cert (localhost / 127.0.0.1) and emits
+# a stderr warning. Production must supply real PEM materials.
+#
+# Wire shape: see `relay/src/quic_tunnel.rs` "Wire shape" docblock for
+# the handshake, per-session stream prefix, and heartbeat formats.
+
+# [tunnel.quic]
+# listen           = "0.0.0.0:9001"
+# cert_path        = "/run/secrets/relay-fullchain.pem"
+# key_path         = "/run/secrets/relay-privkey.pem"
+# heartbeat_secs   = 60        # Application-layer heartbeat interval.
+#                              # QUIC's own PING/PATH_CHALLENGE handles
+#                              # migration; this catches dead peers.
+
+# -----------------------------------------------------------------------------
+# Emergency-flow endpoints
+# -----------------------------------------------------------------------------
+#
+# The relay always exposes:
+#
+#   GET  /v1/emergency/status/{request_id}
+#   POST /v1/emergency/handoff
+#
+# These are wired regardless of `--features authority`. They are paired
+# with `POST /v1/emergency/initiate` (authority-gated) to close the
+# operator-tablet break-glass loop:
+#
+#   tablet → /v1/emergency/initiate    (signed request + push to phone,
+#                                       row inserted in `_emergency_requests`)
+#   tablet → /v1/emergency/status/...  (poll until the patient phone
+#                                       responds; row state transitions)
+#   tablet → /v1/emergency/handoff     (forward `OhdcService.HandoffCase`
+#                                       to the patient's storage; relay
+#                                       records the operator-side audit
+#                                       row in `_emergency_handoffs`)
+#
+# No new config keys are needed in `relay.toml` for v1 — the relevant
+# constants live in `src/emergency_endpoints.rs`:
+#
+#   DEFAULT_REQUEST_TTL  = 30 s     # waiting → auto_granted_timeout / expired
+#   REQUEST_GC_GRACE     = 5 min    # how long terminal rows linger
+#   TTL_SWEEPER_TICK     = 1 s      # background sweeper poll cadence
+#
+# `/v1/emergency/handoff` requires a configured **storage tunnel
+# client** to forward the call to the patient's storage. The
+# storage-side outbound integration is the parallel deliverable
+# (tracked in STATUS.md "What's stubbed / TBD"); until it lands the
+# relay binary's `AppState.storage_tunnel` is `None` and the handoff
+# handler returns 503 with `code=storage_tunnel_unavailable`. The
+# tablet treats 503 as the "no storage path yet" signal and falls back
+# to its mock-handoff UX.

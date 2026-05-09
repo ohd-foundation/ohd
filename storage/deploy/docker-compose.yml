@@ -1,0 +1,50 @@
+# OHD Storage — single-service Docker Compose deployment.
+#
+# This compose file brings up just storage. For the full demo stack (storage
+# + relay + care/web) see ../../docker-compose.yml at the repo root.
+#
+# First run:
+#   1. Initialize the database (one-time):
+#        docker compose -f deploy/docker-compose.yml run --rm storage init \
+#          --db /var/lib/ohd-storage/storage.db
+#   2. Issue a self-session token (write it down — there's no recovery):
+#        docker compose -f deploy/docker-compose.yml run --rm storage \
+#          issue-self-token --db /var/lib/ohd-storage/storage.db
+#   3. Bring up the server:
+#        docker compose -f deploy/docker-compose.yml up -d
+#   4. Verify:
+#        curl http://localhost:8443/ohdc.v0.OhdcService/Health \
+#          -H 'Content-Type: application/json' -H 'Authorization: Bearer ohds_…' \
+#          --data '{}'
+#
+# Production note: this exposes plain HTTP/2 on 8443. Front with Caddy or
+# another TLS terminator for public deployments. HTTP/3 (QUIC) port is
+# exposed in advance of the in-binary HTTP/3 listener landing.
+
+services:
+  storage:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: ohd-storage:dev
+    container_name: ohd-storage
+    restart: unless-stopped
+    ports:
+      - "8443:8443/tcp"   # HTTP/2 OHDC
+      - "8443:8443/udp"   # HTTP/3 OHDC (when the in-binary listener lands)
+    volumes:
+      - storage_data:/var/lib/ohd-storage
+    environment:
+      RUST_LOG: ${RUST_LOG:-info}
+    # Health check via the OHDC Health RPC. Connect-RPC lets us hit it with a
+    # plain JSON POST and no auth (Health is unauthenticated).
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- --post-data='{}' --header='Content-Type: application/json' http://localhost:8443/ohdc.v0.OhdcService/Health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  storage_data:
+    name: ohd_storage_data

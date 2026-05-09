@@ -1,0 +1,27 @@
+#!/bin/sh
+# postrm maintainer script for ohd-relay.
+
+set -e
+
+USER=ohd-relay
+GROUP=ohd-relay
+DATA_DIR=/var/lib/ohd-relay
+CONF_DIR=/etc/ohd-relay
+
+case "$1" in
+    purge)
+        if [ -d /run/systemd/system ]; then
+            systemctl daemon-reload >/dev/null 2>&1 || true
+        fi
+        if getent passwd "$USER" >/dev/null; then
+            deluser --system "$USER" >/dev/null 2>&1 || true
+        fi
+        if getent group "$GROUP" >/dev/null; then
+            delgroup --system "$GROUP" >/dev/null 2>&1 || true
+        fi
+        rm -rf "$DATA_DIR" "$CONF_DIR"
+        ;;
+    remove|upgrade|failed-upgrade|abort-install|abort-upgrade|disappear) ;;
+esac
+
+exit 0

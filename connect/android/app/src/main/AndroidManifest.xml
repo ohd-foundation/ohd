@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!--
+        Permissions.
+
+        - INTERNET             : Required for OHDC remote storage. The on-device
+                                 deployment doesn't need it for storage I/O,
+                                 but `Notify.RegisterDevice` (FCM) and OAuth
+                                 redirects (Custom Tabs) both need it.
+        - POST_NOTIFICATIONS   : Pending review notifications, emergency wake,
+                                 case-update notifications. Required on
+                                 Android 13+ (API 33+); auto-granted below.
+        - USE_BIOMETRIC        : Token unlock via BiometricPrompt — bind the
+                                 self-session bearer to user presence.
+                                 Implementation TBD; declared so it survives
+                                 a future EncryptedSharedPreferences flip
+                                 without a manifest edit.
+        - WAKE_LOCK            : Foreground service for the Health Connect
+                                 bridge will need this; declared early so
+                                 the v0 scaffold doesn't lose it on a
+                                 manifest reformat.
+
+        Health Connect, FCM full-screen-intent, and camera (barcode) come in
+        the implementation phase — see `connect/android/BUILD.md` and the
+        relevant spec docs at `connect/spec/health-connect.md`,
+        `connect/spec/notifications.md`, `connect/spec/screens-emergency.md`,
+        `connect/spec/barcode-scanning.md`.
+    -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.USE_BIOMETRIC" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <application
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="false"
+        tools:targetApi="33">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:label="@string/app_name"
+            android:theme="@android:style/Theme.Material.NoActionBar"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|uiMode">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!--
+            Health Connect rationale activity, FCM service, full-screen
+            emergency dialog activity, and barcode-scanning camera permissions
+            land in the implementation phase. See:
+              - ../spec/health-connect.md
+              - ../spec/notifications.md
+              - ../spec/screens-emergency.md
+              - ../spec/barcode-scanning.md
+        -->
+    </application>
+</manifest>

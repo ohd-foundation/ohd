@@ -1,0 +1,12 @@
+.gradle/
+build/
+local.properties
+.idea/
+*.iml
+captures/
+.cxx/
+
+# Stage 1 / Stage 2 outputs from BUILD.md — regenerated locally per contributor.
+# Once a CI workflow lands these can be cached but should still not be tracked.
+app/src/main/jniLibs/
+app/src/main/java/uniffi/

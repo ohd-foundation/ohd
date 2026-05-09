@@ -1,0 +1,35 @@
+{
+  "version": "1.0.0",
+  "fixtures": [
+    {
+      "category": "sample_blocks/encoding1",
+      "path": "sample_blocks/encoding1/001_simple",
+      "description": "Encoding 1 (delta-zigzag-varint + float32 + zstd) round-trip on a 4-sample block.",
+      "required": true
+    },
+    {
+      "category": "sample_blocks/encoding1",
+      "path": "sample_blocks/encoding1/002_dense",
+      "description": "Encoding 1 against a 60-sample-per-minute heart-rate trace; checks compression ratio + determinism.",
+      "required": true
+    },
+    {
+      "category": "sample_blocks/encoding2",
+      "path": "sample_blocks/encoding2/001_simple",
+      "description": "Encoding 2 (delta-zigzag-varint + int16 + scale + zstd) round-trip on a 4-sample block.",
+      "required": false
+    },
+    {
+      "category": "ohdc/put_query",
+      "path": "ohdc/put_query/001_self_session_round_trip",
+      "description": "Self-session PutEvents → QueryEvents round-trip with two events of different types.",
+      "required": true
+    },
+    {
+      "category": "permissions",
+      "path": "permissions/001_event_type_deny",
+      "description": "Grant with default_action=allow and an event_type deny rule must drop the denied type from the result set.",
+      "required": true
+    }
+  ]
+}

@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Auto-backup rules.
+
+    The per-user `data.db` file is intentionally **excluded** from cloud
+    backup and device-to-device transfer because:
+      - It contains an SQLCipher-encrypted database whose key is
+        Keystore-bound on this device.
+      - Backing it up to Google Drive without exporting the wrapping key
+        would produce a useless ciphertext on restore.
+      - The portable export path is `Export.Export` (signed OHD package),
+        not platform auto-backup.
+
+    `EncryptedSharedPreferences` files are also excluded — their HMAC keys
+    live in the device Keystore and don't survive backup.
+
+    Bare `SharedPreferences` (the v0 first-run flag store) are allowed
+    through; losing them on restore is harmless (the user just sees the
+    setup screen once more).
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="file" path="data.db" />
+        <exclude domain="file" path="data.db-wal" />
+        <exclude domain="file" path="data.db-shm" />
+        <exclude domain="sharedpref" path="ohd_connect_secure.xml" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="file" path="data.db" />
+        <exclude domain="file" path="data.db-wal" />
+        <exclude domain="file" path="data.db-shm" />
+        <exclude domain="sharedpref" path="ohd_connect_secure.xml" />
+    </device-transfer>
+</data-extraction-rules>

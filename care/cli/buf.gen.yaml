@@ -1,0 +1,20 @@
+# Codegen config for OHD Care CLI's Python stubs.
+#
+# OHDC is the only proto we consume here, sourced from `../../storage/proto/`.
+# The actual codegen is run by `scripts/gen_proto.py`, which uses
+# `grpcio-tools.protoc` (bundled protoc, no system-protoc dependency) — buf
+# is not required.
+#
+# This file is retained for parity with `storage/buf.gen.yaml`; it documents
+# the same intent (Python message stubs for ohdc.v0) so a `buf generate` user
+# can swap it in. The CLI does not depend on buf at runtime.
+version: v2
+managed:
+  enabled: true
+plugins:
+  - remote: buf.build/protocolbuffers/python
+    out: src/ohd_care/ohdc_proto
+  - remote: buf.build/protocolbuffers/pyi
+    out: src/ohd_care/ohdc_proto
+inputs:
+  - directory: ../../storage/proto

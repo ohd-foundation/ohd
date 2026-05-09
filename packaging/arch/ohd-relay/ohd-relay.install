@@ -1,0 +1,47 @@
+# Arch pacman .install scriptlet for ohd-relay.
+
+post_install() {
+    if ! getent group ohd-relay >/dev/null; then
+        groupadd --system ohd-relay
+    fi
+    if ! getent passwd ohd-relay >/dev/null; then
+        useradd --system \
+            --gid ohd-relay \
+            --home-dir /var/lib/ohd-relay \
+            --no-create-home \
+            --shell /usr/bin/nologin \
+            --comment "OHD Relay" \
+            ohd-relay
+    fi
+
+    install -d -m 0750 -o ohd-relay -g ohd-relay /var/lib/ohd-relay
+
+    systemctl daemon-reload >/dev/null 2>&1 || true
+
+    cat <<'EOF'
+==> ohd-relay installed.
+    Edit /etc/ohd-relay/relay.toml (push providers, authority mode, etc.)
+    Then:
+      systemctl enable --now ohd-relay.service
+EOF
+}
+
+post_upgrade() {
+    systemctl daemon-reload >/dev/null 2>&1 || true
+    systemctl try-restart ohd-relay.service >/dev/null 2>&1 || true
+}
+
+pre_remove() {
+    systemctl stop ohd-relay.service >/dev/null 2>&1 || true
+    systemctl disable ohd-relay.service >/dev/null 2>&1 || true
+}
+
+post_remove() {
+    if getent passwd ohd-relay >/dev/null; then
+        userdel ohd-relay >/dev/null 2>&1 || true
+    fi
+    if getent group ohd-relay >/dev/null; then
+        groupdel ohd-relay >/dev/null 2>&1 || true
+    fi
+    systemctl daemon-reload >/dev/null 2>&1 || true
+}

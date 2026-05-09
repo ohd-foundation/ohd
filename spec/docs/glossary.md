@@ -102,7 +102,7 @@ See [`deployment-modes.md`](deployment-modes.md) for tradeoffs and decision crit
 - **HTTP/3** — over QUIC. Default transport between consumers and storage. Caddy 2.6+ handles TLS and HTTP/3 termination on the operator side.
 - **HTTP/2** — fallback for clients without HTTP/3 support.
 - **TLS 1.3** — required for all OHDC traffic. SQLCipher 4 for at-rest encryption (Argon2id when SQLCipher 5 ships).
-- **Wire path prefix** — `/ohdc.v1.OhdcService/<Method>` for OHDC operations (Connect-RPC convention), `/relay/v1/...` for relay routing.
+- **Wire path prefix** — `/ohdc.v0.OhdcService/<Method>` for OHDC operations (Connect-RPC convention), `/relay/v1/...` for relay routing.
 
 ## Things that are NOT terms (deliberate omissions)
 
@@ -121,7 +121,7 @@ See [`deployment-modes.md`](deployment-modes.md) for tradeoffs and decision crit
 - OHD Relay: [`components/relay.md`](components/relay.md)
 - OHD Storage: [`components/storage.md`](components/storage.md)
 - On-disk format: [`design/storage-format.md`](design/storage-format.md)
-- OHDC v1 protocol (services, messages, error model, .proto): [`design/ohdc-protocol.md`](design/ohdc-protocol.md)
+- OHDC v0 protocol (services, messages, error model, .proto): [`design/ohdc-protocol.md`](design/ohdc-protocol.md)
 - Authentication (self-session, OIDC, tokens, account-join modes): [`design/auth.md`](design/auth.md)
 - Care operator auth (clinic SSO, grant-token vault, two-sided audit): [`design/care-auth.md`](design/care-auth.md)
 - Encryption & key management (file key, recovery, pairing, rotation): [`design/encryption.md`](design/encryption.md)
@@ -129,7 +129,7 @@ See [`deployment-modes.md`](deployment-modes.md) for tradeoffs and decision crit
 - Notification delivery (FCM/APNs/email push, no-PHI payloads): [`design/notifications.md`](design/notifications.md)
 - Relay wire protocol (tunnel framing, cert pin, multiplexing): [`design/relay-protocol.md`](design/relay-protocol.md)
 - Sync wire protocol (cache↔primary, SyncService, watermarks, attachment sync): [`design/sync-protocol.md`](design/sync-protocol.md)
-- Conformance corpus (test fixtures every OHDC v1 implementation must pass): [`design/conformance.md`](design/conformance.md)
+- Conformance corpus (test fixtures every OHDC v0 implementation must pass): [`design/conformance.md`](design/conformance.md)
 - Privacy / access control: [`design/privacy-access.md`](design/privacy-access.md)
 - Device pairing (deferred, post-v1 — design-space sketch): [`future-implementations/device-pairing.md`](future-implementations/device-pairing.md)
 - Conceptual event vocabulary: [`design/data-model.md`](design/data-model.md)

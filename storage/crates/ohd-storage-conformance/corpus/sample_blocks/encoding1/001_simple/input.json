@@ -1,0 +1,8 @@
+{
+  "samples": [
+    { "t_offset_ms": 0, "value": 72.5 },
+    { "t_offset_ms": 1000, "value": 73.0 },
+    { "t_offset_ms": 2000, "value": 75.25 },
+    { "t_offset_ms": 4000, "value": 71.75 }
+  ]
+}

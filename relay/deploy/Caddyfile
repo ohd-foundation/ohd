@@ -1,0 +1,58 @@
+# OHD Relay — Caddy front
+#
+# Caddy terminates the OUTER TLS — the cert that authenticates the relay's
+# domain to consumers and to storage. The INNER TLS (consumer ↔ storage,
+# end-to-end through the tunnel) is opaque to Caddy and to the relay.
+#
+# Replace `relay.example.com` with your relay's public hostname. Caddy will
+# automatically obtain a Let's Encrypt cert.
+
+{
+    # Enable HTTP/3 (QUIC) globally; the relay protocol assumes HTTP/3.
+    servers {
+        protocols h1 h2 h3
+    }
+}
+
+relay.example.com {
+    # Storage registration / refresh / heartbeat / deregister
+    handle /relay/v1/* {
+        reverse_proxy relay:8443 {
+            transport http {
+                versions h2c h3
+            }
+            # Bidi streaming for OpenTunnel — keep these generous.
+            flush_interval -1
+        }
+    }
+
+    # Consumer attach to a registered storage. The path component is the
+    # opaque rendezvous_id assigned at registration time.
+    handle /r/* {
+        reverse_proxy relay:8443 {
+            transport http {
+                versions h2c h3
+            }
+            flush_interval -1
+        }
+    }
+
+    # One-time registration token issuance UI (operator-only). The
+    # implementation phase decides whether this is HTML or JSON; for v1 it may
+    # also be replaced by an admin CLI subcommand.
+    handle /setup* {
+        reverse_proxy relay:8443
+    }
+
+    # Anything else: 404. The relay's API surface is intentionally narrow.
+    handle {
+        respond "OHD Relay" 404
+    }
+
+    # Operational logging. Adjust to taste; payloads are ciphertext anyway.
+    log {
+        output stdout
+        format console
+        level INFO
+    }
+}

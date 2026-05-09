@@ -1,0 +1,10 @@
+# Currently the generated proto stubs at src/ohd_shared/_gen/ohdc/v0/
+# are committed (matching the prior per-MCP _gen layout). Once codegen
+# is part of CI and `uv sync` triggers a regen automatically, switch
+# this back to ignoring *_pb2.py / *_pb2.pyi.
+
+__pycache__/
+*.py[cod]
+.venv/
+.ruff_cache/
+.pytest_cache/

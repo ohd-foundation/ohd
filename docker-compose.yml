@@ -1,0 +1,68 @@
+# OHD demo stack — docker compose.
+#
+# Brings up the minimum services for the end-to-end write-with-approval flow:
+#   storage   — the OHDC server (Rust binary, SQLite + SQLCipher)
+#   relay     — the NAT-bridge service (Rust binary)
+#
+# care/web (the clinical SPA) is deployed separately via care/deploy/docker-compose.yml,
+# since it has its own Caddy + MCP topology. It can talk to this storage instance
+# over the same Docker network if you join it to ohd-net.
+#
+# Usage:
+#   docker compose up --build -d
+#   docker compose logs -f storage relay
+#   docker compose down
+#
+# After the stack is up, see storage/deploy/README.md for the init / token flow.
+
+services:
+  storage:
+    build:
+      context: ./storage
+      dockerfile: deploy/Dockerfile
+    image: ohd-storage:dev
+    container_name: ohd-storage
+    restart: unless-stopped
+    ports:
+      - "8443:8443/tcp"   # HTTP/2 OHDC
+      - "8443:8443/udp"   # HTTP/3 (QUIC) — live when the in-binary listener lands
+    volumes:
+      - storage_data:/var/lib/ohd-storage
+    environment:
+      RUST_LOG: ${RUST_LOG:-info}
+    networks:
+      - ohd-net
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- --post-data='{}' --header='Content-Type: application/json' http://localhost:8443/ohdc.v0.OhdcService/Health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  relay:
+    build:
+      context: ./relay
+      dockerfile: deploy/Dockerfile
+    image: ohd-relay:dev
+    container_name: ohd-relay
+    restart: unless-stopped
+    ports:
+      - "9443:8443/tcp"   # avoid clashing with storage on 8443
+      - "9443:8443/udp"
+    volumes:
+      - relay_data:/var/lib/ohd-relay
+    environment:
+      RUST_LOG: ${RUST_LOG:-info}
+    networks:
+      - ohd-net
+
+volumes:
+  storage_data:
+    name: ohd_storage_data
+  relay_data:
+    name: ohd_relay_data
+
+networks:
+  ohd-net:
+    name: ohd-net
+    driver: bridge

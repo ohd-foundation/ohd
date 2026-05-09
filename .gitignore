@@ -1,0 +1,92 @@
+# Environment
+.env
+.env.local
+*.env
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+*.egg-info/
+*.egg
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# UV
+.uv/
+
+# Android / Kotlin
+*.iml
+.gradle/
+local.properties
+.idea/
+captures/
+.externalNativeBuild/
+.cxx/
+build/
+generated/
+release/
+debug/
+*.apk
+*.aab
+*.ap_
+*.dex
+*.class
+*.keystore
+*.jks
+keystore.properties
+
+# Node (for any web tooling later)
+node_modules/
+.next/
+out/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors
+.vscode/
+*.swp
+*.swo
+
+# Docker / runtime data
+postgres_data/
+redis_data/
+caddy_data/
+caddy_config/
+
+# Rust
+target/
+**/target/
+
+# Local-only secrets / per-deployment tokens (never commit)
+**/credentials.toml
+**/operator_audit.jsonl
+
+# Generated proto / FFI codegen — regenerated via project tooling
+**/_gen/
+**/src/gen/
+**/uniffi/ohd_storage/
+
+# Local dev DB files
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# Misc
+*.log
+.cache/

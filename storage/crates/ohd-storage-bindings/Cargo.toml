@@ -1,0 +1,69 @@
+[package]
+name = "ohd-storage-bindings"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "OHD Storage foreign-language bindings (uniffi for Kotlin/Swift, PyO3 for Python)"
+readme = "../../README.md"
+
+[lib]
+name = "ohd_storage_bindings"
+path = "src/lib.rs"
+# - cdylib: Android (.so per ABI), iOS (universal in xcframework), Linux/macOS .so/.dylib
+# - staticlib: iOS xcframework needs a static archive when not using a dynamic framework
+# - rlib: keeps the crate consumable from Rust integration tests / future server-side
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[[bin]]
+# Standalone binary for generating Kotlin / Swift / Python sources from this
+# crate's exposed surface. Invoked from a developer machine with the cross
+# toolchain installed; not used by the workspace `cargo build`.
+name = "uniffi-bindgen"
+path = "src/uniffi-bindgen.rs"
+
+[features]
+default = []
+# Pulls the uniffi CLI in so `cargo run --bin uniffi-bindgen` works. Off by
+# default so a plain `cargo build --workspace` doesn't drag the bindgen deps
+# into every consumer of this crate.
+cli = ["uniffi/cli"]
+# These are documentation-only flags today — the actual language pickers are
+# command-line args on `uniffi-bindgen generate --language kotlin|swift|python`.
+# Listed here so build scripts on consumer projects (e.g. an Android Gradle
+# task) can pass `--features kotlin` if they later want to gate codegen.
+kotlin = []
+swift = []
+python = []
+# Compile the PyO3-direct module (`src/pyo3_module.rs`) into the cdylib so
+# `maturin build --features pyo3` produces a real Python wheel. Off by
+# default so a plain `cargo build --workspace` (and the Android / iOS
+# uniffi recipes) don't drag the pyo3 build tree in. See
+# `crates/ohd-storage-bindings/README.md` for the full Python recipe.
+pyo3 = ["dep:pyo3"]
+# Convenience alias for `maturin develop --features extension-module` flows
+# (PyO3's recommended trick when you want to skip linking libpython into the
+# wheel — extension-module on top of pyo3 itself is the magic combo).
+extension-module = ["pyo3", "pyo3/extension-module"]
+
+[dependencies]
+ohd-storage-core = { path = "../ohd-storage-core" }
+# uniffi 0.28 is the stable target as of 2026-Q1: ships proc-macro bindings
+# (`#[uniffi::export]`), Kotlin + Swift + Python codegen, and an in-tree
+# `uniffi_bindgen_main()` entrypoint. Newer (0.29+) is API-compatible for our
+# uses; we pin 0.28 for ecosystem alignment with cargo-ndk-published recipes.
+uniffi = { version = "0.28", default-features = false }
+thiserror.workspace = true
+# PyO3 0.28 is the latest stable as of 2026-Q1; supports CPython 3.8 → 3.14.
+# Using abi3-py311 makes the resulting wheel forward-compatible with every
+# CPython 3.11+ ABI without re-building per minor (matches the Python
+# version floor we use in care/cli + the OHD MCP servers). The
+# `extension-module` feature is enabled via the cargo `extension-module`
+# feature alias above (maturin's default profile turns it on for us).
+pyo3 = { version = "0.28", features = ["abi3-py311"], optional = true }
+
+[build-dependencies]
+# `build` feature enables the proc-macro scaffolding hook used by build.rs.
+uniffi = { version = "0.28", features = ["build"] }

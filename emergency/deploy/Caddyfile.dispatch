@@ -1,0 +1,9 @@
+# Inner Caddyfile for the dispatch-web container — serves the SPA build from
+# ../dispatch/dist. The outer Caddyfile reverse-proxies to this on port 8080.
+
+:8080 {
+	root * /srv
+	encode zstd gzip
+	try_files {path} /index.html
+	file_server
+}

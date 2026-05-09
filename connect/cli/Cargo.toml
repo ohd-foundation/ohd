@@ -1,0 +1,134 @@
+[package]
+name = "ohd-connect"
+version = "0.0.0"
+edition = "2021"
+# Bumped 1.83 → 1.88 because the OHDC client we codegen against (connectrpc 0.4
+# + buffa 0.5) emits edition-2024 syntax in its generated code.
+rust-version = "1.88"
+license = "Apache-2.0 OR MIT"
+authors = ["OHD contributors"]
+repository = "https://github.com/ohd-foundation/ohd"
+description = "OHD Connect — terminal interface to OHDC under self-session auth"
+readme = "README.md"
+build = "build.rs"
+
+[[bin]]
+name = "ohd-connect"
+path = "src/main.rs"
+
+[dependencies]
+# CLI parser
+clap = { version = "4", features = ["derive"] }
+
+# Async runtime
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "time", "io-util", "sync"] }
+
+# Connect-RPC stack — pinned to the same versions as ../storage/ so the
+# generated `OhdcServiceClient` is wire-compatible with the running server.
+# See ../storage/STATUS.md "Wire-format swap" for rationale.
+connectrpc = { version = "0.4", features = ["client", "streaming"] }
+buffa = { version = "0.5", features = ["json"] }
+buffa-types = { version = "0.5", features = ["json"] }
+http = "1"
+http-body = "1"
+http-body-util = "0.1"
+hyper = { version = "1", features = ["client", "http2"] }
+hyper-util = { version = "0.1", features = ["tokio", "client", "client-legacy", "http2"] }
+bytes = "1"
+futures = "0.3"
+
+# HTTP/3 client transport. `H3RawClient` in `src/client.rs` talks directly
+# to a server's QUIC port, bypassing connectrpc on the client side
+# (connectrpc 0.4 ships only `Http2Connection`). Versions are pinned to
+# match the storage server's `http3.rs`.
+quinn = "0.11"
+h3 = "0.0"
+h3-quinn = "0.0"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+
+# Errors / logging
+anyhow = "1"
+thiserror = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Credentials file (TOML at ~/.config/ohd-connect/credentials.toml; mode 0600).
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+directories = "5"
+
+# Time parsing for `--from`/`--to`/`--last-*`.
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+# OIDC + KMS — shared with emergency/cli via two helper crates in the
+# storage workspace. `ohd-cli-kms` provides the AES-GCM/Argon2id vault
+# (passphrase + OS keyring + None backends, parameterised by the
+# per-CLI namespace constants in `src/kms.rs`); `ohd-cli-auth` provides
+# the OAuth2 device-flow client and the Crockford-base32 ULID helpers.
+ohd-cli-kms = { path = "../../storage/crates/ohd-cli-kms" }
+ohd-cli-auth = { path = "../../storage/crates/ohd-cli-auth" }
+url = "2.5.8"
+serde_json = "1.0.149"
+secrecy = "0.10"
+# StandardDeviceAuthorizationResponse pattern-matched in events.rs prompt.
+oauth2 = "5"
+
+[build-dependencies]
+# Codegen the OHDC Rust client from ../../storage/proto/ohdc/v0/ohdc.proto.
+# Mirrors ../storage/crates/ohd-storage-server/build.rs.
+connectrpc-build = "0.4"
+protoc-bin-vendored = "3"
+
+[dev-dependencies]
+# Self-signed cert generator for the H3 client smoke test.
+rcgen = { version = "0.13", default-features = false, features = ["pem", "ring"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "time", "io-util", "sync", "test-util"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+
+# -----------------------------------------------------------------------------
+# Distribution packaging — cargo-deb / cargo-generate-rpm.
+# Connect is a user-facing CLI, no daemon. Just the binary + docs.
+#
+# Build:
+#   cargo deb -p ohd-connect
+#   cargo generate-rpm -p ohd-connect
+# -----------------------------------------------------------------------------
+
+[package.metadata.deb]
+name = "ohd-connect"
+maintainer = "OHD Project <maintainers@ohd.example>"
+copyright = "2026 OHD Project — Apache-2.0 OR MIT"
+license-file = "../../spec/LICENSE-APACHE"
+extended-description = """\
+OHD Connect is the terminal interface to OHDC under self-session auth —
+a typed CLI for browsing your own health-data store, issuing grants,
+and managing devices. It targets the same OHDC wire surface the mobile
+clients use, so anything you can do from your phone you can do from a
+shell."""
+section = "net"
+priority = "optional"
+depends = "libc6, ca-certificates"
+assets = [
+    ["target/release/ohd-connect", "usr/bin/", "755"],
+    ["README.md", "usr/share/doc/ohd-connect/README.md", "644"],
+]
+
+[package.metadata.generate-rpm]
+name = "ohd-connect"
+license = "Apache-2.0 OR MIT"
+summary = "OHD Connect — terminal interface to OHDC under self-session auth"
+assets = [
+    { source = "target/release/ohd-connect", dest = "/usr/bin/ohd-connect", mode = "755" },
+    { source = "README.md", dest = "/usr/share/doc/ohd-connect/README.md", mode = "644", doc = true },
+    { source = "../../spec/LICENSE-APACHE", dest = "/usr/share/licenses/ohd-connect/LICENSE-APACHE", mode = "644", doc = true },
+    { source = "../../spec/LICENSE-MIT", dest = "/usr/share/licenses/ohd-connect/LICENSE-MIT", mode = "644", doc = true },
+]
+auto-req = "no"
+
+[package.metadata.generate-rpm.requires]
+glibc = "*"
+ca-certificates = "*"

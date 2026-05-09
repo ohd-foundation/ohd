@@ -1,0 +1,19 @@
+# SQL migrations for the per-user storage file.
+#
+# Implementation phase will land here as `NNN_<slug>.sql` files, applied in
+# lexical order against an open SQLite + SQLCipher connection. The first
+# migration creates the schema documented in `../spec/storage-format.md`.
+#
+# Conventions:
+#
+#   001_initial_schema.sql        — _meta, event_types, channels, ...,
+#                                   audit_log, peer_sync, all initial indexes
+#   002_<additive>.sql            — additive columns / tables only; never
+#                                   drops or renames
+#
+# Migrations record their version in `_meta.format_version`. The schema
+# loader checks this on file open and applies missing steps; no whole-file
+# rewrites.
+#
+# This .gitkeep keeps the directory in version control until real migrations
+# land; the build doesn't depend on it.

@@ -1,0 +1,17 @@
+#!/bin/sh
+# prerm maintainer script for ohd-storage.
+# Stops + disables the service on remove/purge; no-op on upgrade.
+
+set -e
+
+case "$1" in
+    remove|deconfigure)
+        if [ -d /run/systemd/system ]; then
+            systemctl stop ohd-storage.service >/dev/null 2>&1 || true
+            systemctl disable ohd-storage.service >/dev/null 2>&1 || true
+        fi
+        ;;
+    upgrade|failed-upgrade) ;;
+esac
+
+exit 0

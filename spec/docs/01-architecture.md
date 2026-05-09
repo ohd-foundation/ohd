@@ -219,6 +219,6 @@ Patient and doctor at the desk
 
 ## Protocol versioning
 
-OHDC is versioned. The `.proto` package name carries the major version (`ohdc.v1`, `ohdc.v2`, …); storage advertises supported versions; consumers pick the highest mutually supported. Additive changes (new optional fields, new RPCs) stay within a major version and never break old clients — Protobuf's compatibility rules and Buf's `breaking` lint enforce it in CI. Breaking changes require a major bump (a new `.proto` package) and a documented migration; both versions can coexist on the wire during the transition.
+OHDC is versioned. The `.proto` package name carries the major version (`ohdc.v0`, `ohdc.v2`, …); storage advertises supported versions; consumers pick the highest mutually supported. Additive changes (new optional fields, new RPCs) stay within a major version and never break old clients — Protobuf's compatibility rules and Buf's `breaking` lint enforce it in CI. Breaking changes require a major bump (a new `.proto` package) and a documented migration; both versions can coexist on the wire during the transition.
 
 The portability promise — "any OHD instance can import any other instance's export" — applies across operators, across versions (within compatibility windows), and across deployments. The export format is the durable contract; components implement it.

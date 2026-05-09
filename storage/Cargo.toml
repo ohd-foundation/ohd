@@ -1,0 +1,168 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/ohd-storage-core",
+    "crates/ohd-storage-server",
+    "crates/ohd-storage-bindings",
+    "crates/ohd-storage-conformance",
+    # Shared CLI helper crates (consumed by ../connect/cli/ and
+    # ../emergency/cli/ via path deps that walk up out of the storage
+    # tree). Both CLIs used to carry near-identical copies of these
+    # modules; centralising them here keeps the workspace single-source.
+    "crates/ohd-cli-kms",
+    "crates/ohd-cli-auth",
+    # HTTP/3 helpers shared between ohd-storage-server and ../../relay/.
+    # Same QUIC + h3 + rustls plumbing on both sides; the only divergence
+    # is the per-request dispatch glue (ConnectRpcService vs axum::Router),
+    # which stays in each binary.
+    "crates/ohd-h3-helpers",
+]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2021"
+# Bumped from 1.83 → 1.88 for connectrpc 0.4 / buffa 0.5 (those crates declare
+# rust-version = 1.88 because their generated code uses edition-2024 syntax).
+# System toolchains used by CI are 1.94.
+rust-version = "1.88"
+license = "Apache-2.0 OR MIT"
+authors = ["OHD contributors"]
+repository = "https://github.com/ohd-foundation/ohd"
+description = "OHD Storage — the data layer of the Open Health Data protocol"
+readme = "README.md"
+
+[workspace.dependencies]
+# Core utilities used across crates.
+anyhow = "1"
+thiserror = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# CLI for the server binary
+clap = { version = "4", features = ["derive", "env"] }
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# SQLite + SQLCipher engine.
+rusqlite = { version = "0.32", features = ["bundled-sqlcipher"] }
+
+# Serde for JSON encodings (audit query_params_json, payload_json, OHDC JSON wire).
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Crypto: per-token storage hashing, ULID random bytes, secure key handling.
+zeroize = { version = "1", features = ["zeroize_derive"] }
+rand = "0.8"
+sha2 = "0.10"
+hex = "0.4"
+base32 = "0.5"
+
+# Channel-level end-to-end encryption (P0/P1 of the channel-encryption pass —
+# see `crates/ohd-storage-core/src/channel_encryption.rs`). aes-gcm provides
+# AES-256-GCM AEAD; hkdf is HKDF-SHA256 used to derive K_envelope from K_file
+# (and K_class material from K_envelope per sensitivity class). ciborium is
+# the CBOR codec that serializes ChannelScalar values before they hit the
+# AEAD — picked over JSON for compactness (the encrypted-blob row is heavier
+# than a plaintext value column already, and CBOR is canonical-deterministic
+# enough for byte-identical round-trips on the same value).
+aes-gcm = { version = "0.10", default-features = false, features = ["aes", "alloc", "rand_core"] }
+# XChaCha20-Poly1305 (192-bit nonce) — used for value-side AEAD (channel
+# values + attachment payloads) post the Codex security review (finding #1:
+# AES-GCM 96-bit nonce birthday bound under long-lived K_class). The
+# `stream` feature enables `aead::stream` for chunked streaming encryption
+# of attachment payloads (finding #6: avoid plaintext residency in
+# `AttachmentWriter::finalize`). AES-GCM stays as the algorithm for the
+# `class_keys.wrapped_key` wrap and ECDH grant wraps — wrap volume is bounded
+# (per-class, per-grant, per-attachment-DEK) so the 96-bit nonce is fine
+# there.
+chacha20poly1305 = { version = "0.10", default-features = false, features = ["alloc", "rand_core", "stream"] }
+hkdf = "0.12"
+ciborium = "0.2"
+# BIP39 mnemonic for the K_recovery hierarchy. `tiny-bip39` is a pure-Rust impl
+# (no C deps); `pbkdf2` is BIP39's standard PBKDF2-SHA512 stretch (2048 rounds).
+# Both pure Rust so the cdylib bindings build cleanly under cargo-ndk too.
+tiny-bip39 = "1"
+pbkdf2 = { version = "0.12", default-features = false }
+hmac = "0.12"
+
+# X25519 ECDH for multi-storage grant key re-targeting (per-storage recovery
+# keypair → ECDH(seckey_A, pubkey_B) → HKDF-SHA256 wrap KEK). Pure Rust; the
+# `static_secrets` feature exposes a constructor that lets us hold the secret
+# key in a Zeroizing wrapper across the unwrap boundary.
+x25519-dalek = { version = "2", default-features = false, features = ["zeroize", "static_secrets"] }
+
+# Ed25519 signature verification for source signing (high-trust integrations
+# like Libre / Dexcom / lab providers). RS256 / ES256 fall back to the
+# already-vendored `jsonwebtoken` types for shared verifier surface.
+ed25519-dalek = { version = "2", default-features = false, features = ["std", "pkcs8", "pem"] }
+
+# JWT verification for multi-identity account linking. Validates id_tokens
+# returned from a linked OIDC issuer against its JWKS (RS256 / ES256). The
+# JWKS itself is fetched outside this crate via a `JwksResolver` trait so the
+# core stays HTTP-client-agnostic; tests inject in-memory keys, production
+# wires a hyper-based fetcher in the server crate.
+jsonwebtoken = "9"
+
+# Compression for sample-block codecs (P0). Pure-Rust ruzstd avoids the C
+# dependency on libzstd and keeps the workspace single-crate-tree (the rest of
+# the build is already pure Rust except SQLCipher's C compile). Encoding side
+# uses `zstd` (with-bindgen-free `pkg-config`-disabled) — pure-Rust encoders
+# don't yet match libzstd determinism. See sample_codec.rs for codec details.
+zstd = { version = "0.13", default-features = false }
+
+# HTTP client used by the storage server's HTTP-fetching JWKS resolver
+# (`crates/ohd-storage-server/src/jwks.rs`). reqwest with rustls so we don't
+# pull native-tls / openssl into the build cache. `blocking` enabled because
+# the JwksResolver trait is sync (it's called from inside `with_conn_mut`
+# closures where the SQLite mutex is held).
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "blocking", "json"] }
+
+# HTTP / Connect-RPC stack for the OHDC wire transport.
+#
+# - connectrpc 0.4: Tower-based ConnectRPC runtime (Anthropic). Speaks Connect,
+#   gRPC, and gRPC-Web on the same handlers. Built on hyper / hyper-util for
+#   HTTP/1.1 + HTTP/2; the HTTP/3 path is wired via the storage server's own
+#   `http3.rs` module on top of quinn + h3 (see STATUS.md "HTTP/3
+#   (in-binary) — landed"). `ConnectRpcService` is a transport-agnostic
+#   `tower::Service<http::Request<B>>`, so both transports share one service.
+# - buffa 0.5: pure-Rust Protobuf with first-class views (zero-copy decode).
+#   Generated message types are owned + view + serde JSON.
+# - axum 0.7: still used for the non-RPC `/health` route plumbing and the
+#   `into_axum_service()` mount point.
+connectrpc = { version = "0.4", features = ["axum", "server", "client", "streaming"] }
+buffa = { version = "0.5", features = ["json"] }
+buffa-types = { version = "0.5", features = ["json"] }
+http = "1"
+http-body = "1"
+http-body-util = "0.1"
+hyper = "1"
+hyper-util = { version = "0.1", features = ["tokio", "server", "server-auto", "service"] }
+bytes = "1"
+futures = "0.3"
+
+axum = { version = "0.7", features = ["macros"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["trace"] }
+
+# HTTP/3 (QUIC) transport. quinn provides the QUIC connection / endpoint
+# layer on rustls; h3 layers HTTP/3 on top; h3-quinn bridges them. rcgen
+# generates self-signed certs for dev / tests. rustls is pinned to the
+# `ring` crypto provider (vs aws-lc-rs default) to avoid pulling the
+# aws-lc-sys C build into our cache; quinn's default also enables ring.
+quinn = "0.11"
+h3 = "0.0"
+h3-quinn = "0.0"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+rustls-pemfile = "2"
+rcgen = { version = "0.13", default-features = false, features = ["pem", "ring"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+
+[profile.dev]
+opt-level = 0
+debug = true

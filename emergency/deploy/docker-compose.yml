@@ -1,0 +1,91 @@
+# Reference Docker Compose deployment for an EMS station running OHD Emergency.
+#
+# Topology (per ../SPEC.md "Deployment shape"):
+#
+#   internet  ──→  caddy  ──→  relay (emergency-authority mode)
+#                          ╲
+#                           ──→  dispatch-web (Vite-built static SPA)
+#                          ╲
+#                           ──→  postgres-records (operator-side records DB)
+#
+#   - relay holds the org's Fulcio-issued 24h authority cert. Refresh daemon
+#     runs in the relay container; key material lives in a host-mounted secret
+#     volume backed by HSM / TPM in production.
+#   - dispatch-web is a static build served by caddy.
+#   - postgres-records holds the operator's incident records (separate from
+#     patient OHD). Encrypt at rest at the volume layer (LUKS in prod).
+#
+# This file is the reference; production deployments will adapt it for their
+# infrastructure (k8s, Hetzner, AWS, etc.). The compose file is for small
+# stations running directly off Docker.
+
+services:
+  # OHD Relay in emergency-authority mode. Source: ../../relay/.
+  # The image tag pinned here is a placeholder; the relay binary lives in the
+  # ../relay/ component and is built by that team.
+  relay:
+    image: ohd/ohd-relay:latest # TBD — pin to a real tag once ../relay/ ships
+    restart: unless-stopped
+    environment:
+      OHD_RELAY_MODE: emergency-authority
+      OHD_RELAY_AUTHORITY_MODE: "true"
+      OHD_RELAY_OPERATOR_LABEL: "${OPERATOR_LABEL}"
+      OHD_RELAY_AUTHORITY_OIDC_ISSUER: "${AUTHORITY_OIDC_ISSUER}"
+      OHD_RELAY_FULCIO_URL: "${FULCIO_URL}"
+      OHD_RELAY_OPERATOR_IDP_ISSUER: "${OPERATOR_IDP_ISSUER}"
+      OHD_RELAY_OPERATOR_RECORDS_DSN: "postgres://records:${POSTGRES_PASSWORD}@postgres-records:5432/operator_records"
+    volumes:
+      - relay-cert:/var/lib/ohd-relay/cert # 24h cert refresh storage
+      - relay-state:/var/lib/ohd-relay/state # registration / session state
+    expose:
+      - "8443" # OHDC traffic, fronted by caddy
+    depends_on:
+      - postgres-records
+
+  # Dispatch console SPA, built from ../dispatch/ and served as a static bundle.
+  dispatch-web:
+    image: caddy:2
+    restart: unless-stopped
+    volumes:
+      - ../dispatch/dist:/srv:ro
+      - ./Caddyfile.dispatch:/etc/caddy/Caddyfile:ro
+    expose:
+      - "8080"
+
+  # Operator-side records DB. Separate from patient OHD.
+  postgres-records:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: operator_records
+      POSTGRES_USER: records
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
+    volumes:
+      - postgres-records-data:/var/lib/postgresql/data
+      # In production: this volume mount must be on a LUKS-encrypted disk per
+      # ../SPEC.md "Security" / ../../spec/docs/components/emergency.md "Security".
+    expose:
+      - "5432"
+
+  # TLS termination, HTTP/3, reverse proxy.
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp" # HTTP/3
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - relay
+      - dispatch-web
+
+volumes:
+  relay-cert:
+  relay-state:
+  postgres-records-data:
+  caddy-data:
+  caddy-config:

@@ -1,0 +1,41 @@
+# Caddyfile for an EMS station's OHD Emergency deployment.
+#
+# Two virtual hosts:
+#   relay.<operator-domain>     — OHDC over HTTP/3 + emergency-authority endpoints
+#   dispatch.<operator-domain>  — dispatch console SPA
+#
+# Replace {$OPERATOR_DOMAIN} with the operator's actual domain (e.g. ems-prague.cz).
+# Caddy auto-issues TLS certs from Let's Encrypt.
+
+{
+	# Global options
+	email {$OPERATOR_ADMIN_EMAIL}
+	# Enable HTTP/3 (default in Caddy 2.6+, here for clarity)
+	servers {
+		protocols h1 h2 h3
+	}
+}
+
+relay.{$OPERATOR_DOMAIN} {
+	encode zstd gzip
+	reverse_proxy relay:8443 {
+		# OHDC is Connect-RPC; relay terminates its own TLS for the
+		# emergency-authority endpoints. For the OHDC tunnel forwarding,
+		# the relay sees ciphertext (TLS terminates between consumer and
+		# patient storage). Caddy is just the operator-domain front door.
+		transport http {
+			versions h2c h3
+		}
+	}
+	log {
+		output file /var/log/caddy/relay.access.log
+	}
+}
+
+dispatch.{$OPERATOR_DOMAIN} {
+	encode zstd gzip
+	reverse_proxy dispatch-web:8080
+	log {
+		output file /var/log/caddy/dispatch.access.log
+	}
+}

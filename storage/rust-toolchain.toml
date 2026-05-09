@@ -1,0 +1,9 @@
+# Rust toolchain pin.
+#
+# 1.88.0 is the floor — required by `connectrpc` 0.4 and `buffa` 0.5, which
+# emit edition-2024 generated code. The MSRV is mirrored in the workspace
+# `Cargo.toml` (`rust-version = "1.88"`).
+[toolchain]
+channel = "1.88.0"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

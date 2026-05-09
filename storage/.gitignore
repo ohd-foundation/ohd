@@ -1,0 +1,23 @@
+# Rust
+/target
+**/target/
+Cargo.lock.bak
+*.rs.bk
+
+# Buf-generated code (committed only when explicitly published; codegen output is normally fresh)
+/gen
+/proto/gen
+
+# Editor / OS noise
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Local secrets and runtime data
+*.env
+*.db
+*.db-wal
+*.db-shm
+/blobs/
+/data/

@@ -1,0 +1,26 @@
+# OHD Storage server — packaged config placeholder.
+#
+# The current ohd-storage-server CLI takes every option via flags (see
+# `ohd-storage-server serve --help`). This file is shipped as a config
+# anchor for future config-file support and as a place to keep operator
+# notes. The systemd unit (`/lib/systemd/system/ohd-storage.service`)
+# uses flags directly today.
+#
+# Override the systemd ExecStart by editing the unit (or, preferred,
+# `systemctl edit ohd-storage.service`) — not this file.
+#
+# Common things to change after install:
+#
+#   * Listen on TLS instead of cleartext h2c. Provision a cert/key pair
+#     and pass `--http3-cert /etc/ohd-storage/tls.crt --http3-key
+#     /etc/ohd-storage/tls.key` to the unit's `ExecStart`. For HTTP/2,
+#     front the binary with Caddy or nginx.
+#
+#   * Encrypt the database at rest with SQLCipher: pass `--cipher-key
+#     <hex>` (32 bytes hex). Production deployments should source the
+#     key from `LoadCredential=` rather than the CLI directly.
+#
+# See /usr/share/doc/ohd-storage/README.md and the OHD Storage deploy
+# README for the full operator playbook.
+
+# Reserved for future config-file support. Empty for now.

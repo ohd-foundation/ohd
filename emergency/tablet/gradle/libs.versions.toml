@@ -1,0 +1,73 @@
+#
+# OHD Emergency tablet — version catalogue.
+#
+# Pinned floor for every plugin / library used by the :app module. Mirrors
+# the connect/android pin set so the two Android apps share a stable
+# dependency surface (BOM, JNA, Compose, Material3) — diverging only where
+# Emergency genuinely needs a different floor (e.g. minSdk = 30 for
+# Bluetooth_SCAN's `neverForLocation` flag, vs Connect's 29).
+#
+# Kept in `libs.versions.toml` rather than inline `dependencies { ... }`
+# blocks because:
+#   - The Compose BOM + per-tooling pins are easy to drift across modules.
+#   - Future modules (e.g. a `:shared` module hosting OHDC clients) will
+#     pull from the same catalogue.
+#   - When the OHDC Kotlin client lands, its coordinates land here so they
+#     can be referenced as `libs.ohdc.kotlin` from the :app module.
+#
+# Usage from app/build.gradle.kts:
+#
+#     dependencies {
+#         implementation(platform(libs.androidx.compose.bom))
+#         implementation(libs.androidx.activity.compose)
+#         ...
+#     }
+
+[versions]
+agp = "8.6.1"
+kotlin = "2.0.21"
+composeBom = "2024.10.01"
+activityCompose = "1.9.3"
+coreKtx = "1.13.1"
+lifecycleRuntimeKtx = "2.8.7"
+navigationCompose = "2.8.4"
+viewmodelCompose = "2.8.7"
+jna = "5.14.0"
+kotlinxCoroutines = "1.9.0"
+junit = "4.13.2"
+androidxJunit = "1.2.1"
+espresso = "3.6.1"
+
+[libraries]
+androidx-compose-bom = { module = "androidx.compose:compose-bom", version.ref = "composeBom" }
+androidx-activity-compose = { module = "androidx.activity:activity-compose", version.ref = "activityCompose" }
+androidx-core-ktx = { module = "androidx.core:core-ktx", version.ref = "coreKtx" }
+androidx-lifecycle-runtime-ktx = { module = "androidx.lifecycle:lifecycle-runtime-ktx", version.ref = "lifecycleRuntimeKtx" }
+androidx-lifecycle-viewmodel-compose = { module = "androidx.lifecycle:lifecycle-viewmodel-compose", version.ref = "viewmodelCompose" }
+androidx-navigation-compose = { module = "androidx.navigation:navigation-compose", version.ref = "navigationCompose" }
+
+androidx-compose-ui = { module = "androidx.compose.ui:ui" }
+androidx-compose-ui-graphics = { module = "androidx.compose.ui:ui-graphics" }
+androidx-compose-ui-tooling = { module = "androidx.compose.ui:ui-tooling" }
+androidx-compose-ui-tooling-preview = { module = "androidx.compose.ui:ui-tooling-preview" }
+androidx-compose-ui-test-manifest = { module = "androidx.compose.ui:ui-test-manifest" }
+androidx-compose-ui-test-junit4 = { module = "androidx.compose.ui:ui-test-junit4" }
+androidx-compose-material3 = { module = "androidx.compose.material3:material3" }
+androidx-compose-material-icons-core = { module = "androidx.compose.material:material-icons-core" }
+androidx-compose-material-icons-extended = { module = "androidx.compose.material:material-icons-extended" }
+
+# JNA — uniffi 0.28's Kotlin codegen routes every FFI call through `com.sun.jna.*`.
+# `@aar` is critical: the plain JAR is JVM-only and lacks the Android native loader stubs.
+jna = { module = "net.java.dev.jna:jna", version.ref = "jna" }
+
+kotlinx-coroutines-android = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-android", version.ref = "kotlinxCoroutines" }
+kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "kotlinxCoroutines" }
+
+junit = { module = "junit:junit", version.ref = "junit" }
+androidx-test-ext-junit = { module = "androidx.test.ext:junit", version.ref = "androidxJunit" }
+androidx-test-espresso = { module = "androidx.test.espresso:espresso-core", version.ref = "espresso" }
+
+[plugins]
+android-application = { id = "com.android.application", version.ref = "agp" }
+kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
+kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }

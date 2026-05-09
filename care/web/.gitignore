@@ -1,0 +1,15 @@
+# Build / TS / test outputs (per-package — root .gitignore covers node_modules, dist/, etc.)
+node_modules/
+dist/
+*.tsbuildinfo
+coverage/
+
+# Stale tsc emit (we use noEmit + vite — these should never be committed)
+src/**/*.js
+src/**/*.js.map
+src/**/*.d.ts
+vite.config.js
+
+# Generated TypeScript Connect-RPC client. Produced by `pnpm gen` from the
+# storage component's protos. Re-generated whenever the protos change.
+src/gen/

@@ -1,0 +1,13 @@
+#!/bin/sh
+# postrm maintainer script for ohd-care (Python).
+
+set -e
+
+case "$1" in
+    purge)
+        rm -rf /usr/lib/ohd-care
+        ;;
+    remove|upgrade|failed-upgrade|abort-install|abort-upgrade|disappear) ;;
+esac
+
+exit 0

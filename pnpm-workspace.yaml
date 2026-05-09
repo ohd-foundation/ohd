@@ -1,0 +1,5 @@
+packages:
+  - "connect/web"
+  - "care/web"
+  - "emergency/dispatch"
+  - "packages/web/*"

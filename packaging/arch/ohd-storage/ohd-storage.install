@@ -1,0 +1,57 @@
+# Arch pacman .install scriptlet for ohd-storage.
+# Creates the system user/group, seeds /var/lib/ohd-storage, and reloads
+# systemd. Equivalent of the Debian postinst, but Arch's `useradd -r`
+# replaces `adduser --system`.
+
+post_install() {
+    if ! getent group ohd-storage >/dev/null; then
+        groupadd --system ohd-storage
+    fi
+    if ! getent passwd ohd-storage >/dev/null; then
+        useradd --system \
+            --gid ohd-storage \
+            --home-dir /var/lib/ohd-storage \
+            --no-create-home \
+            --shell /usr/bin/nologin \
+            --comment "OHD Storage server" \
+            ohd-storage
+    fi
+
+    install -d -m 0750 -o ohd-storage -g ohd-storage /var/lib/ohd-storage
+
+    systemd-tmpfiles --create >/dev/null 2>&1 || true
+    systemctl daemon-reload >/dev/null 2>&1 || true
+
+    cat <<'EOF'
+==> ohd-storage installed.
+    Initialize the database (one-time):
+      sudo -u ohd-storage ohd-storage-server init --db /var/lib/ohd-storage/storage.db
+    Issue a self-session token (write it down — there is no recovery):
+      sudo -u ohd-storage ohd-storage-server issue-self-token --db /var/lib/ohd-storage/storage.db
+    Then start the service:
+      systemctl enable --now ohd-storage.service
+EOF
+}
+
+post_upgrade() {
+    systemctl daemon-reload >/dev/null 2>&1 || true
+    systemctl try-restart ohd-storage.service >/dev/null 2>&1 || true
+}
+
+pre_remove() {
+    systemctl stop ohd-storage.service >/dev/null 2>&1 || true
+    systemctl disable ohd-storage.service >/dev/null 2>&1 || true
+}
+
+post_remove() {
+    if getent passwd ohd-storage >/dev/null; then
+        userdel ohd-storage >/dev/null 2>&1 || true
+    fi
+    if getent group ohd-storage >/dev/null; then
+        groupdel ohd-storage >/dev/null 2>&1 || true
+    fi
+    # Leave /var/lib/ohd-storage in place — it holds the SQLCipher DB.
+    # Operator can `rm -rf /var/lib/ohd-storage` manually if they want a
+    # clean slate.
+    systemctl daemon-reload >/dev/null 2>&1 || true
+}

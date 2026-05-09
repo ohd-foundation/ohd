@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Auto-backup rules for OHD Emergency.
+
+    Per `SPEC.md` "Tablet device-management expectations": the operator's
+    MDM owns full-disk encryption + remote wipe. The app contributes its
+    own data-extraction policy on top:
+
+      - The local case-vault cache (`case_vault.db`) is excluded from cloud
+        backup. Cached patient PHI must NOT survive on a Google-Drive backup
+        beyond the active case. Per `SPEC.md` "Trust boundary":
+            > Patient OHDC data: Cached in tablet RAM during active case;
+            >                    flushed on case close.
+        We treat the disk-backed cache the same way.
+
+      - The operator OIDC bearer in EncryptedSharedPreferences is excluded
+        for the same reason — the bearer is bound to the operator IdP +
+        roster, and a backup containing a stale bearer would be a roster-
+        bypass vulnerability.
+
+      - Plain SharedPreferences (the v0 first-run flag store) are allowed
+        through. Loss is harmless (operator just signs in again).
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <!--
+            SQLiteOpenHelper places case_vault.db under
+            /data/data/<pkg>/databases/ (domain="database"); the
+            QueuedWriteStore-backed offline queue lives there. We list
+            both database+file domains (defense in depth: if a future
+            revision moves the file, exclusion still holds).
+        -->
+        <exclude domain="database" path="case_vault.db" />
+        <exclude domain="database" path="case_vault.db-wal" />
+        <exclude domain="database" path="case_vault.db-shm" />
+        <exclude domain="file" path="case_vault.db" />
+        <exclude domain="file" path="case_vault.db-wal" />
+        <exclude domain="file" path="case_vault.db-shm" />
+        <exclude domain="sharedpref" path="ohd_emergency_secure.xml" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="database" path="case_vault.db" />
+        <exclude domain="database" path="case_vault.db-wal" />
+        <exclude domain="database" path="case_vault.db-shm" />
+        <exclude domain="file" path="case_vault.db" />
+        <exclude domain="file" path="case_vault.db-wal" />
+        <exclude domain="file" path="case_vault.db-shm" />
+        <exclude domain="sharedpref" path="ohd_emergency_secure.xml" />
+    </device-transfer>
+</data-extraction-rules>

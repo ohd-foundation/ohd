@@ -1,0 +1,93 @@
+# OHD Relay — example deployment config
+#
+# Copy to `relay.toml` and edit. Secrets should NOT live here — reference
+# them via filesystem paths to mounted secrets (Docker secrets,
+# Kubernetes sealed-secrets, systemd LoadCredential=, etc.).
+#
+# CLI flags (`--bind`, `--port`, `--db`, `--http3-listen`, `--http3-cert`,
+# `--http3-key`) override the equivalent file values where they overlap.
+# The CLI is the source of truth for transport bindings; this file is the
+# source of truth for push providers and authority-mode wiring.
+
+# -----------------------------------------------------------------------------
+# Public hostname
+# -----------------------------------------------------------------------------
+# Used to compose `rendezvous_url` in register responses:
+#   wss://<public_host>/v1/tunnel/<rendezvous_id>
+#
+# The relay sits behind Caddy in production; Caddy terminates outer TLS,
+# so consumers see `wss://` regardless of the relay's HTTP listener.
+# When omitted, the relay uses its bind address — fine for dev / tests.
+public_host = "relay.example.com"
+
+# -----------------------------------------------------------------------------
+# Push providers
+# -----------------------------------------------------------------------------
+#
+# The relay touches push only on the silent tunnel-wake path: when a
+# consumer attaches but the storage's tunnel is down, the relay sends a
+# data-only `{"category":"tunnel_wake","ref_ulid":"<rendezvous_id>"}`
+# payload to wake the device. NEVER any PHI in push payloads — see
+# `spec/notifications.md`.
+#
+# Authority mode additionally sends iOS Critical Alerts for the loud
+# emergency-access wake path (gated by Apple's Critical Alert
+# entitlement, applied for separately on the OHD Connect bundle ID).
+
+[push.fcm]
+# Firebase / GCP project ID. Substituted into the messages:send URL:
+#   https://fcm.googleapis.com/v1/projects/<project_id>/messages:send
+project_id = "ohd-cloud"
+# Service-account JSON, mounted as a secret.
+# Generated via `gcloud iam service-accounts keys create ...` on a
+# service account that has `roles/firebasecloudmessaging.messageDeliverer`.
+service_account_path = "/run/secrets/fcm_service_account.json"
+
+[push.apns]
+team_id   = "ABC123XYZ4"           # Apple Developer team ID
+key_id    = "DEF456UVW9"           # APNs auth-key ID (.p8 filename suffix)
+bundle_id = "org.ohd.connect"      # OHD Connect iOS bundle ID
+# .p8 token-auth key, mounted as a secret. Created in the Apple Developer
+# console under "Keys" → "Apple Push Notification service".
+key_path  = "/run/secrets/apns_key.p8"
+# `production` (default) talks to api.push.apple.com.
+# `sandbox` / `development` talks to api.development.push.apple.com.
+environment = "production"
+
+# -----------------------------------------------------------------------------
+# Emergency-authority mode (only honored when built with
+# `--features authority`).
+#
+# When enabled, the relay:
+#   - daily-refreshes a 24h Fulcio-issued authority cert,
+#   - signs `EmergencyAccessRequest` Protobuf payloads,
+#   - exposes `POST /v1/emergency/initiate`.
+#
+# OIDC token rotation is handled by the deployment system (sealed-secret
+# rotator, k8s OIDC mount, etc.); the relay re-reads the file on each
+# refresh.
+#
+# See `spec/emergency-trust.md` for the full trust model + cert chain.
+# -----------------------------------------------------------------------------
+[authority]
+enabled = false
+
+# OHD-operated Fulcio. One per trust root; Czech / German / Global etc.
+# share the same wire surface; the per-region URL pins to the issuing
+# intermediate.
+fulcio_url   = "https://fulcio.openhealth-data.org"
+oidc_idp_url = "https://idp.openhealth-data.org/emergency"
+
+# Optional Rekor transparency-log endpoint. Failures are soft-logged, not
+# fatal — Rekor is auditing infrastructure, not gating infrastructure.
+rekor_url = "https://rekor.openhealth-data.org"
+
+# Mounted OIDC ID-token. The relay re-reads this on every refresh. Token
+# rotation is the deployment system's job (cert-manager, sealed-secrets,
+# OIDC sidecar, etc.).
+oidc_id_token_path = "/run/secrets/authority_oidc_id_token"
+
+# Subject CN baked into the issued cert. Surfaced as `operator_label` on
+# patient-side break-glass dialogs.
+org_label   = "EMS Example Region"
+org_country = "CZ"

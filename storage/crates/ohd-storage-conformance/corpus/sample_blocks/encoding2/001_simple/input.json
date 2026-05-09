@@ -1,0 +1,10 @@
+{
+  "scale": 1.0,
+  "offset": 0.0,
+  "samples": [
+    { "t_offset_ms": 0, "value": 60.0 },
+    { "t_offset_ms": 1000, "value": 65.0 },
+    { "t_offset_ms": 2000, "value": 70.0 },
+    { "t_offset_ms": 4000, "value": 68.0 }
+  ]
+}

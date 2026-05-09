@@ -161,7 +161,7 @@ volumes:
     encode zstd gzip
 
     # OHDC Connect-RPC service — every OHDC operation lives under this.
-    handle /ohdc.v1.OhdcService/* {
+    handle /ohdc.v0.OhdcService/* {
         reverse_proxy ohd-storage:8000
     }
 

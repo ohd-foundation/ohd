@@ -1,0 +1,206 @@
+[package]
+name = "ohd-storage-server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "OHD Storage server binary — Connect-RPC over HTTP/2 + HTTP/3"
+readme = "../../README.md"
+default-run = "ohd-storage-server"
+build = "build.rs"
+
+[[bin]]
+name = "ohd-storage-server"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+ohd-storage-core = { path = "../ohd-storage-core" }
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+hex.workspace = true
+# Direct rusqlite dep so the `pending approve` subcommand can drive a transaction
+# end-to-end. (The same connection comes through `ohd-storage-core::Storage`,
+# which transitively exposes rusqlite types via its `with_conn_mut` closure.)
+rusqlite = { workspace = true }
+
+# Connect-RPC + Protobuf transport stack.
+connectrpc.workspace = true
+buffa.workspace = true
+buffa-types.workspace = true
+# JWT verification surface for the multi-identity AuthService linking flow.
+# `jwks.rs` exposes `HttpJwksResolver` (an in-memory pre-load resolver in
+# v1; the HTTP-fetcher path is v1.x). The core's `JwksResolver` trait keeps
+# the storage crate HTTP-client-agnostic; the binary can swap in a network
+# fetcher.
+jsonwebtoken.workspace = true
+# Reqwest with rustls for the HTTP-fetching JWKS resolver. Blocking client —
+# JwksResolver::resolve is sync (called inside SQLite-mutex-held closures).
+reqwest.workspace = true
+http.workspace = true
+http-body.workspace = true
+http-body-util.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
+bytes.workspace = true
+futures.workspace = true
+
+# axum is retained because connectrpc's axum integration emits
+# `into_axum_service()` for tower::Service mounting plus the `/health` HTTP
+# probe is plain axum.
+axum.workspace = true
+tower.workspace = true
+# CORS layer for browser dev (Care web at http://localhost:5173 hitting the
+# storage at http://localhost:18443). Production should front with Caddy.
+# `cors` feature is the only one we need; `trace` is already enabled in the
+# workspace dep.
+tower-http = { workspace = true, features = ["cors", "trace"] }
+
+# HTTP/3 (QUIC) transport. The Connect-RPC handlers run unchanged on top of
+# `ConnectRpcService` (a `tower::Service<http::Request<B>>`). `src/http3.rs`
+# wraps an `h3-quinn` accept loop, builds an `http::Request` from each
+# accepted stream, calls into `ConnectRpcService::clone()`, and pumps the
+# response body back over `h3::server::RequestStream::send_data`.
+#
+# Cert loading + QUIC `ServerConfig` setup + the streaming-body adapter
+# are factored into `ohd-h3-helpers` so the relay's mirror file can use
+# the same primitives. The transport-specific bits (h3-quinn accept loop
+# proper) still live here but call into the helpers for the per-request
+# body wiring.
+ohd-h3-helpers = { path = "../ohd-h3-helpers" }
+quinn.workspace = true
+h3.workspace = true
+h3-quinn.workspace = true
+rustls.workspace = true
+# rustls-pemfile + rcgen are pulled in transitively via ohd-h3-helpers
+# but we keep direct deps because relay_client.rs references rustls and
+# the test surface uses rcgen.
+rustls-pemfile.workspace = true
+rcgen.workspace = true
+
+# Outbound raw QUIC tunnel client (`src/relay_client.rs`). Connects to the
+# relay's `--quic-tunnel-listen` endpoint with ALPN `ohd-tnl1`, demuxes
+# server-initiated bidi streams onto the local Connect-RPC service. The
+# wire shape matches `relay/src/quic_tunnel.rs`; reference client lives at
+# `relay/examples/quic_tunnel_client.rs`.
+#
+# `rustls-platform-verifier` provides the OS-trust-store fallback for the
+# regular WebPKI path; `sha2` powers the SPKI-pin verifier that operators
+# can opt into via the `--relay-cert-pin` flag.
+sha2.workspace = true
+rustls-platform-verifier = "0.6"
+
+# OAuth/OIDC IdP endpoints (`src/oauth.rs`). Storage can optionally act as its
+# own issuer when `--oauth-issuer URL` is set. Runtime deps:
+#  - `rsa`: 2048-bit RSA keypair generation for RS256 id_token signing.
+#  - `base64`: url-safe-no-pad for PKCE challenges + JWK n/e encoding.
+#  - `aes-gcm`: encrypts the stored RSA private key under the storage's
+#    `EnvelopeKey` (already a workspace dep for channel encryption).
+#  - `rand`: CSPRNG for codes / nonces / kids.
+#  - `serde`/`serde_json`: form + JSON encoding (already pulled in).
+rsa = "0.9"
+base64 = "0.22"
+aes-gcm.workspace = true
+rand.workspace = true
+
+[build-dependencies]
+# Build-time codegen: connectrpc-build invokes protoc to produce a
+# FileDescriptorSet, then runs connectrpc-codegen to emit buffa message types
+# + service traits/clients into $OUT_DIR.
+connectrpc-build = "0.4"
+# Vendored protoc binary so consumers don't need a system-installed protoc.
+protoc-bin-vendored = "3"
+
+[dev-dependencies]
+tempfile = "3"
+# auth_identity_e2e.rs spins up a mock OIDC issuer (RSA-signed id_tokens). The
+# OAuth IdP path now uses `rsa` + `base64` as production deps (above), so the
+# dev-deps stay only for the rest of the test surface that hasn't migrated.
+jsonwebtoken = { workspace = true }
+# OAuth e2e tests drive HTTP against the in-process server. The workspace
+# `reqwest` is `blocking` only; the test uses async, so we add an async-flavoured
+# variant here (still rustls, no native-tls).
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+# source_signing_e2e.rs needs the signing side (test-only).
+ed25519-dalek = { workspace = true, features = ["rand_core", "pkcs8", "pem"] }
+rand = { workspace = true }
+
+# -----------------------------------------------------------------------------
+# Distribution packaging — cargo-deb (.deb) and cargo-generate-rpm (.rpm).
+#
+# Build:
+#   cargo deb -p ohd-storage-server                 # Debian/Ubuntu
+#   cargo generate-rpm -p ohd-storage-server        # Fedora/RHEL/openSUSE
+#
+# License-file paths point at ../../spec/LICENSE-* — the dual-license tree
+# lives in the cross-component `spec/` directory; per-binary copies are not
+# duplicated in-tree. cargo-deb's `["path", "depth"]` form rewrites the
+# path inside the .deb to /usr/share/doc/ohd-storage/copyright (the depth
+# = 0 means "drop the leading `../../spec/`" — the file ships under its
+# basename).
+#
+# systemd unit + maintainer scripts live under /home/jakub/contracts/
+# personal/ohd/packaging/{systemd,debian}/ — relative paths below resolve
+# from this Cargo.toml (crates/ohd-storage-server/) up two levels to the
+# `ohd/` root, then back down.
+# -----------------------------------------------------------------------------
+
+[package.metadata.deb]
+name = "ohd-storage"
+maintainer = "OHD Project <maintainers@ohd.example>"
+copyright = "2026 OHD Project — Apache-2.0 OR MIT"
+license-file = "../../../spec/LICENSE-APACHE"
+extended-description = """\
+OHD Storage hosts per-user health-data files and exposes the OHDC protocol
+(Connect-RPC over HTTP/1.1 + HTTP/2 + HTTP/3). One external surface, three
+auth profiles (self-session / grant token / device token). Storage is the
+data layer of the Open Health Data protocol — a focused, single-purpose
+typed store, not a generic database.
+
+This package ships the `ohd-storage-server` binary plus a systemd unit
+that runs it as the dedicated `ohd-storage` system user against the
+SQLCipher-encrypted database under /var/lib/ohd-storage."""
+section = "net"
+priority = "optional"
+depends = "libc6, ca-certificates, adduser, systemd"
+recommends = "caddy"
+assets = [
+    ["target/release/ohd-storage-server", "usr/bin/", "755"],
+    ["../../../packaging/systemd/ohd-storage.service", "lib/systemd/system/ohd-storage.service", "644"],
+    ["../../../packaging/assets/storage.toml", "etc/ohd-storage/storage.toml", "640"],
+    ["../../README.md", "usr/share/doc/ohd-storage/README.md", "644"],
+]
+conf-files = ["/etc/ohd-storage/storage.toml"]
+maintainer-scripts = "../../../packaging/debian/ohd-storage/"
+
+# Maintainer scripts (postinst / prerm / postrm) live under
+# `packaging/debian/ohd-storage/` named exactly per Debian policy. cargo-deb
+# sets +x on them at build time; the source files don't need the executable
+# bit set on disk.
+
+[package.metadata.generate-rpm]
+name = "ohd-storage"
+license = "Apache-2.0 OR MIT"
+summary = "OHD Storage server (OHDC over Connect-RPC)"
+assets = [
+    { source = "target/release/ohd-storage-server", dest = "/usr/bin/ohd-storage-server", mode = "755" },
+    { source = "../../../packaging/systemd/ohd-storage.service", dest = "/lib/systemd/system/ohd-storage.service", mode = "644", config = false },
+    { source = "../../../packaging/assets/storage.toml", dest = "/etc/ohd-storage/storage.toml", mode = "640", config = true },
+    { source = "../../README.md", dest = "/usr/share/doc/ohd-storage/README.md", mode = "644", doc = true },
+    { source = "../../../spec/LICENSE-APACHE", dest = "/usr/share/licenses/ohd-storage/LICENSE-APACHE", mode = "644", doc = true },
+    { source = "../../../spec/LICENSE-MIT", dest = "/usr/share/licenses/ohd-storage/LICENSE-MIT", mode = "644", doc = true },
+]
+auto-req = "no"
+# Runtime requirements; the SQLCipher build is bundled so we don't need
+# system libssl/libcrypto.
+[package.metadata.generate-rpm.requires]
+glibc = "*"
+ca-certificates = "*"
+shadow-utils = "*"
+systemd = "*"

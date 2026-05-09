@@ -1,0 +1,34 @@
+version: v2
+managed:
+  enabled: true
+plugins:
+  # ---- Rust (the storage core's primary codegen target) ----
+  # Writes prost-compatible message types + tonic / connect-rs service traits.
+  # The implementation phase will pick between `tonic` and `connect-rs`; both
+  # are wire-compatible.
+  - remote: buf.build/community/neoeinstein-prost
+    out: gen/rust/src
+  - remote: buf.build/community/neoeinstein-tonic
+    out: gen/rust/src
+
+  # ---- Kotlin (Android — OHD Connect) ----
+  # Placeholder; pinned in the implementation phase.
+  # - remote: buf.build/connectrpc/kotlin
+  #   out: gen/kotlin
+
+  # ---- Swift (iOS — OHD Connect) ----
+  # Placeholder; pinned in the implementation phase.
+  # - remote: buf.build/connectrpc/swift
+  #   out: gen/swift
+
+  # ---- TypeScript (web — OHD Connect web, OHD Care web) ----
+  # Placeholder; pinned in the implementation phase.
+  # - remote: buf.build/connectrpc/es
+  #   out: gen/ts
+
+  # ---- Python (conformance harness, scripting) ----
+  # Placeholder; pinned in the implementation phase.
+  # - remote: buf.build/protocolbuffers/python
+  #   out: gen/python
+  # - remote: buf.build/protocolbuffers/pyi
+  #   out: gen/python

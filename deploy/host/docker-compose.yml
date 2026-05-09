@@ -1,0 +1,91 @@
+# OHD demo deployment — single-host, single-box on Hetzner ARM (cax11).
+#
+# Brings up:
+#   - ohd-storage   (Rust binary, OHDC over HTTP/2 — HTTP/3 disabled here
+#                    because Caddy fronts; raw QUIC works without h3 listener)
+#   - ohd-relay     (Rust binary, REST + QUIC tunnel)
+#   - caddy         (auto-TLS, reverse proxy, static landing page)
+#
+# Usage:
+#   cd /opt/ohd
+#   docker compose -f deploy/host/docker-compose.yml up --build -d
+#   docker compose -f deploy/host/docker-compose.yml logs -f
+#
+# DNS prerequisite: ohd.dev, www.ohd.dev, storage.ohd.dev, relay.ohd.dev,
+# openhealthdata.org all A-records → this server's IPv4. Caddy needs them
+# in place before issuing certs.
+
+services:
+  ohd-storage:
+    build:
+      context: ../../
+      dockerfile: storage/deploy/Dockerfile
+    image: ohd-storage:dev
+    container_name: ohd-storage
+    restart: unless-stopped
+    expose:
+      - "8443"
+    volumes:
+      - storage_data:/var/lib/ohd-storage
+    environment:
+      RUST_LOG: ${RUST_LOG:-info}
+    networks:
+      - ohd-net
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- --post-data='{}' --header='Content-Type: application/json' http://localhost:8443/ohdc.v0.OhdcService/Health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  ohd-relay:
+    build:
+      context: ../../
+      dockerfile: relay/deploy/Dockerfile
+    image: ohd-relay:dev
+    container_name: ohd-relay
+    restart: unless-stopped
+    expose:
+      - "8443"
+    ports:
+      # Raw QUIC tunnel ALPN ohd-tnl1 — exposed directly on the host so
+      # storage clients can reach it without going through Caddy.
+      - "9001:9001/udp"
+    volumes:
+      - relay_data:/var/lib/ohd-relay
+    environment:
+      RUST_LOG: ${RUST_LOG:-info}
+    networks:
+      - ohd-net
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: ohd-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"   # HTTP/3 to clients, terminated at Caddy
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ../../landing:/srv/ohd-landing:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - ohd-net
+    depends_on:
+      - ohd-storage
+      - ohd-relay
+
+volumes:
+  storage_data:
+    name: ohd_storage_data
+  relay_data:
+    name: ohd_relay_data
+  caddy_data:
+  caddy_config:
+
+networks:
+  ohd-net:
+    name: ohd-net
+    driver: bridge

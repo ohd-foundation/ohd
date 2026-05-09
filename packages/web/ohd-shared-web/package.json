@@ -1,0 +1,30 @@
+{
+  "name": "@ohd/shared-web",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Shared web utilities for OHD Connect, Care, and Emergency SPAs — generic OAuth Code+PKCE flow, OIDC callback page, and useExternalStore hooks.",
+  "type": "module",
+  "license": "Apache-2.0 OR MIT",
+  "exports": {
+    ".": "./src/index.ts",
+    "./oidc": "./src/oidc.ts",
+    "./OidcCallbackPage": "./src/OidcCallbackPage.tsx",
+    "./useExternalStore": "./src/useExternalStore.ts",
+    "./store-types": "./src/store-types.ts"
+  },
+  "peerDependencies": {
+    "oauth4webapi": "^3.8.6",
+    "react": "^18.3.0",
+    "react-dom": "^18.3.0",
+    "react-router-dom": "^6.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.5",
+    "@types/react-dom": "^18.3.0",
+    "oauth4webapi": "^3.8.6",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.26.2",
+    "typescript": "^5.6.3"
+  }
+}

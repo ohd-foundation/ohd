@@ -1,0 +1,31 @@
+[package]
+name = "ohd-cli-kms"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Shared KMS / vault encryption primitives used by the ohd-connect and ohd-emergency CLIs (Argon2id passphrase + OS keyring + None backends)."
+publish = false
+
+[lib]
+name = "ohd_cli_kms"
+path = "src/lib.rs"
+
+[dependencies]
+anyhow.workspace = true
+serde = { workspace = true }
+# AEAD primitives shared across CLIs so a vault file produced by one
+# tool stays openable by the other (same JSON envelope shape, same
+# AES-GCM-256 algorithm, same Argon2id KDF parameters).
+aes-gcm.workspace = true
+argon2 = "0.5"
+base64 = "0.22"
+rand_core = "0.6"
+secrecy = "0.10"
+keyring = "3"
+rpassword = "7"
+
+[dev-dependencies]
+serde_json = "1"

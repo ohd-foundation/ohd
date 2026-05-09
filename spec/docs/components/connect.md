@@ -28,7 +28,7 @@ OHDC is a **Connect-RPC** service defined by **Protobuf** schemas. Picked becaus
 | Default encoding | `application/proto` (Protobuf binary) |
 | Debug encoding | `application/json` (same schema, JSON wire) |
 | TLS | TLS 1.3 required, terminated by Caddy on the operator side, terminated end-to-end through OHD Relay |
-| Path prefix | `/ohdc.v1.OhdcService/<Method>` |
+| Path prefix | `/ohdc.v0.OhdcService/<Method>` |
 
 Mobile clients use platform-native HTTP/3 stacks (URLSession on iOS, Cronet on Android). The Rust core uses `hyper` + `quinn`.
 
@@ -36,7 +36,7 @@ Mobile clients use platform-native HTTP/3 stacks (URLSession on iOS, Cronet on A
 
 For each OHDC version, the project publishes:
 
-- The `.proto` schema files in the `ohd-protocol` repo (`proto/ohdc/v1/*.proto`).
+- The `.proto` schema files in the `ohd-protocol` repo (`proto/ohdc/v0/*.proto`).
 - Generated client libraries: `ohdc-client-rust`, `ohdc-client-kotlin`, `ohdc-client-swift`, `ohdc-client-ts`, `ohdc-client-python`.
 - A reference server stub used by the storage core and by integrators to test against.
 - The conformance corpus (input event sequence + expected query outputs + binary sample-block fixtures); see [`../design/storage-format.md`](../design/storage-format.md).

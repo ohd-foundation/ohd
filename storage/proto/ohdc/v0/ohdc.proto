@@ -1,0 +1,1052 @@
+// OHDC v0 — the single external protocol of OHD Storage.
+//
+// Wire shape: Connect-RPC over HTTP/3 (HTTP/2 fallback) with this Protobuf
+// schema. See ../../../spec/ohdc-protocol.md for the human-readable annotation
+// layer (error model, pagination, idempotency, filter language, streaming
+// patterns, the token-kind matrix). This file is the source of truth for the
+// wire types and operations.
+
+syntax = "proto3";
+
+package ohdc.v0;
+
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/struct.proto";
+
+// =============================================================================
+// Common types
+// =============================================================================
+
+// 128-bit ULID. Wire form is the canonical 16-byte big-endian binary.
+// Implementations may render it as the 26-char Crockford-base32 string for
+// human display only.
+//
+// For events with `timestamp_ms < 0` (pre-1970), the ULID's time prefix is
+// clamped to 0; the 80-bit random portion still guarantees unique identity.
+message Ulid {
+  // Exactly 16 bytes; servers reject other lengths with INVALID_ARGUMENT.
+  bytes bytes = 1;
+}
+
+// A typed scalar value at a leaf channel of an event's channel tree.
+// The `oneof` mirrors the storage's `event_channels.value_*` columns.
+message ChannelValue {
+  // Dot-separated channel path within the event's type, e.g.
+  // "nutrition.fat.saturated". Resolves to a (event_type_id, channel_id) pair
+  // via the registry.
+  string channel_path = 1;
+
+  oneof value {
+    double real_value = 2;
+    int64 int_value = 3;
+    bool bool_value = 4;
+    string text_value = 5;
+    // Ordinal index into the channel's enum_values list. Append-only forever.
+    int32 enum_ordinal = 6;
+  }
+}
+
+// Reference to a sample block stored on the event. The block payload is not
+// inlined in Event responses; clients fetch via OhdcService.ReadSamples.
+message SampleBlockRef {
+  string channel_path = 1;
+  int64 t0_ms = 2;            // absolute start (Unix ms, signed)
+  int64 t1_ms = 3;            // absolute end
+  int32 sample_count = 4;
+  // Codec ID per spec/storage-format.md "Sample blocks":
+  //   1 = delta-zigzag-varint timestamps + float32, zstd
+  //   2 = delta-zigzag-varint timestamps + int16 quantized + scale, zstd
+  int32 encoding = 5;
+}
+
+// Sample block written as part of EventInput. The encoded payload is the
+// compressed bytes per spec/storage-format.md "Sample blocks".
+message SampleBlockInput {
+  string channel_path = 1;
+  int64 t0_ms = 2;
+  int64 t1_ms = 3;
+  int32 sample_count = 4;
+  int32 encoding = 5;
+  bytes data = 6;             // compressed
+}
+
+// Decoded sample row, returned by ReadSamples.
+message Sample {
+  int64 t_ms = 1;
+  double value = 2;
+}
+
+// Reference to a sidecar attachment.
+message AttachmentRef {
+  Ulid ulid = 1;
+  bytes sha256 = 2;            // 32 bytes; addresses the sidecar blob
+  int64 byte_size = 3;
+  string mime_type = 4;        // e.g. "application/dicom", "image/png"
+  string filename = 5;
+}
+
+// Source signature on an EventInput. Signers (Libre, Dexcom, lab providers,
+// hospital EHRs) sign the canonical-CBOR encoding of the event with a key
+// registered via OhdcService.RegisterSigner; storage verifies on insert and
+// records a paired event_signatures row. See
+// `crates/ohd-storage-core/src/source_signing.rs` for the canonical
+// encoding pipeline and verification surface.
+message SourceSignature {
+  // 'ed25519' | 'rs256' | 'es256'.
+  string sig_alg = 1;
+  // KID matching a registered signer (signers.signer_kid).
+  string signer_kid = 2;
+  // Raw signature bytes (Ed25519: 64 bytes; RS256/ES256: variable).
+  bytes signature = 3;
+}
+
+// Decorating info returned alongside a queried Event when the event was
+// committed with a verified source signature. Lets clients render
+// "signed by Libre" / "signed by Quest Diagnostics" badges.
+message SignerInfo {
+  string signer_kid = 1;
+  string signer_label = 2;
+  string sig_alg = 3;
+  // True if the signer's row was revoked at query time. Existing signed
+  // events stay verifiable; only new submissions under a revoked kid are
+  // rejected by put_events.
+  bool revoked = 4;
+}
+
+// Free-form string-keyed metadata. Used sparingly — only for fields that
+// don't fit into typed channels (mirrors of storage columns; vendor-namespaced
+// flags). Never used to carry typed event content.
+message Metadata {
+  map<string, string> entries = 1;
+}
+
+// One health event. Mirrors the on-disk event row plus its joined channels
+// and sample-block / attachment refs.
+message Event {
+  // Identity
+  Ulid ulid = 1;
+  int64 timestamp_ms = 2;       // signed Unix ms; negative = pre-1970
+  optional int64 duration_ms = 3;
+  optional int32 tz_offset_minutes = 4;
+  optional string tz_name = 5;  // IANA, e.g. "Europe/Prague"
+
+  // Type and content
+  string event_type = 6;        // e.g. "std.glucose"
+  repeated ChannelValue channels = 7;
+  repeated SampleBlockRef sample_blocks = 8;
+  repeated AttachmentRef attachments = 9;
+
+  // Provenance and freeform
+  optional string device_id = 10;
+  optional string app_name = 11;
+  optional string app_version = 12;
+  optional string source = 13;
+  optional string source_id = 14;
+  optional string notes = 15;
+
+  // Lifecycle
+  optional Ulid superseded_by = 16;
+  optional int64 deleted_at_ms = 17;
+
+  // Reserved for sparse extension fields. Use vendor namespaces in keys
+  // (e.g. "com.acme.signed_by"). Never used to carry typed event content.
+  optional Metadata metadata = 18;
+
+  // Set when this event was committed with a verified source_signature
+  // (see EventInput.source_signature). Clients use this to render
+  // "signed by Libre" / "signed by Quest Diagnostics" badges.
+  optional SignerInfo signed_by = 19;
+}
+
+// Sparse representation used for writes. Same shape as Event minus the
+// server-assigned identity (ulid, deleted_at_ms) and minus the lifecycle
+// fields the writer cannot set.
+message EventInput {
+  int64 timestamp_ms = 1;
+  optional int64 duration_ms = 2;
+  optional int32 tz_offset_minutes = 3;
+  optional string tz_name = 4;
+
+  string event_type = 5;
+  repeated ChannelValue channels = 6;
+  repeated SampleBlockInput sample_blocks = 7;
+  // Attachments are uploaded via AttachBlob and then referenced by ULID
+  // when the event is created.
+  repeated Ulid attachment_ulids = 8;
+
+  optional string device_id = 9;
+  optional string app_name = 10;
+  optional string app_version = 11;
+  optional string source = 12;
+  optional string source_id = 13;
+  optional string notes = 14;
+
+  optional Ulid superseded_by = 15;
+  optional Metadata metadata = 16;
+
+  // Optional source signature for high-trust integration writes. Verified
+  // against the registered signer (signers.signer_kid) before commit.
+  // Verification failure rejects the put with INVALID_SIGNATURE. See
+  // `spec/docs/components/connect.md` "Source signing".
+  optional SourceSignature source_signature = 17;
+}
+
+// Structured error detail. Returned in google.rpc.Status detail messages.
+message ErrorInfo {
+  string code = 1;              // e.g. "INVALID_UNIT", "OUT_OF_SCOPE"
+  string message = 2;           // human-readable; UI translates
+  map<string, string> metadata = 3;
+}
+
+// =============================================================================
+// Pagination
+// =============================================================================
+
+message PageRequest {
+  // Maximum number of items to return. Default 100; max 1000.
+  int32 limit = 1;
+  // Cursor from the previous PageResponse.next_cursor. Empty = first page.
+  string cursor = 2;
+}
+
+message PageResponse {
+  // Server's next cursor; empty if no more pages.
+  string next_cursor = 1;
+}
+
+// =============================================================================
+// Filter language
+// =============================================================================
+
+message EventFilter {
+  optional int64 from_ms = 1;
+  optional int64 to_ms = 2;
+
+  repeated string event_types_in = 3;
+  repeated string event_types_not_in = 4;
+
+  repeated ChannelPredicate channels = 5;
+
+  repeated string source_in = 6;
+  repeated string device_id_in = 7;
+  repeated string sensitivity_classes_in = 8;
+
+  repeated Ulid event_ulids_in = 9;
+
+  bool include_deleted = 10;       // default false
+  bool include_superseded = 11;    // default true
+
+  optional int64 limit = 12;
+  optional Sort sort = 13;
+}
+
+message ChannelPredicate {
+  string channel_path = 1;
+
+  oneof predicate {
+    Range real_range = 2;
+    Range int_range = 3;
+    bool exists = 4;
+    EnumIn enum_in = 5;
+    string text_contains = 6;       // case-insensitive substring
+  }
+}
+
+message Range {
+  optional double min = 1;
+  optional double max = 2;
+  bool min_inclusive = 3;
+  bool max_inclusive = 4;
+}
+
+message EnumIn {
+  repeated int32 ordinals = 1;
+}
+
+enum Sort {
+  TIME_DESC = 0;                    // default — most recent first
+  TIME_ASC = 1;
+  ULID_DESC = 2;
+  ULID_ASC = 3;
+}
+
+// =============================================================================
+// Service: OhdcService — main consumer surface
+// =============================================================================
+
+service OhdcService {
+  // ---- Writes ----
+  rpc PutEvents(PutEventsRequest) returns (PutEventsResponse);
+  rpc AttachBlob(stream AttachBlobChunk) returns (AttachBlobResponse);
+
+  // ---- Reads ----
+  rpc QueryEvents(QueryEventsRequest) returns (stream Event);
+  rpc GetEventByUlid(GetEventByUlidRequest) returns (Event);
+  rpc Aggregate(AggregateRequest) returns (AggregateResponse);
+  rpc Correlate(CorrelateRequest) returns (CorrelateResponse);
+  rpc ReadSamples(ReadSamplesRequest) returns (stream SampleBatch);
+  rpc ReadAttachment(ReadAttachmentRequest) returns (stream AttachmentChunk);
+
+  // ---- Grants (self-session only) ----
+  rpc CreateGrant(CreateGrantRequest) returns (CreateGrantResponse);
+  rpc ListGrants(ListGrantsRequest) returns (ListGrantsResponse);
+  rpc UpdateGrant(UpdateGrantRequest) returns (Grant);
+  rpc RevokeGrant(RevokeGrantRequest) returns (RevokeGrantResponse);
+
+  // ---- Cases ----
+  rpc CreateCase(CreateCaseRequest) returns (Case);
+  rpc UpdateCase(UpdateCaseRequest) returns (Case);
+  rpc CloseCase(CloseCaseRequest) returns (Case);
+  rpc ReopenCase(ReopenCaseRequest) returns (Case);
+  rpc ListCases(ListCasesRequest) returns (ListCasesResponse);
+  rpc GetCase(GetCaseRequest) returns (Case);
+  rpc AddCaseFilter(AddCaseFilterRequest) returns (CaseFilter);
+  rpc RemoveCaseFilter(RemoveCaseFilterRequest) returns (RemoveCaseFilterResponse);
+  rpc ListCaseFilters(ListCaseFiltersRequest) returns (ListCaseFiltersResponse);
+
+  // ---- Audit ----
+  rpc AuditQuery(AuditQueryRequest) returns (stream AuditEntry);
+
+  // ---- Pending events (write-with-approval) ----
+  rpc ListPending(ListPendingRequest) returns (ListPendingResponse);
+  rpc ApprovePending(ApprovePendingRequest) returns (ApprovePendingResponse);
+  rpc RejectPending(RejectPendingRequest) returns (RejectPendingResponse);
+
+  // ---- Pending queries (read-with-approval) ----
+  rpc ListPendingQueries(ListPendingQueriesRequest) returns (stream PendingQuery);
+  rpc ApprovePendingQuery(ApprovePendingQueryRequest) returns (ApprovePendingQueryResponse);
+  rpc RejectPendingQuery(RejectPendingQueryRequest) returns (RejectPendingQueryResponse);
+
+  // ---- Export / Import (self-session only) ----
+  rpc Export(ExportRequest) returns (stream ExportChunk);
+  rpc Import(stream ImportChunk) returns (ImportResponse);
+
+  // ---- Source signing — operator registry (self-session only) ----
+  rpc RegisterSigner(RegisterSignerRequest) returns (RegisterSignerResponse);
+  rpc ListSigners(ListSignersRequest) returns (ListSignersResponse);
+  rpc RevokeSigner(RevokeSignerRequest) returns (RevokeSignerResponse);
+
+  // ---- Diagnostics ----
+  rpc WhoAmI(WhoAmIRequest) returns (WhoAmIResponse);
+  rpc Health(HealthRequest) returns (HealthResponse);
+}
+
+// ---- Writes ----
+
+message PutEventsRequest {
+  repeated EventInput events = 1;
+  // If true, the entire batch is rejected on any per-event validation failure.
+  bool atomic = 2;
+}
+
+message PutEventsResponse {
+  repeated PutEventResult results = 1;
+}
+
+message PutEventResult {
+  oneof outcome {
+    PutEventCommitted committed = 1;
+    PutEventPending pending = 2;
+    ErrorInfo error = 3;
+  }
+}
+
+message PutEventCommitted {
+  Ulid ulid = 1;
+  int64 committed_at_ms = 2;
+}
+
+message PutEventPending {
+  Ulid ulid = 1;
+  int64 expires_at_ms = 2;
+}
+
+message AttachBlobChunk {
+  oneof content {
+    AttachBlobInit init = 1;
+    bytes data = 2;
+    AttachBlobFinish finish = 3;
+  }
+}
+
+message AttachBlobInit {
+  string mime_type = 1;
+  string filename = 2;
+  optional Ulid ulid = 3;
+  int64 expected_byte_size = 4;
+}
+
+message AttachBlobFinish {
+  bytes expected_sha256 = 1;
+}
+
+message AttachBlobResponse {
+  AttachmentRef attachment = 1;
+}
+
+// ---- Reads ----
+
+message QueryEventsRequest {
+  EventFilter filter = 1;
+}
+
+message GetEventByUlidRequest {
+  Ulid ulid = 1;
+}
+
+message AggregateRequest {
+  string channel_path = 1;
+  EventFilter filter = 2;
+  AggregateOp op = 3;
+  Bucket bucket = 4;
+}
+
+enum AggregateOp {
+  AVG = 0;
+  SUM = 1;
+  MIN = 2;
+  MAX = 3;
+  COUNT = 4;
+  MEDIAN = 5;
+  P95 = 6;
+  P99 = 7;
+  STDDEV = 8;
+}
+
+message Bucket {
+  oneof bucket {
+    google.protobuf.Duration fixed = 1;
+    CalendarBucket calendar = 2;
+  }
+}
+
+message CalendarBucket {
+  string tz_name = 1;       // IANA name; empty = UTC
+  CalendarUnit unit = 2;
+}
+
+enum CalendarUnit {
+  HOUR = 0;
+  DAY = 1;
+  WEEK = 2;
+  MONTH = 3;
+  YEAR = 4;
+}
+
+message AggregateResponse {
+  repeated AggregateBucketResult buckets = 1;
+}
+
+message AggregateBucketResult {
+  int64 bucket_start_ms = 1;
+  int64 bucket_end_ms = 2;
+  int64 sample_count = 3;
+  double value = 4;
+}
+
+message CorrelateRequest {
+  CorrelateSide a = 1;
+  CorrelateSide b = 2;
+  google.protobuf.Duration window = 3;
+  EventFilter scope = 4;
+}
+
+message CorrelateSide {
+  oneof spec {
+    string event_type = 1;
+    string channel_path = 2;
+  }
+}
+
+message CorrelateResponse {
+  repeated CorrelatePair pairs = 1;
+  CorrelateStats stats = 2;
+}
+
+message CorrelatePair {
+  Ulid a_ulid = 1;
+  int64 a_time_ms = 2;
+  repeated CorrelateMatch matches = 3;
+}
+
+message CorrelateMatch {
+  Ulid b_ulid = 1;
+  int64 b_time_ms = 2;
+  optional double b_value = 3;
+}
+
+message CorrelateStats {
+  int64 a_count = 1;
+  int64 b_count = 2;
+  int64 paired_count = 3;
+  optional double mean_b_value = 4;
+  optional double mean_lag_ms = 5;
+}
+
+message ReadSamplesRequest {
+  Ulid event_ulid = 1;
+  string channel_path = 2;
+  optional int64 from_ms = 3;
+  optional int64 to_ms = 4;
+  // Server-side downsample; 0 = raw samples.
+  int32 max_samples = 5;
+}
+
+message SampleBatch {
+  repeated Sample samples = 1;
+}
+
+message ReadAttachmentRequest {
+  Ulid attachment_ulid = 1;
+}
+
+message AttachmentChunk {
+  oneof content {
+    AttachmentInit init = 1;
+    bytes data = 2;
+    AttachmentFinish finish = 3;
+  }
+}
+
+message AttachmentInit {
+  AttachmentRef ref = 1;
+}
+
+message AttachmentFinish {
+  bytes expected_sha256 = 1;
+}
+
+// ---- Grants ----
+
+message Grant {
+  Ulid ulid = 1;
+  string grantee_label = 2;
+  string grantee_kind = 3;
+  optional Ulid grantee_ulid = 4;
+  optional string purpose = 5;
+  int64 created_at_ms = 6;
+  optional int64 expires_at_ms = 7;
+  optional int64 revoked_at_ms = 8;
+
+  string default_action = 9;     // 'allow' | 'deny'
+  bool aggregation_only = 10;
+  bool strip_notes = 11;
+  bool require_approval_per_query = 12;
+  optional int32 rolling_window_days = 13;
+  optional TimeWindow absolute_window = 14;
+  repeated GrantEventTypeRule event_type_rules = 15;
+  repeated GrantChannelRule channel_rules = 16;
+  repeated GrantSensitivityRule sensitivity_rules = 17;
+
+  string approval_mode = 18;     // 'always'|'auto_for_event_types'|'never_required'
+  repeated GrantWriteEventTypeRule write_event_type_rules = 19;
+  repeated string auto_approve_event_types = 20;
+
+  bool notify_on_access = 21;
+  optional int32 max_queries_per_day = 22;
+  optional int32 max_queries_per_hour = 23;
+
+  // Case bindings. Empty = open-scope.
+  repeated Ulid case_ulids = 24;
+
+  optional int64 last_used_ms = 25;
+  int64 use_count = 26;
+}
+
+message TimeWindow {
+  int64 from_ms = 1;
+  int64 to_ms = 2;
+}
+
+message GrantEventTypeRule {
+  string event_type = 1;
+  string effect = 2;             // 'allow' | 'deny'
+}
+
+message GrantChannelRule {
+  string channel_path = 1;
+  string effect = 2;
+}
+
+message GrantSensitivityRule {
+  string sensitivity_class = 1;
+  string effect = 2;
+}
+
+message GrantWriteEventTypeRule {
+  string event_type = 1;
+  string effect = 2;
+}
+
+message CreateGrantRequest {
+  string grantee_label = 1;
+  string grantee_kind = 2;
+  optional Ulid grantee_ulid = 3;
+  optional string purpose = 4;
+
+  string default_action = 5;
+  bool aggregation_only = 6;
+  bool strip_notes = 7;
+  bool require_approval_per_query = 8;
+  optional int32 rolling_window_days = 9;
+  optional TimeWindow absolute_window = 10;
+  repeated GrantEventTypeRule event_type_rules = 11;
+  repeated GrantChannelRule channel_rules = 12;
+  repeated GrantSensitivityRule sensitivity_rules = 13;
+
+  string approval_mode = 14;
+  repeated GrantWriteEventTypeRule write_event_type_rules = 15;
+  repeated string auto_approve_event_types = 16;
+
+  optional int64 expires_at_ms = 17;
+  bool notify_on_access = 18;
+  optional int32 max_queries_per_day = 19;
+  optional int32 max_queries_per_hour = 20;
+
+  repeated Ulid case_ulids = 21;
+}
+
+message CreateGrantResponse {
+  Grant grant = 1;
+  string token = 2;              // ohdg_... — shown to the user once
+  string share_url = 3;          // ohd://grant/<token>?storage=<url>&pin=<...>[&cases=...]
+  bytes share_qr_png = 4;
+}
+
+message ListGrantsRequest {
+  optional bool include_revoked = 1;
+  optional bool include_expired = 2;
+  optional string grantee_kind = 3;
+  PageRequest page = 4;
+}
+
+message ListGrantsResponse {
+  repeated Grant grants = 1;
+  PageResponse page = 2;
+}
+
+message UpdateGrantRequest {
+  Ulid grant_ulid = 1;
+  // Sparse update — fields present are updated; absent are unchanged.
+  // Updates allowed: label, expires_at_ms, all rule lists, all policy bools,
+  // rate limits.
+  // Updates NOT allowed: grantee_kind, grantee_ulid, default_action,
+  // approval_mode (revoke + re-create instead).
+  optional string grantee_label = 2;
+  optional int64 expires_at_ms = 3;
+  // ... mirrors of mutable Grant fields go here in implementation phase ...
+}
+
+message RevokeGrantRequest {
+  Ulid grant_ulid = 1;
+  optional string reason = 2;
+}
+
+message RevokeGrantResponse {
+  int64 revoked_at_ms = 1;
+}
+
+// ---- Cases ----
+
+message Case {
+  Ulid ulid = 1;
+  string case_type = 2;          // 'emergency'|'admission'|'visit'|'cycle'|...
+  optional string case_label = 3;
+  int64 started_at_ms = 4;
+  optional int64 ended_at_ms = 5;
+  optional Ulid parent_case_ulid = 6;
+  optional Ulid predecessor_case_ulid = 7;
+  optional Ulid opening_authority_grant_ulid = 8;
+  optional int32 inactivity_close_after_h = 9;
+  int64 last_activity_at_ms = 10;
+}
+
+message CreateCaseRequest {
+  string case_type = 1;
+  optional string case_label = 2;
+  optional Ulid parent_case_ulid = 3;
+  optional Ulid predecessor_case_ulid = 4;
+  optional int32 inactivity_close_after_h = 5;
+  repeated EventFilter initial_filters = 6;
+}
+
+message UpdateCaseRequest {
+  Ulid case_ulid = 1;
+  optional string case_label = 2;
+  optional Ulid parent_case_ulid = 3;
+  optional Ulid predecessor_case_ulid = 4;
+  optional int32 inactivity_close_after_h = 5;
+}
+
+message CloseCaseRequest {
+  Ulid case_ulid = 1;
+  optional string reason = 2;
+}
+
+message ReopenCaseRequest {
+  oneof method {
+    Ulid case_reopen_token_ulid = 1;
+    PatientReopen patient = 2;
+  }
+}
+
+message PatientReopen {
+  Ulid case_ulid = 1;
+}
+
+message ListCasesRequest {
+  optional bool include_closed = 1;
+  optional string case_type = 2;
+  PageRequest page = 3;
+}
+
+message ListCasesResponse {
+  repeated Case cases = 1;
+  PageResponse page = 2;
+}
+
+message GetCaseRequest {
+  Ulid case_ulid = 1;
+}
+
+message CaseFilter {
+  Ulid ulid = 1;
+  Ulid case_ulid = 2;
+  EventFilter filter = 3;
+  optional string filter_label = 4;
+  int64 added_at_ms = 5;
+  optional Ulid added_by_grant_ulid = 6;
+}
+
+message AddCaseFilterRequest {
+  Ulid case_ulid = 1;
+  EventFilter filter = 2;
+  optional string filter_label = 3;
+}
+
+message RemoveCaseFilterRequest {
+  Ulid case_filter_ulid = 1;
+}
+
+message RemoveCaseFilterResponse {
+  int64 removed_at_ms = 1;
+}
+
+message ListCaseFiltersRequest {
+  Ulid case_ulid = 1;
+  bool include_removed = 2;
+}
+
+message ListCaseFiltersResponse {
+  repeated CaseFilter filters = 1;
+}
+
+// ---- Audit ----
+
+message AuditQueryRequest {
+  optional int64 from_ms = 1;
+  optional int64 to_ms = 2;
+  optional Ulid grant_ulid = 3;
+  optional string actor_type = 4;     // 'self' | 'grant' | 'system'
+  optional string action = 5;         // 'read' | 'write' | 'grant_create' | ...
+  optional string result = 6;         // 'success' | 'partial' | 'rejected' | 'error'
+  bool tail = 7;
+}
+
+message AuditEntry {
+  int64 ts_ms = 1;
+  string actor_type = 2;
+  optional Ulid grant_ulid = 3;
+  string action = 4;
+  string query_kind = 5;
+  string query_params_json = 6;
+  optional int64 rows_returned = 7;
+  optional int64 rows_filtered = 8;
+  string result = 9;
+  optional string reason = 10;
+  optional string caller_ip = 11;
+  optional string caller_ua = 12;
+}
+
+// ---- Pending events ----
+
+message ListPendingRequest {
+  optional Ulid submitting_grant_ulid = 1;
+  optional string status = 2;         // 'pending' | 'approved' | 'rejected' | 'expired'
+  PageRequest page = 3;
+}
+
+message ListPendingResponse {
+  repeated PendingEvent pending = 1;
+  PageResponse page = 2;
+}
+
+message PendingEvent {
+  Ulid ulid = 1;
+  int64 submitted_at_ms = 2;
+  Ulid submitting_grant_ulid = 3;
+  Event event = 4;
+  string status = 5;
+  optional int64 reviewed_at_ms = 6;
+  optional string rejection_reason = 7;
+  int64 expires_at_ms = 8;
+  optional Ulid approved_event_ulid = 9;
+}
+
+message ApprovePendingRequest {
+  Ulid pending_ulid = 1;
+  bool also_auto_approve_this_type = 2;
+}
+
+message ApprovePendingResponse {
+  Ulid event_ulid = 1;
+  int64 committed_at_ms = 2;
+}
+
+message RejectPendingRequest {
+  Ulid pending_ulid = 1;
+  optional string reason = 2;
+}
+
+message RejectPendingResponse {
+  int64 rejected_at_ms = 1;
+}
+
+// ---- Pending queries ----
+
+enum PendingQueryKind {
+  PENDING_QUERY_KIND_UNSPECIFIED = 0;
+  QUERY_EVENTS = 1;
+  GET_EVENT_BY_ULID = 2;
+  AGGREGATE = 3;
+  CORRELATE = 4;
+  READ_SAMPLES = 5;
+  READ_ATTACHMENT = 6;
+}
+
+enum PendingQueryDecision {
+  PENDING_QUERY_DECISION_UNSPECIFIED = 0;
+  PENDING_QUERY_DECISION_PENDING = 1;
+  PENDING_QUERY_DECISION_APPROVED = 2;
+  PENDING_QUERY_DECISION_REJECTED = 3;
+  PENDING_QUERY_DECISION_EXPIRED = 4;
+}
+
+message PendingQuery {
+  Ulid query_ulid = 1;
+  Ulid grant_ulid = 2;
+  PendingQueryKind query_kind = 3;
+  bytes query_payload = 4;          // canonical CBOR or JSON
+  int64 requested_at_ms = 5;
+  int64 expires_at_ms = 6;
+  optional int64 decided_at_ms = 7;
+  PendingQueryDecision decision = 8;
+}
+
+message ListPendingQueriesRequest {
+  bool include_decided = 1;
+  optional int64 since_ms = 2;
+}
+
+message ApprovePendingQueryRequest {
+  Ulid query_ulid = 1;
+}
+
+message ApprovePendingQueryResponse {
+  bool ok = 1;
+}
+
+message RejectPendingQueryRequest {
+  Ulid query_ulid = 1;
+  optional string reason = 2;
+}
+
+message RejectPendingQueryResponse {
+  bool ok = 1;
+}
+
+// ---- Export / Import ----
+
+message ExportRequest {
+  optional int64 from_ms = 1;
+  optional int64 to_ms = 2;
+  repeated string include_event_types = 3;
+  optional string encrypt_to_passphrase = 4;
+  optional string resume_token = 5;
+}
+
+message ExportChunk {
+  oneof content {
+    ExportInit init = 1;
+    ExportFrame frame = 2;
+    ExportFinish finish = 3;
+  }
+}
+
+message ExportInit {
+  string format_version = 1;
+  string source_instance_pubkey_hex = 2;
+  // Encryption parameters present when encrypt_to_passphrase was set on the
+  // request. Detail TBD with full encryption design pass.
+  optional google.protobuf.Struct encryption = 3;
+}
+
+message ExportFrame {
+  oneof entity {
+    Event event = 1;
+    Grant grant = 2;
+    AuditEntry audit_entry = 3;
+    AttachmentBlob attachment = 4;
+    PendingEvent pending = 5;
+    DeviceRow device = 6;
+    AppVersionRow app_version = 7;
+    RegistryEntry registry_entry = 8;
+    PeerSyncRow peer_sync = 9;
+  }
+}
+
+message ExportFinish {
+  string resume_token = 1;
+  bytes signature = 2;             // Ed25519 over the whole export
+  string source_instance_pubkey_hex = 3;
+}
+
+message ImportChunk {
+  oneof content {
+    ImportInit init = 1;
+    ExportFrame frame = 2;
+    ImportFinish finish = 3;
+  }
+}
+
+message ImportInit {
+  string source_instance_pubkey_hex = 1;
+}
+
+message ImportFinish {
+  bytes signature = 1;
+}
+
+message ImportResponse {
+  int64 events_imported = 1;
+  int64 grants_imported = 2;
+  int64 audit_entries_imported = 3;
+  repeated string warnings = 4;
+  repeated UnknownExtension unknown_extensions = 5;
+}
+
+message UnknownExtension {
+  string namespace = 1;
+  string preserved_as = 2;          // 'metadata._imported_extensions'
+  int64 entries = 3;
+}
+
+// Carrier rows used inside ExportFrame. Implementation phase fills in fields.
+message AttachmentBlob {
+  AttachmentRef ref = 1;
+  bytes data = 2;
+}
+message DeviceRow {
+  string kind = 1;
+  optional string vendor = 2;
+  optional string model = 3;
+  optional string serial_or_id = 4;
+  optional string metadata_json = 5;
+}
+message AppVersionRow {
+  string app_name = 1;
+  string version = 2;
+  optional string platform = 3;
+}
+message RegistryEntry {
+  // Tagged union deferred to implementation; covers event_types, channels,
+  // type_aliases, channel_aliases.
+  string kind = 1;
+  google.protobuf.Struct payload = 2;
+}
+message PeerSyncRow {
+  string peer_label = 1;
+  string peer_kind = 2;
+  optional Ulid peer_ulid = 3;
+  int64 last_outbound_rowid = 4;
+  int64 last_inbound_peer_rowid = 5;
+}
+
+// ---- Source signing — operator registry ----
+
+message RegisterSignerRequest {
+  // KID assigned by the operator (e.g. "libre.eu.2026-01"). Must be unique.
+  string signer_kid = 1;
+  // Human label, e.g. "Libre EU production".
+  string signer_label = 2;
+  // 'ed25519' | 'rs256' | 'es256'.
+  string sig_alg = 3;
+  // PEM-encoded SubjectPublicKeyInfo.
+  string public_key_pem = 4;
+}
+
+message RegisterSignerResponse {
+  SignerInfo signer = 1;
+  int64 registered_at_ms = 2;
+}
+
+message ListSignersRequest {
+  // Include revoked rows in the response. Default: false.
+  bool include_revoked = 1;
+}
+
+message ListSignersResponse {
+  repeated SignerInfo signers = 1;
+}
+
+message RevokeSignerRequest {
+  string signer_kid = 1;
+}
+
+message RevokeSignerResponse {
+  int64 revoked_at_ms = 1;
+}
+
+// ---- Diagnostics ----
+
+message WhoAmIRequest {}
+
+message WhoAmIResponse {
+  Ulid user_ulid = 1;
+  string token_kind = 2;            // 'self_session' | 'grant' | 'device'
+  optional Ulid grant_ulid = 3;
+  optional string grantee_label = 4;
+  optional Grant effective_grant = 5;
+  string caller_ip = 6;
+  optional string device_label = 7;
+  // Linked OIDC identities for the calling user. Populated only for
+  // self_session tokens; empty for grant / device tokens (a doctor's grant
+  // bearer has no business introspecting which OIDC accounts the patient
+  // linked). The full identity surface — provider, subject, link / unlink /
+  // promote — lives in `auth.proto` AuthService. Subjects are deliberately
+  // omitted here (no cross-grant PII leak via WhoAmI); fetch full rows via
+  // `AuthService.ListIdentities`.
+  repeated LinkedIdentitySummary linked_identities = 8;
+}
+
+// Summary view of one linked OIDC identity. Slim — provider + label + flags
+// only. Full Identity (with `subject`) is exposed by
+// `AuthService.ListIdentities` (which requires a self-session token).
+message LinkedIdentitySummary {
+  string provider = 1;             // OIDC iss
+  optional string display_label = 2;
+  bool is_primary = 3;
+  int64 linked_at_ms = 4;
+}
+
+message HealthRequest {}
+
+message HealthResponse {
+  string status = 1;                // 'ok' | 'degraded' | 'down'
+  int64 server_time_ms = 2;
+  string server_version = 3;
+  string protocol_version = 4;      // e.g. "ohdc.v0"
+  optional int32 registry_version = 5;
+  map<string, string> subsystems = 6;
+}

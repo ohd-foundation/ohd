@@ -31,7 +31,7 @@
 | Deployment | Per-file **`deployment_mode`** = `primary` or `cache`; user picks at first launch | Same library, two topologies: local-primary (phone canonical) and remote-primary (server canonical, phone caches). Both shipped at launch. |
 | Sync | **Bidirectional event-log replay** with ULID identity for dedup, per-peer watermarks in `peer_sync`, `origin_peer_id` to avoid echo | Immutability + ULID + tombstones = no merge logic. Wire framing is API-layer concern; storage exposes the primitives. |
 | Concurrency | **Single writer + many readers** per file (WAL) | API process owns the writer; background compactor takes the lock briefly. |
-| Encryption | **SQLCipher 4** with per-user key | Page-level encryption; key derived from user secret + (optional) server-wrapped material. |
+| Encryption | **SQLCipher 4** under `K_file`, plus per-class XChaCha20-Poly1305 value encryption | Page-level encryption covers the whole file; sensitive classes additionally use wrapped `K_class` DEKs. |
 | Transport | **HTTP/3 (QUIC) preferred, HTTP/2 fallback** | Fronted by Caddy; storage library is transport-agnostic. |
 
 ## File layout (per user)
@@ -186,16 +186,10 @@ CREATE TABLE _meta (
 --   registry_version     the standard registry version baked in
 --   audit_retention_days optional; NULL = forever; otherwise rolling cleanup window
 --   cipher_kdf           (if encrypted) KDF parameters
+--   k_recovery_salt      32-byte salt for BIP39 seed -> K_file HKDF
+--   recovery_pubkey      32-byte X25519 pubkey for grant re-targeting
 --
--- Optional keys for the emergency / break-glass feature (see "Emergency access"):
---   emergency_enabled               '0' | '1' (default '0' — feature opt-in)
---   emergency_ble_beacon            '0' | '1' (default '1' if feature enabled)
---   emergency_timeout_s             '10'..'300' (default '30')
---   emergency_default_allow_on_timeout '0' | '1' (default '1')
---   emergency_lock_screen_basic_only '0' | '1' (default '0')
---   emergency_location_share        '0' | '1' (default '0')
---   emergency_history_hours         '0' | '3' | '12' | '24' (default '24')
---   emergency_template_grant_id     references grants.id of the user's emergency-template grant
+-- Emergency / break-glass settings live in _emergency_config, not _meta.
 
 -- Event types (registry)
 CREATE TABLE event_types (
@@ -296,12 +290,15 @@ CREATE INDEX idx_events_device_time
 
 -- Channel values (EAV, sparse)
 CREATE TABLE event_channels (
-  event_id    INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
-  channel_id  INTEGER NOT NULL REFERENCES channels(id),
-  value_real  REAL,
-  value_int   INTEGER,
-  value_text  TEXT,
-  value_enum  INTEGER,             -- ordinal index into channels.enum_values
+  event_id           INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+  channel_id         INTEGER NOT NULL REFERENCES channels(id),
+  value_real         REAL,
+  value_int          INTEGER,
+  value_text         TEXT,
+  value_enum         INTEGER,       -- ordinal index into channels.enum_values
+  encrypted          INTEGER NOT NULL DEFAULT 0,
+  value_blob         BLOB,          -- XChaCha20-Poly1305 blob when encrypted=1
+  encryption_key_id  INTEGER REFERENCES class_key_history(id),
   PRIMARY KEY (event_id, channel_id)
 );
 
@@ -326,14 +323,16 @@ CREATE INDEX idx_samples_time
 
 -- Attachments (metadata only; payload lives as sidecar file)
 CREATE TABLE attachments (
-  id          INTEGER PRIMARY KEY AUTOINCREMENT,
-  ulid_random BLOB NOT NULL UNIQUE,
-  event_id    INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
-  sha256      BLOB NOT NULL,             -- 32 bytes; addresses the sidecar file
-  byte_size   INTEGER NOT NULL,
-  mime_type   TEXT,
-  filename    TEXT,
-  encrypted   INTEGER NOT NULL DEFAULT 1
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  ulid_random  BLOB NOT NULL UNIQUE,
+  event_id     INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+  sha256       BLOB NOT NULL,            -- 32 bytes; plaintext payload hash
+  byte_size    INTEGER NOT NULL,
+  mime_type    TEXT,
+  filename     TEXT,
+  encrypted    INTEGER NOT NULL DEFAULT 1,
+  wrapped_dek  BLOB,                     -- AES-GCM wrap of attachment DEK
+  dek_nonce    BLOB                      -- 12-byte AES-GCM nonce for wrapped_dek
 );
 
 CREATE INDEX idx_attachments_event ON attachments (event_id);
@@ -356,6 +355,7 @@ CREATE INDEX idx_attachments_event ON attachments (event_id);
 CREATE TABLE grants (
   id                         INTEGER PRIMARY KEY AUTOINCREMENT,
   ulid_random                BLOB NOT NULL UNIQUE,
+  delegate_for_user_ulid     BLOB,
   grantee_label              TEXT NOT NULL,           -- e.g. "Dr. Smith — primary care"
   grantee_kind               TEXT NOT NULL,           -- 'human'|'app'|'service'|'emergency'|'device'|'delegate'|'emergency_template'
   grantee_ulid               BLOB,                    -- if grantee has its own OHD identity
@@ -375,7 +375,10 @@ CREATE TABLE grants (
   notify_on_access           INTEGER NOT NULL DEFAULT 0,
   max_queries_per_day        INTEGER,
   max_queries_per_hour       INTEGER,
-  rolling_window_days        INTEGER                  -- if set, only events in last N days visible (composes with case scope by intersection)
+  rolling_window_days        INTEGER,                 -- if set, only events in last N days visible (composes with case scope by intersection)
+  class_key_wraps            BLOB,                    -- CBOR {sensitivity_class -> ClassKeyWrap}
+  grantee_recovery_pubkey    BLOB,                    -- 32-byte X25519 target pubkey
+  issuer_recovery_pubkey     BLOB                     -- 32-byte X25519 issuer pubkey
 );
 
 CREATE INDEX idx_grants_active  ON grants (revoked_at_ms, expires_at_ms);
@@ -574,6 +577,130 @@ CREATE TABLE peer_sync (
 
 CREATE INDEX idx_events_origin
   ON events (origin_peer_id, id) WHERE origin_peer_id IS NULL;
+```
+
+### Shipped Migration Ledger
+
+The implementation applies SQL migrations from `storage/migrations/` and
+records them in the migration ledger. As of this reconciliation pass, the
+latest migration is `017_emergency_config.sql`. Migration `016_drop_v1.sql`
+is the cleanup that removed the temporary V1/V2 AAD discriminator columns.
+
+Current additive tables beyond the original schema:
+
+| Table | Purpose |
+|---|---|
+| `class_keys` | One logical class-key slot per encrypted sensitivity class. |
+| `class_key_history` | Rotation history; rows wrap `K_class` generations under `K_envelope`. |
+| `signers` | Registered source-signing public keys (`ed25519`, `rs256`, `es256`). |
+| `event_signatures` | Verified signatures attached to committed events. |
+| `_oidc_identities` | Multiple linked OIDC identities per `user_ulid`. |
+| `_pending_identity_links` | Short-lived identity-link nonces. |
+| `pending_queries` | Read-with-approval queue. |
+| `peer_attachment_sync` | Per-peer attachment payload sync state. |
+| `_pending_invites` | Invite-only deployment invite state. |
+| `_device_token_grants` | Device-token helper rows. |
+| `_push_registrations` | Push-token registration rows. |
+| `_notification_config` | User notification preferences. |
+| `_emergency_config` | Singleton emergency/break-glass settings row per user. |
+| `oauth_clients` | Dynamic OAuth clients. |
+| `oauth_signing_keys` | OAuth/OIDC signing key material, wrapped at rest. |
+| `oauth_authorization_codes` | Authorization-code grant state. |
+| `oauth_device_codes` | Device Authorization Grant state. |
+| `oauth_refresh_tokens` | Refresh-token state. |
+
+Current modified tables:
+
+| Table | Shipped columns added or changed |
+|---|---|
+| `_meta` | Adds `k_recovery_salt` and `recovery_pubkey` keys. |
+| `_tokens` | Adds session telemetry (`last_seen_ms`, `user_agent`, `ip_origin`), delegate fields, and OIDC identity linkage. |
+| `event_channels` | Adds `encrypted`, `value_blob`, `encryption_key_id`; V1 `aad_version`/`wrap_alg` columns were dropped. |
+| `attachments` | Adds `wrapped_dek`, `dek_nonce`; temporary V1 `aad_version`/`wrap_alg` columns were dropped. |
+| `grants` | Adds `delegate_for_user_ulid`, `class_key_wraps`, `grantee_recovery_pubkey`, `issuer_recovery_pubkey`; `grantee_kind` carries the grant kind including `delegate`. |
+| `audit_log` | Adds `delegated_for_user_ulid`. |
+| `cases` | Uses `parent_case_id` and `predecessor_case_id`; the OHDC wire names are `parent_case_ulid` and `predecessor_case_ulid`. |
+
+Normative schema fragments for the newer tables:
+
+```sql
+CREATE TABLE _emergency_config (
+  user_ulid                        BLOB PRIMARY KEY,
+  enabled                          INTEGER NOT NULL DEFAULT 0,
+  bluetooth_beacon                 INTEGER NOT NULL DEFAULT 1,
+  approval_timeout_seconds         INTEGER NOT NULL DEFAULT 30,
+  default_action_on_timeout        TEXT NOT NULL DEFAULT 'allow',
+  lock_screen_visibility           TEXT NOT NULL DEFAULT 'full',
+  history_window_hours             INTEGER NOT NULL DEFAULT 24,
+  channel_paths_allowed_json       TEXT NOT NULL DEFAULT '[]',
+  sensitivity_classes_allowed_json TEXT NOT NULL DEFAULT '[]',
+  share_location                   INTEGER NOT NULL DEFAULT 0,
+  trusted_authorities_json         TEXT NOT NULL DEFAULT '[]',
+  bystander_proxy_enabled          INTEGER NOT NULL DEFAULT 1,
+  updated_at_ms                    INTEGER NOT NULL
+);
+
+CREATE TABLE class_keys (
+  sensitivity_class  TEXT PRIMARY KEY,
+  wrapped_key        BLOB NOT NULL,
+  wrap_alg           TEXT NOT NULL DEFAULT 'aes-256-gcm',
+  nonce              BLOB NOT NULL,
+  created_at_ms      INTEGER NOT NULL,
+  rotated_at_ms      INTEGER,
+  current_history_id INTEGER REFERENCES class_key_history(id)
+);
+
+CREATE TABLE class_key_history (
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  sensitivity_class TEXT NOT NULL,
+  wrapped_key       BLOB NOT NULL,
+  nonce             BLOB NOT NULL,
+  created_at_ms     INTEGER NOT NULL,
+  rotated_at_ms     INTEGER
+);
+
+CREATE TABLE signers (
+  id               INTEGER PRIMARY KEY AUTOINCREMENT,
+  signer_kid       TEXT NOT NULL UNIQUE,
+  signer_label     TEXT NOT NULL,
+  sig_alg          TEXT NOT NULL,
+  public_key_pem   TEXT NOT NULL,
+  registered_at_ms INTEGER NOT NULL,
+  revoked_at_ms    INTEGER,
+  registered_by_actor_id INTEGER
+);
+
+CREATE TABLE event_signatures (
+  event_id    INTEGER PRIMARY KEY REFERENCES events(id) ON DELETE CASCADE,
+  sig_alg     TEXT NOT NULL,
+  signer_kid  TEXT NOT NULL,
+  signature   BLOB NOT NULL,
+  signed_at_ms INTEGER NOT NULL
+);
+
+CREATE TABLE pending_queries (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  ulid_random     BLOB NOT NULL UNIQUE,
+  grant_id        INTEGER NOT NULL REFERENCES grants(id),
+  query_kind      TEXT NOT NULL,
+  query_hash      BLOB NOT NULL,
+  query_payload   TEXT NOT NULL,
+  requested_at_ms INTEGER NOT NULL,
+  expires_at_ms   INTEGER NOT NULL,
+  decided_at_ms   INTEGER,
+  decision        TEXT NOT NULL DEFAULT 'pending',
+  decided_by_actor_id INTEGER
+);
+
+CREATE TABLE peer_attachment_sync (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  peer_id         INTEGER NOT NULL REFERENCES peer_sync(id) ON DELETE CASCADE,
+  attachment_id   INTEGER NOT NULL REFERENCES attachments(id) ON DELETE CASCADE,
+  direction       TEXT NOT NULL,
+  delivered_at_ms INTEGER NOT NULL,
+  byte_size       INTEGER NOT NULL,
+  UNIQUE (peer_id, attachment_id, direction)
+);
 ```
 
 JSON appears only in four places, all of which are deliberate:
@@ -829,7 +956,13 @@ All single-table or small-join queries because no JSON unpack is involved.
 
 The break-glass feature lets first responders access a curated subset of the user's data in an emergency without a pre-issued grant. Architecture and full UX described in [`../components/emergency.md`](../components/emergency.md) and [`privacy-access.md`](privacy-access.md). The storage-side mechanics:
 
-**Configuration via `_meta` keys.** The user's emergency settings live in `_meta` (see the "Optional keys" comment on `_meta` above): `emergency_enabled`, `emergency_ble_beacon`, `emergency_timeout_s`, `emergency_default_allow_on_timeout`, `emergency_lock_screen_basic_only`, `emergency_location_share`, `emergency_history_hours`, plus `emergency_template_grant_id` referencing the user's emergency-template grant.
+**Configuration via `_emergency_config`.** The user's emergency settings live
+in the singleton `_emergency_config` row keyed by `user_ulid`: `enabled`,
+`bluetooth_beacon`, `approval_timeout_seconds`,
+`default_action_on_timeout`, `lock_screen_visibility`,
+`history_window_hours`, `channel_paths_allowed_json`,
+`sensitivity_classes_allowed_json`, `share_location`,
+`trusted_authorities_json`, and `bystander_proxy_enabled`.
 
 **Emergency-template grant.** The user pre-configures an "emergency template" grant: `grants.is_template=1`, `grantee_kind='emergency_template'`. Its rules tables (`grant_event_type_rules`, `grant_channel_rules`, `grant_sensitivity_rules`) define the user's emergency profile — what a first responder can see when break-glass fires. Per-channel granularity available; defaults to a curated subset (allergies, active medications, blood type, advance directives, recent vitals, current diagnoses) with sensitive classes (`mental_health`, `substance_use`, `sexual_health`, `reproductive`) denied.
 
@@ -838,17 +971,23 @@ The break-glass feature lets first responders access a curated subset of the use
 **Break-glass flow:**
 
 1. Responder's certified-authority relay sends a signed emergency-access request to the patient's storage. The request's signature must verify against the storage's trusted authority root list (see `privacy-access.md`).
-2. Storage shows the dialog (above lock screen by default) with the authority's certified label, a `_meta.emergency_timeout_s` countdown, vibration. Below-lock-screen UI shows only basic info if `_meta.emergency_lock_screen_basic_only=1`.
-3. User Approves / Rejects, or the timeout fires. On timeout: action is `_meta.emergency_default_allow_on_timeout` ? approve : reject.
+2. Storage shows the dialog (above lock screen by default) with the authority's certified label, an `_emergency_config.approval_timeout_seconds` countdown, vibration. Below-lock-screen UI shows only basic info when `_emergency_config.lock_screen_visibility='basic_only'`.
+3. User Approves / Rejects, or the timeout fires. On timeout: action is `_emergency_config.default_action_on_timeout`.
 4. On approve (interactive or auto-granted via timeout):
    - A new active grant is created by **cloning** the emergency-template's rules into a fresh `grants` row. The new grant's `grantee_kind='emergency'`, `is_template=0`. Its `grantee_label` is the authority's certified name; `grantee_ulid` is the authority's identity.
    - A new `cases` row is opened with `case_type='emergency'`, `started_at_ms=now`, `opening_authority_grant_id=` the new grant.
-   - A `case_filters` row is added with the time-range + profile-types filter for the case (using `_meta.emergency_history_hours` as the lookback for inclusion of pre-emergency context).
+   - A `case_filters` row is added with the time-range + profile-types filter for the case (using `_emergency_config.history_window_hours` as the lookback for inclusion of pre-emergency context).
    - A `grant_cases` row binds the new grant to the new case.
    - An `audit_log` row records the break-glass with `auto_granted=1` if the timeout path was taken (the user's audit view renders these distinctly so they can review).
 5. Subsequent OHDC traffic from the responder uses the issued grant token; reads return events per the case's filters intersected with the cloned access rules. Writes from the responder are normal `put_events` calls — they happen to land in the case's scope because the case's filter (typically a time-range or device-id filter covering the responder's `device_id`) matches them automatically. No `case_id` is set on events; the case finds them via filter at read time.
 
-**Authority cert chain.** The storage holds a list of trusted authority roots in the `trusted_authorities` table (per-user file). An emergency request must be signed by an X.509 cert chain that terminates at one of those roots. Full trust mechanism (Fulcio-issued short-lived certs, X.509 verification, optional Rekor transparency log) is specified in [`emergency-trust.md`](emergency-trust.md). For v1.0 the OHD Project Root is pre-installed; users can add country-specific or remove defaults.
+**Authority cert chain.** The storage holds trusted authority configuration in
+`_emergency_config.trusted_authorities_json`. An emergency request must be
+signed by an X.509 cert chain that terminates at one of those roots. Full trust
+mechanism (Fulcio-issued short-lived certs, X.509 verification, optional Rekor
+transparency log) is specified in [`emergency-trust.md`](emergency-trust.md).
+For v1.0 the OHD Project Root is pre-installed; users can add country-specific
+or remove defaults.
 
 **Audit visibility.** Auto-granted (timeout-allow) accesses are flagged via `audit_log.auto_granted=1`. The user's audit view shows these distinctly (different color / icon) so the user can identify accesses that fired without their explicit consent and take action (revoke retroactively, file a dispute, refine settings).
 

@@ -1,0 +1,5 @@
+{
+  "rows_returned": 2,
+  "rows_filtered": 1,
+  "event_types": ["std.body_temperature", "std.blood_glucose"]
+}

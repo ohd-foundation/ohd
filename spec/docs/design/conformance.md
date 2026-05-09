@@ -1,6 +1,6 @@
 # Design: OHDC Conformance Corpus
 
-> The body of test fixtures that define what "OHDC v1 conformance" means in practice. Every implementation that claims OHDC v1 (the reference Rust core, future re-implementations, third-party servers) must pass it.
+> The body of test fixtures that define what "OHDC v0 conformance" means in practice. Every implementation that claims OHDC v0 (the reference Rust core, future re-implementations, third-party servers) must pass it.
 >
 > This doc specifies what the corpus *is*, what it *covers*, where it *lives*, and how to *run it*. The actual fixture data lives in the `openhealth-data/ohd-protocol` repo (per [`../roadmap.md`](../roadmap.md)) and is generated alongside the reference implementation.
 
@@ -16,7 +16,7 @@ Five categories:
 
 ### 1. On-disk format conformance
 
-A library claiming OHDC v1 must produce on-disk bytes that other v1 implementations can open. The corpus exercises:
+A library claiming OHDC v0 must produce on-disk bytes that other v0 implementations can open. The corpus exercises:
 
 - **Schema migration**: open a `_meta.format_version=1.0` file with no aliases; open the same file with type and channel aliases; open a file post-compaction (aliases resolved, dangling entries removed). Round-trip checks each.
 - **Sample-block byte equality**: given a fixed input sample series and codec parameters, the encoded block bytes must be **byte-identical** across implementations. Encoder determinism is part of the spec; this is where it's enforced. Fixtures: 50+ sample series across both encodings (1 and 2) with known input → expected output bytes.
@@ -161,7 +161,7 @@ CI runs the corpus against every PR to `ohd-storage`. New implementations bootst
 
 ## Versioning
 
-Corpus version mirrors OHDC version: `conformance/v1.0.0/`. Patch bumps add fixtures (more coverage) and may tighten existing assertions; never weaken. Minor bumps add fixtures for new RPCs in the same OHDC major. Major bump (OHDC v2) is a new corpus.
+Corpus version mirrors OHDC version: `conformance/v0.0.0/`. Patch bumps add fixtures (more coverage) and may tighten existing assertions; never weaken. Minor bumps add fixtures for new RPCs in the same OHDC major. Major bump (OHDC v2) is a new corpus.
 
 When a fixture changes meaningfully (an assertion is tightened), the change goes into the next patch version with a note in the manifest. Implementations targeting a fixed corpus version pin against it.
 
@@ -174,17 +174,17 @@ When a bug is fixed in `ohd-storage` or a spec ambiguity is resolved, the resolu
 3. Verify the fixture now passes.
 4. Submit both the fixture and the fix in the same PR.
 
-The growing corpus is the durable record of what OHDC v1 actually requires, beyond what the spec docs prose-spec.
+The growing corpus is the durable record of what OHDC v0 actually requires, beyond what the spec docs prose-spec.
 
-## What "claiming v1 conformance" means
+## What "claiming v0 conformance" means
 
-A library, server, or service claiming OHDC v1 conformance must:
+A library, server, or service claiming OHDC v0 conformance must:
 
-1. Pass the corpus at the latest patch version of `v1.x` (currently TBD as v1 is pre-release).
+1. Pass the corpus at the latest patch version of `v0.x` (currently TBD as v0 is pre-release).
 2. Display a conformance badge in their README / docs that includes the corpus version they pass against.
 3. Document any optional features (encoding 2 sample blocks, source signing, etc.) they don't implement; the corpus includes both required-for-conformance and optional fixtures.
 
-Vendors that claim v1 without passing the corpus are misleading; downstream consumers should rely on the badge or a corpus-run report, not on marketing copy.
+Vendors that claim v0 without passing the corpus are misleading; downstream consumers should rely on the badge or a corpus-run report, not on marketing copy.
 
 ## Cross-references
 

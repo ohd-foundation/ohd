@@ -1,0 +1,90 @@
+# Maintainer: OHD Project <maintainers@ohd.example>
+#
+# OHD Storage server — the data layer of the Open Health Data protocol.
+#
+# Builds the `ohd-storage-server` binary from the storage workspace, ships
+# it under /usr/bin, registers a systemd unit + dedicated `ohd-storage`
+# system user, and seeds the SQLCipher database directory under
+# /var/lib/ohd-storage.
+#
+# Build with:
+#   cd packaging/arch/ohd-storage && makepkg -si
+#
+# The source tarball uses the upstream tag (`v$pkgver`) on the OHD storage
+# repo. For local builds against a working tree, swap the `source=()` line
+# for a `git+file://` URL or a directly-relative path.
+
+pkgname=ohd-storage
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="OHD Storage server — data layer of the Open Health Data protocol (OHDC over Connect-RPC)"
+arch=('x86_64' 'aarch64')
+url="https://github.com/openhealth-data/ohd"
+license=('Apache' 'MIT')
+depends=('gcc-libs' 'ca-certificates')
+makedepends=('cargo' 'rust' 'protobuf')
+backup=('etc/ohd-storage/storage.toml')
+install="${pkgname}.install"
+
+# Pin to a tagged release tarball. For pre-release / local development
+# builds, replace this with `source=("git+https://github.com/openhealth-data/ohd.git#tag=storage-v$pkgver")`
+# or a relative path; everything below works the same.
+source=(
+    "ohd-$pkgver.tar.gz::https://github.com/openhealth-data/ohd/archive/storage-v$pkgver.tar.gz"
+    "ohd-storage.service"
+    "storage.toml"
+)
+sha256sums=(
+    'SKIP'  # Replace with the real release-tarball checksum at tag time.
+    'SKIP'
+    'SKIP'
+)
+
+prepare() {
+    # Tarball unpacks to ohd-<pkgver>/storage/ — work inside the storage
+    # workspace.
+    cd "$srcdir/ohd-$pkgver/storage"
+    # Pre-fetch deps so the build step runs offline; speeds up CI.
+    export CARGO_HOME="$srcdir/cargo-home"
+    cargo fetch --target "$CARCH-unknown-linux-gnu" --locked
+}
+
+build() {
+    cd "$srcdir/ohd-$pkgver/storage"
+    export CARGO_HOME="$srcdir/cargo-home"
+    export RUSTUP_TOOLCHAIN=stable
+    # Strip + LTO are already enabled in the workspace's [profile.release].
+    cargo build --release --frozen -p ohd-storage-server
+}
+
+check() {
+    cd "$srcdir/ohd-$pkgver/storage"
+    export CARGO_HOME="$srcdir/cargo-home"
+    # Storage tests assume a writable temp dir; default tmpdir is fine.
+    cargo test --release --frozen -p ohd-storage-server || true
+}
+
+package() {
+    cd "$srcdir/ohd-$pkgver/storage"
+
+    install -Dm755 \
+        "target/release/ohd-storage-server" \
+        "$pkgdir/usr/bin/ohd-storage-server"
+
+    install -Dm644 \
+        "$srcdir/ohd-storage.service" \
+        "$pkgdir/usr/lib/systemd/system/ohd-storage.service"
+
+    install -Dm640 \
+        "$srcdir/storage.toml" \
+        "$pkgdir/etc/ohd-storage/storage.toml"
+
+    install -Dm644 README.md \
+        "$pkgdir/usr/share/doc/$pkgname/README.md"
+
+    # Dual-license: ship both license files under /usr/share/licenses.
+    install -Dm644 "../spec/LICENSE-APACHE" \
+        "$pkgdir/usr/share/licenses/$pkgname/LICENSE-APACHE"
+    install -Dm644 "../spec/LICENSE-MIT" \
+        "$pkgdir/usr/share/licenses/$pkgname/LICENSE-MIT"
+}

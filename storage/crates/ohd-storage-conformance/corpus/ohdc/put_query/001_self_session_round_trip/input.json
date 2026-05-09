@@ -1,0 +1,22 @@
+{
+  "events": [
+    {
+      "timestamp_ms": 1700000000000,
+      "event_type": "std.blood_glucose",
+      "channels": [
+        { "channel_path": "value", "real_value": 5.4 }
+      ]
+    },
+    {
+      "timestamp_ms": 1700000060000,
+      "event_type": "std.heart_rate_resting",
+      "channels": [
+        { "channel_path": "value", "real_value": 64.0 }
+      ]
+    }
+  ],
+  "query": {
+    "from_ms": 1699999999999,
+    "to_ms": 1700000060001
+  }
+}

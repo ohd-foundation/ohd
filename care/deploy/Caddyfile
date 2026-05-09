@@ -1,0 +1,76 @@
+# OHD Care — reference Caddyfile.
+#
+# Fronts the operator's domain with automatic HTTPS via Let's Encrypt.
+# Routes:
+#   /                       static SPA (the built ../web/dist)
+#   /mcp/care/*             the Care MCP (Streamable HTTP transport)
+#   /api/operator/*         operator-side endpoints (login, grant-vault ops, audit)
+#   /oauth/*, /authorize,
+#   /token, /oidc-callback  OIDC flow into Care (operator login)
+#   /health                 liveness probe (allow only from internal nets)
+#   /metrics                Prometheus exposition (restrict at network layer)
+
+{$OHD_CARE_DOMAIN} {
+    encode zstd gzip
+
+    # Static SPA at the root.
+    handle /assets/* {
+        root * /srv/care-web
+        file_server
+        # Long-lived caching for hashed Vite assets.
+        header Cache-Control "public, max-age=31536000, immutable"
+    }
+    handle / {
+        root * /srv/care-web
+        try_files {path} /index.html
+        file_server
+    }
+    handle /index.html {
+        root * /srv/care-web
+        file_server
+        header Cache-Control "no-cache"
+    }
+
+    # Care MCP — Streamable HTTP transport. Locked behind the operator's OIDC
+    # via the OAuth proxy in the implementation phase; for v0.1 keep this
+    # restricted at the network layer.
+    handle /mcp/care/* {
+        reverse_proxy care-mcp:8001
+    }
+
+    # Operator-side endpoints (login, grant vault, audit, case operations).
+    # The MCP service handles these in v0.1; future deployments may split
+    # into a dedicated care-api service.
+    handle /api/operator/* {
+        reverse_proxy care-mcp:8001
+    }
+
+    # OIDC flow — clinician's browser hits these during login.
+    handle /authorize     { reverse_proxy care-mcp:8001 }
+    handle /token         { reverse_proxy care-mcp:8001 }
+    handle /oidc-callback { reverse_proxy care-mcp:8001 }
+    handle /oauth/*       { reverse_proxy care-mcp:8001 }
+    handle /.well-known/* { reverse_proxy care-mcp:8001 }
+
+    # Health and metrics.
+    handle /health {
+        reverse_proxy care-mcp:8001
+    }
+    @internal_only client_ip 10.0.0.0/8 192.168.0.0/16 172.16.0.0/12 127.0.0.0/8
+    handle /metrics {
+        @ok client_ip 10.0.0.0/8 192.168.0.0/16 172.16.0.0/12 127.0.0.0/8
+        handle @ok {
+            reverse_proxy care-mcp:8001
+        }
+        respond 403
+    }
+
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        # SPA needs to load its own JS / assets only.
+        Content-Security-Policy "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' https:"
+    }
+}

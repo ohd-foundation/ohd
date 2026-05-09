@@ -1,0 +1,19 @@
+# buf codegen for the OHD Care web app.
+#
+# Reads the storage component's proto (`../../storage/proto/`) and emits
+# TypeScript message types + service descriptors into `src/gen/ohdc/v0/`.
+#
+# Pinned plugin: `@bufbuild/protoc-gen-es` v2. Connect-Web v2 consumes the
+# message + service descriptors emitted by this plugin directly — there is
+# no separate `protoc-gen-connect-es` step in the v2 line.
+#
+# Run with: `pnpm gen`
+version: v2
+plugins:
+  - local: ./node_modules/.bin/protoc-gen-es
+    out: src/gen
+    opt:
+      - target=ts
+      - import_extension=js
+inputs:
+  - directory: ../../storage/proto

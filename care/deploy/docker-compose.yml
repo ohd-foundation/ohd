@@ -1,0 +1,100 @@
+# OHD Care — reference Docker Compose deployment.
+#
+# Single-host shape suitable for a solo practitioner / small clinic. Stand up
+# Care on the operator's domain (OHD_DOMAIN). Caddy fronts everything with
+# automatic HTTPS via Let's Encrypt.
+#
+# Services in this stack:
+#   - caddy           reverse proxy + automatic HTTPS
+#   - care-web        the operator-facing SPA (built from ../web)
+#   - care-mcp        the Care MCP server, exposed via Streamable HTTP transport
+#                     for remote-LLM use; restrict via auth_proxy in production
+#   - postgres (opt)  operator-side state DB (sessions, grant vault, audit)
+#                     swap to SQLite by setting CARE_SYSTEM_DB to a sqlite:// URL
+#                     and removing the postgres service.
+#
+# Patient OHD storage is NOT part of this stack — Care talks to each patient's
+# storage instance via OHDC (relay-mediated for phones / NAS, direct for cloud).
+# Only the operator-side state lives here.
+#
+# Usage:
+#   1. Copy .env.example to .env and fill in OHD_CARE_DOMAIN + OIDC values.
+#   2. Build the web image (from ../web): pnpm install && pnpm build, then
+#      bundle dist/ into a small static-server image, OR mount it as a volume
+#      and point Caddy at the directory directly (simpler for v0.1).
+#   3. docker compose up -d
+#   4. Point DNS for OHD_CARE_DOMAIN at this host. Caddy auto-provisions TLS.
+
+services:
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"     # HTTP/3
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+      # Mount the built web SPA (from `pnpm build` in ../web) so Caddy can
+      # file_server it directly. Replace with a real image once a release
+      # pipeline exists.
+      - ../web/dist:/srv/care-web:ro
+    depends_on:
+      - care-mcp
+
+  care-mcp:
+    # Placeholder image — replace with a real published image once the MCP
+    # supports Streamable HTTP transport. For v0.1 you can build locally:
+    #   docker build -t ohd/care-mcp:0.1 ../mcp
+    # Note: the stub server in ../mcp/src/index.ts uses stdio. Streamable HTTP
+    # transport wiring is in the implementation phase; until then this service
+    # is a placeholder.
+    image: ohd/care-mcp:0.1
+    restart: unless-stopped
+    environment:
+      CARE_BIND: 0.0.0.0:8001
+      # Operator OIDC (the clinic's IDP). Reused by both web and MCP.
+      OIDC_ISSUER: ${OIDC_ISSUER}
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID}
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET}
+      # System DB — operator-side state.
+      CARE_SYSTEM_DB: ${CARE_SYSTEM_DB:-postgres://care:${POSTGRES_PASSWORD}@postgres:5432/care_system}
+      # KMS for grant-token encryption-at-rest. v0.1 default: PBKDF2-from-passphrase
+      # local key file (suitable for solo / small-clinic). Set CARE_KMS_BACKEND=cloud-kms
+      # and the relevant credentials for cloud KMS.
+      CARE_KMS_BACKEND: ${CARE_KMS_BACKEND:-passphrase}
+      CARE_KMS_PASSPHRASE_FILE: /run/secrets/care_kms_passphrase
+      # No PHI to external LLMs — operator-configurable per SPEC §14.
+      CARE_NO_PHI_TO_EXTERNAL_LLMS: ${CARE_NO_PHI_TO_EXTERNAL_LLMS:-true}
+    secrets:
+      - care_kms_passphrase
+    expose:
+      - "8001"
+    depends_on:
+      - postgres
+
+  # Optional. Comment out and set CARE_SYSTEM_DB=sqlite:///var/lib/care/system.db
+  # for solo / small-clinic deployments.
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: care_system
+      POSTGRES_USER: care
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - care_pg_data:/var/lib/postgresql/data
+    expose:
+      - "5432"
+
+volumes:
+  caddy_data:
+  caddy_config:
+  care_pg_data:
+
+secrets:
+  care_kms_passphrase:
+    file: ./secrets/care_kms_passphrase.txt

@@ -1,0 +1,16 @@
+version: v2
+modules:
+  - path: proto
+lint:
+  use:
+    - STANDARD
+  except:
+    # We use snake_case in field names; the STANDARD lint group includes ENUM
+    # rules that flag enum value names without the enum prefix. We accept the
+    # short forms (TIME_DESC, AVG, HOUR, …) for terseness in the wire schema.
+    - ENUM_VALUE_PREFIX
+    - ENUM_ZERO_VALUE_SUFFIX
+breaking:
+  use:
+    - WIRE_JSON
+deps: []

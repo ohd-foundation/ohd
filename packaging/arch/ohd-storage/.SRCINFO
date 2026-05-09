@@ -1,0 +1,24 @@
+pkgbase = ohd-storage
+	pkgdesc = OHD Storage server — data layer of the Open Health Data protocol (OHDC over Connect-RPC)
+	pkgver = 0.1.0
+	pkgrel = 1
+	url = https://github.com/openhealth-data/ohd
+	install = ohd-storage.install
+	arch = x86_64
+	arch = aarch64
+	license = Apache
+	license = MIT
+	makedepends = cargo
+	makedepends = rust
+	makedepends = protobuf
+	depends = gcc-libs
+	depends = ca-certificates
+	backup = etc/ohd-storage/storage.toml
+	source = ohd-0.1.0.tar.gz::https://github.com/openhealth-data/ohd/archive/storage-v0.1.0.tar.gz
+	source = ohd-storage.service
+	source = storage.toml
+	sha256sums = SKIP
+	sha256sums = SKIP
+	sha256sums = SKIP
+
+pkgname = ohd-storage

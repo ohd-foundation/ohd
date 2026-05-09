@@ -1,0 +1,28 @@
+# Rust
+/target/
+**/*.rs.bk
+Cargo.lock.bak
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Local secrets / config (committed example only)
+relay.toml
+relay.local.toml
+relay.db
+relay.db-journal
+relay.db-wal
+relay.db-shm
+/data/
+/secrets/
+*.p8
+*.pem
+!deploy/*.example*
+
+# Logs
+*.log

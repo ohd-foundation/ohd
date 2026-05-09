@@ -238,7 +238,7 @@ Signing is **opt-in per integrator**, not enforced. Most integrators won't bothe
 
 Public-key rotation: integrator publishes a new key, registers it with the operator, signs new events with the new key; the storage validates against any of the integrator's currently-registered keys. Old key gets removed when the integrator is confident no in-flight events still use it.
 
-Bit-level details (canonical-payload encoding, signature container format, operator-side key-pinning policy) are part of the OHDC v1 protocol spec (Task #8); the mechanism is reserved here.
+Bit-level details (canonical-payload encoding, signature container format, operator-side key-pinning policy) are part of the OHDC v0 protocol spec (Task #8); the mechanism is reserved here.
 
 ## Multi-tenant integrations — how Libre handles thousands of users
 
@@ -273,5 +273,5 @@ What makes the bridge interesting:
 
 - **Per-source `device_id`s** for the Health Connect bridge (one bridge token per upstream source app rather than one bridge token total). Phase 2+.
 - **Batched multi-user writes** for very-high-fanout integrators. Only if measured bottleneck.
-- **Source-signing canonicalization** — the deterministic encoding of a payload for signature input. Lives in OHDC v1 protocol spec (Task #8) when that gets written.
+- **Source-signing canonicalization** — the deterministic encoding of a payload for signature input. Lives in OHDC v0 protocol spec (Task #8) when that gets written.
 - **Vendor-side OAuth flows for users who don't yet have an OHD account.** Today, if Libre asks "do you want to push to OHD?" and the user doesn't have an account, the user has to sign up first elsewhere, then come back. A future revision could pre-create accounts on OHD Cloud directly from a vendor's flow with an account-creation scope. Not v1.

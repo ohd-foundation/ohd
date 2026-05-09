@@ -1,0 +1,47 @@
+services:
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"  # HTTP/3 (QUIC)
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - relay
+    networks:
+      - ohd-relay-net
+
+  relay:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: ohd-relay:0.1.0
+    restart: unless-stopped
+    command: ["serve", "--config", "/etc/ohd-relay/relay.toml", "--bind", "0.0.0.0:8443"]
+    expose:
+      - "8443"
+    volumes:
+      - ./relay.toml:/etc/ohd-relay/relay.toml:ro
+      - relay_data:/var/lib/ohd-relay
+      # Mount push provider secrets here when the implementation phase wires
+      # FCM/APNs in. Examples:
+      # - ./secrets/fcm_service_account.json:/run/secrets/fcm_service_account.json:ro
+      # - ./secrets/apns_key.p8:/run/secrets/apns_key.p8:ro
+    networks:
+      - ohd-relay-net
+    # For emergency-authority mode, build the image with --features authority
+    # and provision the OIDC + Fulcio config in relay.toml. See
+    # ../spec/emergency-trust.md for the full picture.
+
+volumes:
+  caddy_data:
+  caddy_config:
+  relay_data:
+
+networks:
+  ohd-relay-net:
+    driver: bridge

@@ -1,4 +1,4 @@
-# Design: OHDC v1 Protocol
+# Design: OHDC v0 Protocol
 
 > The wire-level contract for OHDC. Operations, message shapes, error model, pagination, idempotency, streaming, filter language, and the canonical `.proto` definitions.
 >
@@ -10,10 +10,10 @@
 
 1. **Common types** first — `Ulid`, `Event`, `ChannelValue`, `SampleBlock`, etc. Every operation refers back to these.
 2. **Cross-cutting concerns** next — error model, pagination, idempotency, filter language, streaming patterns. These rules apply uniformly to every RPC unless noted.
-3. **Service definitions** — three Connect-RPC services (`OhdcService`, `AuthService`, `RelayService`) and the HTTP-only OAuth/discovery endpoints. Each operation: signature, request, response, semantics, error codes, audit behavior.
+3. **Service definitions** — Connect-RPC services (`OhdcService`, `AuthService`, `SyncService`, `RelayService`) and the HTTP-only OAuth/discovery endpoints. Each operation: signature, request, response, semantics, error codes, audit behavior.
 4. **Versioning** at the end.
 
-This doc *is* the spec. If a behavior isn't documented here, it isn't part of OHDC v1; vendors implementing OHDC must not invent extensions in the `ohdc.v1.*` namespace. Custom extensions belong in vendor namespaces (e.g. `com.acme.ohdc_ext.v1.*`) and don't claim conformance.
+This doc *is* the spec. If a behavior isn't documented here, it isn't part of OHDC v0; vendors implementing OHDC must not invent extensions in the `ohdc.v0.*` namespace. Custom extensions belong in vendor namespaces (e.g. `com.acme.ohdc_ext.v0.*`) and don't claim conformance.
 
 ---
 
@@ -22,11 +22,15 @@ This doc *is* the spec. If a behavior isn't documented here, it isn't part of OH
 From [`../components/connect.md`](../components/connect.md):
 
 - **Connect-RPC over HTTP/3** (HTTP/2 fallback) defined by Protobuf schemas.
+- Connect's **body envelope** is the chosen streaming/error envelope. Do not
+  rely on gRPC trailers for semantics; HTTP/3 trailer interop is uneven.
 - Wire encoding negotiable per request: `application/proto` (binary, default) or `application/json` (Protobuf-JSON canonical encoding).
-- Path prefix: `/ohdc.v1.OhdcService/<Method>`, `/ohdc.v1.AuthService/<Method>`, `/ohdc.v1.RelayService/<Method>`.
+- Path prefix: `/ohdc.v0.OhdcService/<Method>`, `/ohdc.v0.AuthService/<Method>`, `/ohdc.v0.SyncService/<Method>`, `/ohdc.v0.RelayService/<Method>`.
 - TLS 1.3 required, terminated by Caddy on the operator side, end-to-end through OHD Relay.
 - Auth via `Authorization: Bearer <token>` header, where token is one of `ohds_…` (self-session), `ohdg_…` (grant), or `ohdd_…` (device). See [`auth.md`](auth.md) for token shapes.
 - gRPC-compatible: a Connect-RPC server accepts gRPC clients, vice versa.
+- HTTP/3 is served in-binary via `quinn` + `h3` on a separate UDP port with
+  ALPN dispatch. Relay raw QUIC tunnel mode uses ALPN `ohd-tnl1`.
 
 ---
 
@@ -35,7 +39,7 @@ From [`../components/connect.md`](../components/connect.md):
 ```protobuf
 syntax = "proto3";
 
-package ohdc.v1;
+package ohdc.v0;
 
 import "google/protobuf/duration.proto";
 import "google/protobuf/timestamp.proto";
@@ -92,6 +96,19 @@ message AttachmentRef {
   string filename = 5;
 }
 
+message SourceSignature {
+  string sig_alg = 1;       // 'ed25519' | 'rs256' | 'es256'
+  string signer_kid = 2;
+  bytes signature = 3;
+}
+
+message SignerInfo {
+  string signer_kid = 1;
+  string signer_label = 2;
+  string sig_alg = 3;
+  bool revoked = 4;
+}
+
 // Free-form string-keyed metadata. Used sparingly — only for fields that don't
 // fit into typed channels (e.g. metadata.source, metadata.source_id mirrors of
 // storage columns; vendor-namespaced flags).
@@ -130,6 +147,9 @@ message Event {
   // Reserved for sparse extension fields. Use vendor namespaces in keys
   // (e.g. "com.acme.signed_by"). Never used to carry typed event content.
   optional Metadata metadata = 18;
+
+  // Populated when EventInput.source_signature verified at insert time.
+  optional SignerInfo signed_by = 19;
 }
 
 // Sparse representation used for writes. Same shape as Event minus the
@@ -158,6 +178,8 @@ message EventInput {
 
   optional Ulid superseded_by = 15;
   optional Metadata metadata = 16;
+
+  optional SourceSignature source_signature = 17;
 }
 
 // Sample block written as part of EventInput. The encoded payload is the
@@ -383,7 +405,7 @@ The filter is **explicit and bounded**. There's no Turing-complete query languag
 
 ## Streaming patterns
 
-Connect-RPC supports unary, server-streaming, client-streaming, and bidi. OHDC v1 uses:
+Connect-RPC supports unary, server-streaming, client-streaming, and bidi. OHDC v0 uses:
 
 | RPC | Pattern | Why |
 |---|---|---|
@@ -456,6 +478,53 @@ Exceeding a limit returns `PAYLOAD_TOO_LARGE` (or `RESOURCE_EXHAUSTED` for strea
 ## Service: `OhdcService`
 
 The main service. Every consumer (Connect, Care, MCPs, integrators, sensors) speaks against this surface. Token kind enforced per RPC.
+
+Current `ohdc.v0` service surface:
+
+```protobuf
+service OhdcService {
+  rpc PutEvents(PutEventsRequest) returns (PutEventsResponse);
+  rpc AttachBlob(stream AttachBlobChunk) returns (AttachBlobResponse);
+  rpc QueryEvents(QueryEventsRequest) returns (stream Event);
+  rpc GetEventByUlid(GetEventByUlidRequest) returns (Event);
+  rpc Aggregate(AggregateRequest) returns (AggregateResponse);
+  rpc Correlate(CorrelateRequest) returns (CorrelateResponse);
+  rpc ReadSamples(ReadSamplesRequest) returns (stream SampleBatch);
+  rpc ReadAttachment(ReadAttachmentRequest) returns (stream AttachmentChunk);
+  rpc CreateGrant(CreateGrantRequest) returns (CreateGrantResponse);
+  rpc ListGrants(ListGrantsRequest) returns (ListGrantsResponse);
+  rpc UpdateGrant(UpdateGrantRequest) returns (Grant);
+  rpc RevokeGrant(RevokeGrantRequest) returns (RevokeGrantResponse);
+  rpc CreateCase(CreateCaseRequest) returns (Case);   // OpenCase in older prose
+  rpc UpdateCase(UpdateCaseRequest) returns (Case);
+  rpc CloseCase(CloseCaseRequest) returns (Case);
+  rpc ReopenCase(ReopenCaseRequest) returns (Case);
+  rpc ListCases(ListCasesRequest) returns (ListCasesResponse);
+  rpc GetCase(GetCaseRequest) returns (Case);
+  rpc AddCaseFilter(AddCaseFilterRequest) returns (CaseFilter);
+  rpc RemoveCaseFilter(RemoveCaseFilterRequest) returns (RemoveCaseFilterResponse);
+  rpc ListCaseFilters(ListCaseFiltersRequest) returns (ListCaseFiltersResponse);
+  rpc AuditQuery(AuditQueryRequest) returns (stream AuditEntry);
+  rpc ListPending(ListPendingRequest) returns (ListPendingResponse);
+  rpc ApprovePending(ApprovePendingRequest) returns (ApprovePendingResponse);
+  rpc RejectPending(RejectPendingRequest) returns (RejectPendingResponse);
+  rpc ListPendingQueries(ListPendingQueriesRequest) returns (stream PendingQuery);
+  rpc ApprovePendingQuery(ApprovePendingQueryRequest) returns (ApprovePendingQueryResponse);
+  rpc RejectPendingQuery(RejectPendingQueryRequest) returns (RejectPendingQueryResponse);
+  rpc Export(ExportRequest) returns (stream ExportChunk);
+  rpc Import(stream ImportChunk) returns (ImportResponse);
+  rpc RegisterSigner(RegisterSignerRequest) returns (RegisterSignerResponse);
+  rpc ListSigners(ListSignersRequest) returns (ListSignersResponse);
+  rpc RevokeSigner(RevokeSignerRequest) returns (RevokeSignerResponse);
+  rpc WhoAmI(WhoAmIRequest) returns (WhoAmIResponse);
+  rpc Health(HealthRequest) returns (HealthResponse);
+}
+```
+
+The Rust core also exposes helpers equivalent to `ForceCloseCase`,
+`HandoffCase`, `IssueRetrospectiveGrant`, and `IssueDelegateGrant`; the proto
+surface uses the case/grant RPCs above plus typed request flows rather than
+separate method names for every helper.
 
 ### Writes
 
@@ -1077,6 +1146,36 @@ message RejectPendingResponse {
 
 **Token kinds**: self-session for approve/reject; grants can list their own pending submissions.
 
+### Pending queries (read-with-approval)
+
+Grants with `require_approval_per_query=1` enqueue reads in `pending_queries`
+instead of executing immediately.
+
+```protobuf
+rpc ListPendingQueries(ListPendingQueriesRequest) returns (stream PendingQuery);
+rpc ApprovePendingQuery(ApprovePendingQueryRequest) returns (ApprovePendingQueryResponse);
+rpc RejectPendingQuery(RejectPendingQueryRequest) returns (RejectPendingQueryResponse);
+```
+
+Self-session tokens can list and decide pending read requests. Grant tokens
+receive a pending/approval error until the user approves the queued query.
+
+### Source signing
+
+High-trust sources submit `EventInput.source_signature`. Storage verifies the
+signature over canonical CBOR event bytes using the registered signer row and
+rejects invalid signatures before commit. Supported `sig_alg` values are
+`ed25519`, `rs256`, and `es256`.
+
+```protobuf
+rpc RegisterSigner(RegisterSignerRequest) returns (RegisterSignerResponse);
+rpc ListSigners(ListSignersRequest) returns (ListSignersResponse);
+rpc RevokeSigner(RevokeSignerRequest) returns (RevokeSignerResponse);
+```
+
+These signer registry RPCs are self-session only. Queried events that were
+accepted with a valid source signature return `Event.signed_by`.
+
 ### Export / Import
 
 ```protobuf
@@ -1180,7 +1279,7 @@ message HealthResponse {
   string status = 1;                      // 'ok' | 'degraded' | 'down'
   int64 server_time_ms = 2;
   string server_version = 3;
-  string protocol_version = 4;            // e.g. "ohdc.v1"
+  string protocol_version = 4;            // e.g. "ohdc.v0"
   optional int32 registry_version = 5;
   // Per-subsystem state:
   map<string, string> subsystems = 6;     // e.g. { "system_db": "ok", "blobs": "ok", "relay": "ok" }
@@ -1201,7 +1300,9 @@ Self-session-side identity and session operations. Distinct from `OhdcService` s
 service AuthService {
   rpc ListIdentities(ListIdentitiesRequest) returns (ListIdentitiesResponse);
   rpc LinkIdentityStart(LinkIdentityStartRequest) returns (LinkIdentityStartResponse);
+  rpc CompleteIdentityLink(CompleteIdentityLinkRequest) returns (CompleteIdentityLinkResponse);
   rpc UnlinkIdentity(UnlinkIdentityRequest) returns (UnlinkIdentityResponse);
+  rpc SetPrimaryIdentity(SetPrimaryIdentityRequest) returns (SetPrimaryIdentityResponse);
 
   rpc ListSessions(ListSessionsRequest) returns (ListSessionsResponse);
   rpc RevokeSession(RevokeSessionRequest) returns (RevokeSessionResponse);
@@ -1222,8 +1323,33 @@ service AuthService {
 Each request/response message is mostly self-explanatory by name + the surrounding spec — see [`auth.md`](auth.md), [`care-auth.md`](care-auth.md), and [`notifications.md`](notifications.md) for the semantics. Highlights:
 
 - `LinkIdentityStart` returns a one-time URL the user opens to complete the OAuth flow against a new provider; on completion the new identity is bound to the user's existing `user_ulid`.
-- `IssueDeviceToken` is the in-app Model 3 path from the deferred device-pairing design — the user's own apps (Connect's bridge service) request a per-bridge token under self-session. Fully usable in v1 even though the broader device-pairing UX is deferred.
+- `CompleteIdentityLink` verifies the provider `id_token` and commits the pending identity link.
+- `SetPrimaryIdentity` promotes one linked identity to the primary login identity.
+- `IssueDeviceToken` is the in-app Model 3 path from the deferred device-pairing design — the user's own apps (Connect's bridge service) request a per-bridge token under self-session. Fully usable in v0 even though the broader device-pairing UX is deferred.
 - `RegisterPushToken` is the entry point for the notification system; idempotent on `(platform, token)`.
+
+---
+
+## Service: `SyncService`
+
+Cache-to-primary replication uses a separate self-session-only service:
+
+```protobuf
+service SyncService {
+  rpc Hello(HelloRequest) returns (HelloResponse);
+  rpc PushFrames(stream PushFrame) returns (stream PushAck);
+  rpc PullFrames(PullRequest) returns (stream PushFrame);
+  rpc PushAttachmentBlob(stream AttachmentChunk) returns (AttachmentAck);
+  rpc PullAttachmentBlob(PullAttachmentRequest) returns (stream AttachmentChunk);
+  rpc CreateGrantOnPrimary(CreateGrantRequest) returns (CreateGrantResponse);
+  rpc RevokeGrantOnPrimary(RevokeGrantRequest) returns (RevokeGrantResponse);
+  rpc UpdateGrantOnPrimary(UpdateGrantRequest) returns (Grant);
+}
+```
+
+`PushAttachmentBlob` and `PullAttachmentBlob` carry encrypted sidecar payloads
+outside the event-frame stream. Grant lifecycle remains RPC-gated against the
+primary rather than replicated as eventually-consistent frames.
 
 ### Token-kind matrix
 
@@ -1288,17 +1414,19 @@ Not Connect-RPC — standard HTTP, served alongside the RPC services on the same
 | `/health` | GET | Same as `OhdcService.Health` for non-RPC monitors |
 | `/metrics` | GET | Prometheus exposition; restricted at network layer |
 
-These are part of the OHDC v1 contract — every implementation exposes them at the canonical paths.
+These are part of the OHDC v0 contract — every implementation exposes them at the canonical paths.
 
 ---
 
 ## Versioning
 
-The `.proto` package name carries the major version: `ohdc.v1`. Within v1:
+The `.proto` package name carries the version: `ohdc.v0`. While the protocol
+is in v0, additive changes are allowed but must be documented here and in the
+canonical proto files:
 
 - **Additive changes** (new optional fields, new RPCs, new error codes, new event-type catalog entries) are non-breaking. Old clients keep working; new fields are silently ignored on older readers.
 - **Renames or behavioral changes** require either an additive shadow field with deprecation of the old, or a major bump.
-- **Major bumps** (`ohdc.v2`) are a new package; both versions can be served by the same storage during a migration window. The conformance corpus carries fixtures for each supported version.
+- **Post-v0 major bumps** (`ohdc.vN`) are new packages; multiple versions can be served by the same storage during a migration window. The conformance corpus carries fixtures for each supported version.
 
 `Health.protocol_version` reports the current version. Clients call `Health` once at startup; if they want a version they can't speak, they fail-fast with a clear "your client is too old / too new" message.
 
@@ -1308,7 +1436,7 @@ Buf's `breaking` lint runs in CI on the `ohd-protocol` repo and refuses commits 
 
 ## Conformance
 
-Implementations claiming OHDC v1 conformance must:
+Implementations claiming OHDC v0 conformance must:
 
 1. Compile and serve the canonical `.proto` files unchanged (no field deletion, no renumbering, no semantic drift).
 2. Pass the conformance corpus (Task #16) end-to-end: input event sequence → expected query outputs → byte-equal sample blocks → grant resolution fixtures.
@@ -1316,7 +1444,7 @@ Implementations claiming OHDC v1 conformance must:
 4. Implement every RPC in the token-kind matrix above with the correct scope behavior.
 5. Expose the HTTP-only endpoints at the canonical paths.
 
-Vendors may add custom RPCs to `com.<vendor>.ohdc_ext.v1.*` namespaces; those are out of scope for v1 conformance and don't claim it.
+Vendors may add custom RPCs to `com.<vendor>.ohdc_ext.v0.*` namespaces; those are out of scope for v0 conformance and don't claim it.
 
 ---
 

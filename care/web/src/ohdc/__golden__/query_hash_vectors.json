@@ -1,0 +1,47 @@
+[
+  {
+    "name": "default_filter",
+    "query_kind": "query_events",
+    "filter": {},
+    "canonical_payload": "{\"from_ms\":null,\"to_ms\":null,\"event_types_in\":[],\"event_types_not_in\":[],\"include_deleted\":false,\"include_superseded\":true,\"limit\":null,\"device_id_in\":[],\"source_in\":[],\"event_ulids_in\":[],\"sensitivity_classes_in\":[],\"sensitivity_classes_not_in\":[],\"channel_predicates\":[],\"case_ulids_in\":[]}",
+    "expected_hex": "308439f78f5030ea54f8de1e08ea27e55d1aab2deba05880e0f06f5d1c42412c"
+  },
+  {
+    "name": "time_range_with_event_types",
+    "query_kind": "query_events",
+    "filter": {
+      "fromMs": 1700000000000,
+      "toMs": 1700001000000,
+      "eventTypesIn": ["std.blood_glucose", "std.heart_rate_resting"],
+      "limit": 100
+    },
+    "canonical_payload": "{\"from_ms\":1700000000000,\"to_ms\":1700001000000,\"event_types_in\":[\"std.blood_glucose\",\"std.heart_rate_resting\"],\"event_types_not_in\":[],\"include_deleted\":false,\"include_superseded\":true,\"limit\":100,\"device_id_in\":[],\"source_in\":[],\"event_ulids_in\":[],\"sensitivity_classes_in\":[],\"sensitivity_classes_not_in\":[],\"channel_predicates\":[],\"case_ulids_in\":[]}",
+    "expected_hex": "bbd22dc65900d3e200f427c7905f89d725357ab6f992d534b36278004090ea31"
+  },
+  {
+    "name": "channel_predicate_real_eq",
+    "query_kind": "query_events",
+    "filter": {
+      "eventTypesIn": ["std.blood_glucose"],
+      "channelPredicates": [
+        {
+          "channelPath": "value",
+          "op": "gte",
+          "value": { "Real": 6.5 }
+        }
+      ]
+    },
+    "canonical_payload": "{\"from_ms\":null,\"to_ms\":null,\"event_types_in\":[\"std.blood_glucose\"],\"event_types_not_in\":[],\"include_deleted\":false,\"include_superseded\":true,\"limit\":null,\"device_id_in\":[],\"source_in\":[],\"event_ulids_in\":[],\"sensitivity_classes_in\":[],\"sensitivity_classes_not_in\":[],\"channel_predicates\":[{\"channel_path\":\"value\",\"op\":\"gte\",\"value\":{\"Real\":6.5}}],\"case_ulids_in\":[]}",
+    "expected_hex": "7806abda0aacdcfdfbe2b9b7c44e69b518a9c6acd1c8d2e8ab50527f89cf6e53"
+  },
+  {
+    "name": "case_scope",
+    "query_kind": "query_events",
+    "filter": {
+      "caseUlidsIn": ["01HXVZK6Z0PB6WQRHQA1QQQQQQ"],
+      "includeSuperseded": false
+    },
+    "canonical_payload": "{\"from_ms\":null,\"to_ms\":null,\"event_types_in\":[],\"event_types_not_in\":[],\"include_deleted\":false,\"include_superseded\":false,\"limit\":null,\"device_id_in\":[],\"source_in\":[],\"event_ulids_in\":[],\"sensitivity_classes_in\":[],\"sensitivity_classes_not_in\":[],\"channel_predicates\":[],\"case_ulids_in\":[\"01HXVZK6Z0PB6WQRHQA1QQQQQQ\"]}",
+    "expected_hex": "7f3fe6e241347df7ad970d8f1b4e49bc71de109381d662df48e5d613cd051c1d"
+  }
+]

@@ -1,0 +1,72 @@
+// OHDC v0 — RelayService (storage ↔ relay).
+//
+// Used by the storage process itself, not by external clients. See
+// ../../../spec/ohdc-protocol.md "Service: RelayService" and
+// ../../../spec/relay-protocol.md for the relay tunnel wire spec.
+
+syntax = "proto3";
+
+package ohdc.v0;
+
+import "ohdc/v0/ohdc.proto";
+
+service RelayService {
+  rpc Register(RegisterRequest) returns (RegisterResponse);
+  rpc RefreshRegistration(RefreshRegistrationRequest) returns (RefreshRegistrationResponse);
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+  rpc Deregister(DeregisterRequest) returns (DeregisterResponse);
+
+  // Long-lived bidirectional stream the storage maintains while reachable.
+  // Frames carry opaque ciphertext from external consumers; the relay
+  // forwards them. Storage's responses go back the other way.
+  rpc OpenTunnel(stream TunnelFrame) returns (stream TunnelFrame);
+}
+
+message RegisterRequest {
+  // The storage's self-signed identity certificate (DER).
+  bytes storage_cert_der = 1;
+  // Optional friendly label for the user-visible relay listing.
+  optional string label = 2;
+}
+
+message RegisterResponse {
+  string registration_token = 1;
+  string rendezvous_url = 2;          // relay URL embedded in grants
+  bytes pin_sha256 = 3;               // SPKI pin for the storage cert
+}
+
+message RefreshRegistrationRequest {
+  string registration_token = 1;
+}
+
+message RefreshRegistrationResponse {
+  int64 valid_until_ms = 1;
+}
+
+message HeartbeatRequest {
+  string registration_token = 1;
+  int64 client_time_ms = 2;
+}
+
+message HeartbeatResponse {
+  int64 server_time_ms = 1;
+}
+
+message DeregisterRequest {
+  string registration_token = 1;
+}
+
+message DeregisterResponse {
+  int64 deregistered_at_ms = 1;
+}
+
+// Tunnel frames — full shape pinned in spec/relay-protocol.md (TLS-through-
+// tunnel, frame format, session multiplexing). v1 minimal shape:
+message TunnelFrame {
+  // Session identifier within the tunnel (for multiplexed sessions).
+  uint32 session_id = 1;
+  // Opaque payload — relay never inspects.
+  bytes payload = 2;
+  // Frame type tag: 'open' | 'data' | 'close'. Detail in relay-protocol.md.
+  string kind = 3;
+}

@@ -1,0 +1,152 @@
+# OHD release workflow — template.
+#
+# Status: TEMPLATE. Drop into `.github/workflows/release.yml` of whichever
+# repo owns the binary you're cutting. Each binary lives in its own
+# subtree (storage/, relay/, connect/cli/, emergency/cli/, care/cli/) so
+# each repo gets a tailored copy of this file.
+#
+# Triggers on tag push of the form `<binary>-v<semver>` (e.g.
+# `storage-v0.1.0`, `relay-v0.1.0`). The matrix builds for x86_64 and
+# aarch64 Linux, produces .deb + .rpm via cargo-deb / cargo-generate-rpm,
+# and uploads the artifacts to the GitHub release.
+#
+# Replace `<BINARY>`, `<CRATE>`, and `<WORKDIR>` placeholders below for
+# the specific binary.
+
+name: release
+
+on:
+  push:
+    tags:
+      - 'storage-v*'
+      - 'relay-v*'
+      - 'connect-v*'
+      - 'emergency-v*'
+  workflow_dispatch:
+
+jobs:
+  rust-binaries:
+    name: ${{ matrix.binary }} (${{ matrix.target }})
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # storage
+          - binary: ohd-storage-server
+            crate: ohd-storage-server
+            workdir: storage
+            target: x86_64-unknown-linux-gnu
+            tag-prefix: storage-v
+          - binary: ohd-storage-server
+            crate: ohd-storage-server
+            workdir: storage
+            target: aarch64-unknown-linux-gnu
+            tag-prefix: storage-v
+          # relay
+          - binary: ohd-relay
+            crate: ohd-relay
+            workdir: relay
+            target: x86_64-unknown-linux-gnu
+            tag-prefix: relay-v
+          - binary: ohd-relay
+            crate: ohd-relay
+            workdir: relay
+            target: aarch64-unknown-linux-gnu
+            tag-prefix: relay-v
+          # connect
+          - binary: ohd-connect
+            crate: ohd-connect
+            workdir: connect/cli
+            target: x86_64-unknown-linux-gnu
+            tag-prefix: connect-v
+          - binary: ohd-connect
+            crate: ohd-connect
+            workdir: connect/cli
+            target: aarch64-unknown-linux-gnu
+            tag-prefix: connect-v
+          # emergency
+          - binary: ohd-emergency
+            crate: ohd-emergency
+            workdir: emergency/cli
+            target: x86_64-unknown-linux-gnu
+            tag-prefix: emergency-v
+          - binary: ohd-emergency
+            crate: ohd-emergency
+            workdir: emergency/cli
+            target: aarch64-unknown-linux-gnu
+            tag-prefix: emergency-v
+
+    # Skip rows whose tag-prefix doesn't match the pushed tag.
+    if: startsWith(github.ref, format('refs/tags/{0}', matrix.tag-prefix))
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install cross-compilers (aarch64)
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - name: Install protobuf-compiler (storage uses bundled, others codegen)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
+
+      - name: Install cargo-deb + cargo-generate-rpm
+        run: |
+          cargo install --locked cargo-deb cargo-generate-rpm
+
+      - name: Build release binary
+        working-directory: ${{ matrix.workdir }}
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+        run: |
+          cargo build --release --target ${{ matrix.target }} -p ${{ matrix.crate }}
+
+      - name: Build .deb
+        working-directory: ${{ matrix.workdir }}
+        run: |
+          cargo deb \
+            --no-build \
+            --target ${{ matrix.target }} \
+            -p ${{ matrix.crate }}
+
+      - name: Build .rpm
+        working-directory: ${{ matrix.workdir }}
+        run: |
+          cargo generate-rpm \
+            --target ${{ matrix.target }} \
+            -p ${{ matrix.crate }}
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.binary }}-${{ matrix.target }}
+          path: |
+            ${{ matrix.workdir }}/target/${{ matrix.target }}/debian/*.deb
+            ${{ matrix.workdir }}/target/${{ matrix.target }}/generate-rpm/*.rpm
+
+  release:
+    name: Publish release
+    needs: rust-binaries
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create / update release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**/*
+          generate_release_notes: true

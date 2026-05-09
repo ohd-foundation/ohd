@@ -1,0 +1,176 @@
+[package]
+name = "ohd-relay"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+description = "OHD Relay — bridges remote OHDC consumers to OHD Storage instances behind NAT. Forwards opaque ciphertext; does not decrypt."
+license = "Apache-2.0 OR MIT"
+repository = "https://github.com/ohd-foundation/ohd"
+readme = "README.md"
+publish = false
+
+[lib]
+name = "ohd_relay"
+path = "src/lib.rs"
+
+[[bin]]
+name = "ohd-relay"
+path = "src/main.rs"
+
+[features]
+default = []
+# Emergency-authority mode: relay holds a Fulcio-issued authority cert and signs
+# break-glass `EmergencyAccessRequest` payloads. See `spec/emergency-trust.md`.
+# Plain forwarding relays do not need this; build without it to drop the deps.
+authority = ["dep:x509-parser", "dep:ed25519-dalek", "dep:pem"]
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "signal", "time", "sync"] }
+anyhow = "1"
+thiserror = "1"
+bytes = "1"
+axum = { version = "0.7", features = ["ws", "macros"] }
+hyper = { version = "1", features = ["server", "http2"] }
+tower = "0.5"
+tower-http = { version = "0.5", features = ["trace"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rusqlite = { version = "0.31", features = ["bundled"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+rand = "0.8"
+sha2 = "0.10"
+hex = "0.4"
+async-trait = "0.1"
+futures-util = "0.3"
+
+# Push (FCM HTTP v1 + APNs HTTP/2) — both go through `reqwest` with
+# `rustls-tls` so we don't link OpenSSL. FCM HTTP v1 uses OAuth2
+# service-account JWT-bearer flow (we mint the bearer ourselves with
+# `jsonwebtoken` to avoid pulling all of `gcp_auth`'s dep tree); APNs uses
+# its own ES256 JWT signed with the .p8 P-256 key Apple issues.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "http2"] }
+jsonwebtoken = "9"
+toml = { version = "0.8", default-features = false, features = ["parse"] }
+
+# Always-on (registration-time OIDC gating + dev/test crypto). The
+# `--features authority` build also re-uses these.
+base64 = "0.22"
+
+# HTTP/3 (QUIC) transport for the relay's REST endpoints (register /
+# heartbeat / deregister). The WebSocket-based tunnel + attach paths stay
+# HTTP/2: RFC 9220 (WebSockets-over-HTTP/3) requires h3 extended-CONNECT
+# support that the h3 0.0.x crate doesn't expose to axum cleanly today;
+# clients that need WebSockets continue to use the HTTP/2 listener.
+#
+# Cert loading + QUIC `ServerConfig` setup + the streaming-body adapter
+# are factored into `ohd-h3-helpers` (in the storage workspace) so the
+# storage server can use the same primitives. The relay's
+# `crate::http3` module is a thin shim that delegates to those helpers
+# and runs the axum-Router-specific dispatch glue locally.
+ohd-h3-helpers = { path = "../storage/crates/ohd-h3-helpers" }
+quinn = "0.11"
+h3 = "0.0"
+h3-quinn = "0.0"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+rustls-pemfile = "2"
+rcgen = { version = "0.13", default-features = false, features = ["pem", "ring"] }
+http = "1"
+http-body = "1"
+http-body-util = "0.1"
+
+# Authority mode (feature-gated). Pulled in only when `--features authority`
+# is enabled so plain forwarding relays don't pay the build cost.
+#
+# - `x509-parser`: parses Fulcio-issued cert chains for path validation.
+# - `ed25519-dalek`: Ed25519 keypair generation + leaf-cert signing.
+# - `pem`: PEM en/decoding for cert chains over the wire.
+# - `base64`: SPKI / signature encoding for the Fulcio request body.
+#
+# We deliberately do NOT depend on the `sigstore` crate. It's a heavy +
+# experimental tree; we only need a thin Fulcio HTTP client + a chain
+# verifier for Ed25519 leaves. ~300 LOC of `reqwest` + `x509-parser` +
+# `ed25519-dalek` covers it.
+x509-parser = { version = "0.16", default-features = false, features = ["verify"], optional = true }
+ed25519-dalek = { version = "2", default-features = false, features = ["rand_core", "std", "pkcs8"], optional = true }
+pem = { version = "3", optional = true }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "signal", "time", "sync", "test-util"] }
+tokio-tungstenite = "0.21"
+tempfile = "3"
+reqwest = { version = "0.12", default-features = false, features = ["json"] }
+ed25519-dalek = { version = "2", default-features = false, features = ["rand_core", "std", "pkcs8"] }
+rcgen = { version = "0.13", default-features = false, features = ["pem", "ring"] }
+# Test-only RSA keypair generation for OIDC JWKS unit tests. We don't
+# need RSA at runtime — production verification uses `jsonwebtoken`'s
+# JWK → DecodingKey path, which is RSA/ECDSA/Ed25519 generic.
+rsa = { version = "0.9", default-features = false, features = ["std", "pem", "sha2"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+
+# -----------------------------------------------------------------------------
+# Distribution packaging — cargo-deb (.deb) and cargo-generate-rpm (.rpm).
+#
+# Build:
+#   cargo deb -p ohd-relay
+#   cargo generate-rpm -p ohd-relay
+#
+# Paths are relative to this Cargo.toml (relay/). The shared packaging
+# tree lives one level up at `../packaging/`.
+# -----------------------------------------------------------------------------
+
+[package.metadata.deb]
+name = "ohd-relay"
+maintainer = "OHD Project <maintainers@ohd.example>"
+copyright = "2026 OHD Project — Apache-2.0 OR MIT"
+license-file = "../spec/LICENSE-APACHE"
+extended-description = """\
+OHD Relay forwards opaque ciphertext between OHDC consumers and OHD
+Storage instances behind NAT (phones, home servers, anything without a
+public IP). It does not decrypt; TLS is end-to-end through the tunnel.
+A relay deployment can opt into emergency-authority mode (Fulcio-issued
+24h cert) to additionally sign EmergencyAccessRequest payloads.
+
+This package ships the `ohd-relay` binary plus a systemd unit that runs
+it as the dedicated `ohd-relay` system user against the registration
+SQLite under /var/lib/ohd-relay, with the operator config at
+/etc/ohd-relay/relay.toml."""
+section = "net"
+priority = "optional"
+depends = "libc6, ca-certificates, adduser, systemd"
+recommends = "caddy"
+assets = [
+    ["target/release/ohd-relay", "usr/bin/", "755"],
+    ["../packaging/systemd/ohd-relay.service", "lib/systemd/system/ohd-relay.service", "644"],
+    ["../packaging/assets/relay.toml", "etc/ohd-relay/relay.toml", "640"],
+    ["README.md", "usr/share/doc/ohd-relay/README.md", "644"],
+    ["deploy/relay.example.toml", "usr/share/doc/ohd-relay/relay.example.toml", "644"],
+]
+conf-files = ["/etc/ohd-relay/relay.toml"]
+maintainer-scripts = "../packaging/debian/ohd-relay/"
+
+[package.metadata.generate-rpm]
+name = "ohd-relay"
+license = "Apache-2.0 OR MIT"
+summary = "OHD Relay (NAT bridge for OHDC consumers)"
+assets = [
+    { source = "target/release/ohd-relay", dest = "/usr/bin/ohd-relay", mode = "755" },
+    { source = "../packaging/systemd/ohd-relay.service", dest = "/lib/systemd/system/ohd-relay.service", mode = "644", config = false },
+    { source = "../packaging/assets/relay.toml", dest = "/etc/ohd-relay/relay.toml", mode = "640", config = true },
+    { source = "README.md", dest = "/usr/share/doc/ohd-relay/README.md", mode = "644", doc = true },
+    { source = "deploy/relay.example.toml", dest = "/usr/share/doc/ohd-relay/relay.example.toml", mode = "644", doc = true },
+    { source = "../spec/LICENSE-APACHE", dest = "/usr/share/licenses/ohd-relay/LICENSE-APACHE", mode = "644", doc = true },
+    { source = "../spec/LICENSE-MIT", dest = "/usr/share/licenses/ohd-relay/LICENSE-MIT", mode = "644", doc = true },
+]
+auto-req = "no"
+
+[package.metadata.generate-rpm.requires]
+glibc = "*"
+ca-certificates = "*"
+shadow-utils = "*"
+systemd = "*"

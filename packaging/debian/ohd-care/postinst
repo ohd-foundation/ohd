@@ -1,0 +1,27 @@
+#!/bin/sh
+# postinst maintainer script for ohd-care (Python).
+# Installs the bundled wheel into the system Python via pip and links the
+# launcher. The .deb is a thin wrapper; the wheel is the source of truth.
+
+set -e
+
+case "$1" in
+    configure)
+        if command -v python3 >/dev/null 2>&1; then
+            # `--break-system-packages` is required on Debian 12+ /
+            # Ubuntu 24.04+ (PEP 668). We install into /usr/lib/ohd-care
+            # via `--prefix` so we don't pollute the system site-packages.
+            python3 -m pip install \
+                --quiet \
+                --no-deps \
+                --no-index \
+                --find-links /usr/lib/ohd-care/wheels \
+                --prefix /usr/lib/ohd-care \
+                --break-system-packages \
+                ohd-care >/dev/null 2>&1 || true
+        fi
+        ;;
+    abort-upgrade|abort-remove|abort-deconfigure) ;;
+esac
+
+exit 0

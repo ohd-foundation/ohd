@@ -1,0 +1,18 @@
+pkgbase = ohd-connect
+	pkgdesc = OHD Connect — terminal interface to OHDC under self-session auth
+	pkgver = 0.1.0
+	pkgrel = 1
+	url = https://github.com/openhealth-data/ohd
+	arch = x86_64
+	arch = aarch64
+	license = Apache
+	license = MIT
+	makedepends = cargo
+	makedepends = rust
+	makedepends = protobuf
+	depends = gcc-libs
+	depends = ca-certificates
+	source = ohd-0.1.0.tar.gz::https://github.com/openhealth-data/ohd/archive/connect-v0.1.0.tar.gz
+	sha256sums = SKIP
+
+pkgname = ohd-connect

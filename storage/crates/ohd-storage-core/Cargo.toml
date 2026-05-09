@@ -1,0 +1,64 @@
+[package]
+name = "ohd-storage-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "OHD Storage core library — on-disk format, registry, grants, audit, sync"
+readme = "../../README.md"
+
+[lib]
+name = "ohd_storage_core"
+path = "src/lib.rs"
+
+[dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+zeroize.workspace = true
+rand.workspace = true
+sha2.workspace = true
+hex.workspace = true
+base32.workspace = true
+zstd.workspace = true
+jsonwebtoken.workspace = true
+
+# Per-channel encryption pipeline (see encryption.rs / channel_encryption.rs).
+aes-gcm.workspace = true
+chacha20poly1305.workspace = true
+hkdf.workspace = true
+ciborium.workspace = true
+
+# BIP39 mnemonic + PBKDF2-SHA512 for the K_recovery hierarchy.
+tiny-bip39.workspace = true
+pbkdf2.workspace = true
+hmac.workspace = true
+
+# X25519 ECDH for multi-storage grant re-targeting (see grants.rs +
+# encryption.rs `RecoveryKeypair`). Each storage publishes a recovery pubkey
+# derived via HKDF from K_recovery; CreateGrant ECDH-wraps each K_class to
+# the grantee's pubkey so they can unwrap under their own seckey.
+x25519-dalek.workspace = true
+
+# Ed25519 signature verification for source signing (see source_signing.rs).
+ed25519-dalek.workspace = true
+# base64 url-safe encoding for the JWT-shaped RS256/ES256 signature path
+# (jsonwebtoken's primitive `verify` expects URL-safe-no-pad-encoded sigs).
+base64 = "0.22"
+
+[dev-dependencies]
+tempfile = "3"
+# Tests in `tests/identities_e2e.rs` mint RSA-signed id_tokens against a
+# mock OIDC issuer. `rsa` generates the keypair; `base64` URL-safe encodes
+# the JWK n/e components. Both are dev-only — production never generates
+# RSA keys, it only verifies tokens via the `jsonwebtoken` workspace dep.
+rsa = "0.9"
+# `ed25519-dalek` is in the regular deps for verify-side use (source signing);
+# the dev-deps re-export of the workspace surface lets the closeout_e2e tests
+# mint signing keys for round-trip tests. Production never mints Ed25519 keys.
+ed25519-dalek = { workspace = true, features = ["rand_core"] }

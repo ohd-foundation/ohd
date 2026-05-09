@@ -1,0 +1,40 @@
+{
+  "name": "@ohd/emergency-dispatch",
+  "version": "0.1.0",
+  "private": true,
+  "description": "OHD Emergency dispatch console — operator-side web SPA for the EMS station.",
+  "type": "module",
+  "license": "Apache-2.0 OR MIT",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "gen": "buf generate ../../storage/proto"
+  },
+  "dependencies": {
+    "@bufbuild/protobuf": "^2.2.2",
+    "@connectrpc/connect": "^2.0.0",
+    "@connectrpc/connect-web": "^2.0.0",
+    "@ohd/shared-web": "workspace:*",
+    "oauth4webapi": "^3.8.6",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.26.2"
+  },
+  "devDependencies": {
+    "@bufbuild/buf": "^1.47.2",
+    "@bufbuild/protoc-gen-es": "^2.2.2",
+    "@testing-library/jest-dom": "^6.5.0",
+    "@testing-library/react": "^16.0.1",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "jsdom": "^25.0.0",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.11",
+    "vitest": "^2.1.1"
+  },
+  "packageManager": "pnpm@9.10.0"
+}

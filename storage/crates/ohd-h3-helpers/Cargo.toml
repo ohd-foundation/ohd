@@ -1,0 +1,30 @@
+[package]
+name = "ohd-h3-helpers"
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.88"
+license = "Apache-2.0 OR MIT"
+authors = ["OHD Project"]
+repository = "https://github.com/ohd-foundation/ohd"
+description = "Shared HTTP/3 (QUIC) helpers used by the ohd-storage-server and ohd-relay binaries (cert loading, server config, streaming body adapter, accept loop)."
+publish = false
+
+# Self-contained: explicit deps (no workspace inheritance) so this crate can
+# be path-dep'd from any consumer without forcing the consumer to share the
+# storage workspace's `[workspace.package]` fields.
+
+[lib]
+name = "ohd_h3_helpers"
+path = "src/lib.rs"
+
+[dependencies]
+anyhow = "1"
+bytes = "1"
+http = "1"
+http-body = "1"
+quinn = "0.11"
+h3 = "0.0"
+h3-quinn = "0.0"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+rustls-pemfile = "2"
+rcgen = { version = "0.13", default-features = false, features = ["pem", "ring"] }

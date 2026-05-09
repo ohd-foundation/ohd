@@ -1,0 +1,34 @@
+#!/bin/sh
+# postrm maintainer script for ohd-storage.
+#
+# On `purge`: drop the system user and remove /var/lib/ohd-storage.
+# On `remove`: keep data + user (operator may reinstall later).
+
+set -e
+
+USER=ohd-storage
+GROUP=ohd-storage
+DATA_DIR=/var/lib/ohd-storage
+CONF_DIR=/etc/ohd-storage
+
+case "$1" in
+    purge)
+        if [ -d /run/systemd/system ]; then
+            systemctl daemon-reload >/dev/null 2>&1 || true
+        fi
+
+        if getent passwd "$USER" >/dev/null; then
+            deluser --system "$USER" >/dev/null 2>&1 || true
+        fi
+        if getent group "$GROUP" >/dev/null; then
+            delgroup --system "$GROUP" >/dev/null 2>&1 || true
+        fi
+
+        # Remove data + config. Operator can opt out by deconfiguring (`apt
+        # remove`) instead of purging.
+        rm -rf "$DATA_DIR" "$CONF_DIR"
+        ;;
+    remove|upgrade|failed-upgrade|abort-install|abort-upgrade|disappear) ;;
+esac
+
+exit 0

@@ -1,0 +1,201 @@
+// OHDC v0 — AuthService (self-session-side identity and session operations).
+//
+// Distinct from OhdcService so its scope is clear. See
+// ../../../spec/ohdc-protocol.md "Service: AuthService" and
+// ../../../spec/auth.md for token shapes, OAuth flows, and session semantics.
+
+syntax = "proto3";
+
+package ohdc.v0;
+
+import "ohdc/v0/ohdc.proto";
+
+service AuthService {
+  // Identity linkage (multi-provider OIDC). See spec/auth.md "Multiple
+  // identities per user" and STATUS.md "Multi-identity account linking".
+  //
+  // Flow:
+  //   1. Client calls LinkIdentityStart → receives a `link_token` (10-min TTL).
+  //   2. Client redirects user to the new provider's OAuth flow with
+  //      `state = link_token`.
+  //   3. On callback, client receives an id_token from the provider.
+  //   4. Client calls CompleteIdentityLink(link_token, id_token).
+  //
+  // Only self-session tokens may manage identities; grant tokens cannot.
+  rpc ListIdentities(ListIdentitiesRequest) returns (ListIdentitiesResponse);
+  rpc LinkIdentityStart(LinkIdentityStartRequest) returns (LinkIdentityStartResponse);
+  rpc CompleteIdentityLink(CompleteIdentityLinkRequest) returns (CompleteIdentityLinkResponse);
+  rpc UnlinkIdentity(UnlinkIdentityRequest) returns (UnlinkIdentityResponse);
+  rpc SetPrimaryIdentity(SetPrimaryIdentityRequest) returns (SetPrimaryIdentityResponse);
+
+  // Sessions.
+  rpc ListSessions(ListSessionsRequest) returns (ListSessionsResponse);
+  rpc RevokeSession(RevokeSessionRequest) returns (RevokeSessionResponse);
+  rpc Logout(LogoutRequest) returns (LogoutResponse);
+  rpc LogoutEverywhere(LogoutEverywhereRequest) returns (LogoutEverywhereResponse);
+
+  // Invites (for invite-only deployments, and for admin issuance).
+  rpc IssueInvite(IssueInviteRequest) returns (IssueInviteResponse);
+  rpc ListInvites(ListInvitesRequest) returns (ListInvitesResponse);
+  rpc RevokeInvite(RevokeInviteRequest) returns (RevokeInviteResponse);
+
+  // Device tokens (Model 3 — in-app issuance for the user's own bridge
+  // services). See spec/auth.md "Device tokens".
+  rpc IssueDeviceToken(IssueDeviceTokenRequest) returns (IssueDeviceTokenResponse);
+
+  // Notifications.
+  rpc RegisterPushToken(RegisterPushTokenRequest) returns (RegisterPushTokenResponse);
+  rpc UpdateNotificationPreferences(UpdateNotificationPreferencesRequest)
+      returns (UpdateNotificationPreferencesResponse);
+}
+
+// Skeleton message bodies; expanded in the implementation phase against
+// spec/auth.md and spec/notifications.md.
+message ListIdentitiesRequest {}
+message ListIdentitiesResponse {
+  repeated Identity identities = 1;
+}
+message Identity {
+  string provider = 1;             // OIDC iss
+  string subject = 2;              // OIDC sub  (NOTE: omitted from WhoAmI's
+                                   //            identities list for privacy)
+  optional string email = 3;       // not populated by the storage today; the
+                                   // schema stores email_hash only.
+  int64 linked_at_ms = 4;
+  optional string display_label = 5;  // user-facing label, e.g. "Personal Google"
+  bool is_primary = 6;                // exactly one identity per user is primary
+  optional int64 last_login_ms = 7;   // last successful sign-in via this identity
+}
+message LinkIdentityStartRequest {
+  string provider_hint = 1;        // optional iss hint
+}
+message LinkIdentityStartResponse {
+  // Random nonce the caller embeds as the OAuth `state` parameter when
+  // redirecting to the provider. Must be presented back via
+  // CompleteIdentityLink within the TTL.
+  string link_token = 1;
+  // Convenience for clients that prefer a pre-built URL: the storage may
+  // optionally synthesize one. Empty when the storage doesn't know the OAuth
+  // endpoint for the hinted provider; client builds its own. Field name
+  // preserved from the v0 skeleton.
+  string oauth_url = 2;
+  // Auto-expiry of the pending row (UTC ms). Default 10 minutes from now.
+  int64 expires_at_ms = 3;
+}
+message CompleteIdentityLinkRequest {
+  // The `link_token` returned by LinkIdentityStart.
+  string link_token = 1;
+  // The id_token received from the provider on callback.
+  string id_token = 2;
+  // Issuer string the storage should pin verification to. Required so the
+  // storage knows which JWKS to fetch + what to validate `iss` against.
+  string issuer = 3;
+  // OAuth client_id(s) the storage should accept as `aud`. At least one
+  // required.
+  repeated string audiences = 4;
+  // Optional human label the user picked for this identity ("Personal
+  // Google", "Clinic SSO Acme"). Stored verbatim.
+  optional string display_label = 5;
+}
+message CompleteIdentityLinkResponse {
+  Identity identity = 1;
+}
+message UnlinkIdentityRequest {
+  string provider = 1;
+  string subject = 2;
+}
+message UnlinkIdentityResponse {
+  int64 unlinked_at_ms = 1;
+}
+message SetPrimaryIdentityRequest {
+  string provider = 1;
+  string subject = 2;
+}
+message SetPrimaryIdentityResponse {
+  int64 updated_at_ms = 1;
+}
+
+message ListSessionsRequest {}
+message ListSessionsResponse {
+  repeated SessionInfo sessions = 1;
+}
+message SessionInfo {
+  Ulid session_ulid = 1;
+  int64 created_at_ms = 2;
+  optional int64 last_seen_ms = 3;
+  optional string user_agent = 4;
+  optional string ip_origin = 5;
+}
+message RevokeSessionRequest {
+  Ulid session_ulid = 1;
+}
+message RevokeSessionResponse {
+  int64 revoked_at_ms = 1;
+}
+message LogoutRequest {}
+message LogoutResponse {
+  int64 logged_out_at_ms = 1;
+}
+message LogoutEverywhereRequest {}
+message LogoutEverywhereResponse {
+  int64 sessions_revoked = 1;
+  int64 logged_out_at_ms = 2;
+}
+
+message IssueInviteRequest {
+  optional string email_bound = 1;
+  optional int64 expires_at_ms = 2;
+  optional string note = 3;
+}
+message IssueInviteResponse {
+  string invite_token = 1;          // ohdv_...
+  string redeem_url = 2;
+}
+message ListInvitesRequest {}
+message ListInvitesResponse {
+  repeated InviteInfo invites = 1;
+}
+message InviteInfo {
+  Ulid ulid = 1;
+  optional string email_bound = 2;
+  int64 issued_at_ms = 3;
+  optional int64 redeemed_at_ms = 4;
+  optional int64 expires_at_ms = 5;
+  optional int64 revoked_at_ms = 6;
+}
+message RevokeInviteRequest {
+  Ulid ulid = 1;
+}
+message RevokeInviteResponse {
+  int64 revoked_at_ms = 1;
+}
+
+message IssueDeviceTokenRequest {
+  string device_label = 1;
+  string device_kind = 2;           // 'health_connect_bridge' | 'manual_logger' | ...
+  // Allowlist of event types the device may submit.
+  repeated string event_types = 3;
+}
+message IssueDeviceTokenResponse {
+  string token = 1;                  // ohdd_...
+  Ulid grant_ulid = 2;               // device tokens are grants with kind='device'
+}
+
+message RegisterPushTokenRequest {
+  string platform = 1;               // 'fcm' | 'apns' | 'web' | 'email'
+  string token = 2;
+}
+message RegisterPushTokenResponse {
+  int64 registered_at_ms = 1;
+}
+
+message UpdateNotificationPreferencesRequest {
+  // Sparse update; fields covered in spec/notifications.md.
+  optional bool quiet_hours_enabled = 1;
+  optional int32 quiet_hours_start = 2;
+  optional int32 quiet_hours_end = 3;
+  optional string quiet_hours_tz = 4;
+}
+message UpdateNotificationPreferencesResponse {
+  int64 updated_at_ms = 1;
+}

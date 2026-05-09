@@ -1,0 +1,122 @@
+// OHDC v0 — SyncService (cache ↔ primary replication).
+//
+// Used only between a user's own instances. See
+// ../../../spec/sync-protocol.md for the full wire model and
+// ../../../spec/storage-format.md "Deployment modes and sync" for the logical
+// model.
+
+syntax = "proto3";
+
+package ohdc.v0;
+
+import "ohdc/v0/ohdc.proto";
+
+service SyncService {
+  // Discovery: peer says "hello" with capabilities and watermarks.
+  rpc Hello(HelloRequest) returns (HelloResponse);
+
+  // Outbound: caller pushes events the peer hasn't seen.
+  rpc PushFrames(stream PushFrame) returns (stream PushAck);
+
+  // Inbound: caller asks the peer for events it doesn't have.
+  rpc PullFrames(PullRequest) returns (stream PushFrame);
+
+  // Attachment payload transfer (separate channel from event metadata).
+  rpc PushAttachmentBlob(stream AttachmentChunk) returns (AttachmentAck);
+  rpc PullAttachmentBlob(PullAttachmentRequest) returns (stream AttachmentChunk);
+
+  // Grant lifecycle is RPC-gated, NOT stream-replicated. These let a cache
+  // call CreateGrant / RevokeGrant / UpdateGrant against the primary while
+  // presenting the user's self-session token.
+  rpc CreateGrantOnPrimary(CreateGrantRequest) returns (CreateGrantResponse);
+  rpc RevokeGrantOnPrimary(RevokeGrantRequest) returns (RevokeGrantResponse);
+  rpc UpdateGrantOnPrimary(UpdateGrantRequest) returns (Grant);
+}
+
+message HelloRequest {
+  string peer_label = 1;             // sender's stable label
+  string peer_kind = 2;              // 'server' | 'phone' | 'desktop' | 'mirror'
+  optional Ulid peer_ulid = 3;
+  int64 my_local_rowid_high_water = 4;
+  int64 my_inbound_watermark_for_you = 5;
+  int32 registry_version = 6;
+}
+
+message HelloResponse {
+  string peer_label = 1;
+  string peer_kind = 2;
+  optional Ulid peer_ulid = 3;
+  int64 my_local_rowid_high_water = 4;
+  int64 my_inbound_watermark_for_you = 5;
+  int32 registry_version = 6;
+  // The recipient's view of who the caller is (for first-contact pairing /
+  // identity verification).
+  Ulid caller_user_ulid = 7;
+}
+
+message PushFrame {
+  // Sender's local rowid for this entity; recipient advances watermark.
+  int64 sender_rowid = 1;
+
+  oneof entity {
+    EventFrame event = 2;
+    PendingEventFrame pending_event = 3;
+    GrantFrame grant = 4;
+    DeviceFrame device = 5;
+    AppVersionFrame app_version = 6;
+    RegistryEntryFrame registry_entry = 7;
+  }
+}
+
+message PushAck {
+  int64 sender_rowid = 1;
+  // 'ok' | 'duplicate' | 'rejected'
+  string outcome = 2;
+  optional ErrorInfo error = 3;
+}
+
+message PullRequest {
+  int64 after_peer_rowid = 1;
+  // Optional cap on this stream's frames.
+  optional int32 max_frames = 2;
+}
+
+message AttachmentAck {
+  Ulid attachment_ulid = 1;
+  bytes sha256 = 2;
+  string outcome = 3;                // 'ok' | 'duplicate' | 'rejected'
+}
+
+message PullAttachmentRequest {
+  Ulid attachment_ulid = 1;
+}
+
+// Carrier types — implementation phase pulls in Event, PendingEvent, Grant
+// directly to keep them aligned with the OhdcService shapes.
+message EventFrame {
+  Event event = 1;
+}
+message PendingEventFrame {
+  PendingEvent pending_event = 1;
+}
+message GrantFrame {
+  Grant grant = 1;
+}
+message DeviceFrame {
+  string kind = 1;
+  optional string vendor = 2;
+  optional string model = 3;
+  optional string serial_or_id = 4;
+  optional string metadata_json = 5;
+}
+message AppVersionFrame {
+  string app_name = 1;
+  string version = 2;
+  optional string platform = 3;
+}
+message RegistryEntryFrame {
+  // 'event_type' | 'channel' | 'type_alias' | 'channel_alias'
+  string kind = 1;
+  // Carrier payload — concrete shape covered in implementation phase.
+  bytes payload = 2;
+}

@@ -1,0 +1,63 @@
+# OHD demo deployment — single-box layout on Hetzner ARM.
+#
+# Apex `ohd.dev` serves the static landing page from /srv/ohd-landing.
+# Subdomains reverse-proxy to the OHD storage + relay containers.
+# `openhealthdata.org` 301-redirects to ohd.dev.
+#
+# Auto-TLS via Let's Encrypt (HTTP-01 challenge over :80). DNS must point
+# at this server BEFORE first start, otherwise Caddy will retry until cert
+# issuance succeeds.
+
+# ---- ohd.dev ---------------------------------------------------------------
+ohd.dev, www.ohd.dev {
+    encode gzip zstd
+
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+        X-Content-Type-Options nosniff
+        Referrer-Policy no-referrer-when-downgrade
+        Permissions-Policy "interest-cohort=()"
+    }
+
+    # APK + future release artifacts. Until a real CI pipeline ships, redirect
+    # to GitHub Releases. Swap to `file_server` rooted at /srv/ohd-downloads
+    # when artifacts land.
+    handle /downloads/* {
+        redir https://github.com/ohd-foundation/ohd/releases/latest 302
+    }
+
+    # Static landing page. Index.html + styles.css + theme.js + /public/*.
+    handle {
+        root * /srv/ohd-landing
+        file_server
+    }
+}
+
+# ---- storage.ohd.dev ------------------------------------------------------
+# OHD Storage server. HTTP/2 over Caddy with HTTP/3 advertised by default.
+storage.ohd.dev {
+    encode gzip zstd
+    reverse_proxy ohd-storage:8443 {
+        transport http {
+            versions h2c
+        }
+    }
+}
+
+# ---- relay.ohd.dev --------------------------------------------------------
+# OHD Relay HTTP/REST endpoints. The raw QUIC tunnel uses a separate UDP
+# port (9001) which is opened directly to the host (see compose mapping +
+# UFW rules in DEPLOYMENT.md), bypassing Caddy.
+relay.ohd.dev {
+    encode gzip zstd
+    reverse_proxy ohd-relay:8443 {
+        transport http {
+            versions h2c
+        }
+    }
+}
+
+# ---- openhealthdata.org → ohd.dev -----------------------------------------
+openhealthdata.org, www.openhealthdata.org {
+    redir https://ohd.dev{uri} 301
+}

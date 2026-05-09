@@ -1,0 +1,16 @@
+#!/bin/sh
+# prerm maintainer script for ohd-relay.
+
+set -e
+
+case "$1" in
+    remove|deconfigure)
+        if [ -d /run/systemd/system ]; then
+            systemctl stop ohd-relay.service >/dev/null 2>&1 || true
+            systemctl disable ohd-relay.service >/dev/null 2>&1 || true
+        fi
+        ;;
+    upgrade|failed-upgrade) ;;
+esac
+
+exit 0

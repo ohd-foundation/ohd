@@ -1,0 +1,66 @@
+# PyO3 Python wheel for OHD Storage core.
+#
+# Build: `maturin build --release --features pyo3`
+# Develop: `maturin develop --features pyo3` (or `--features extension-module`
+#   if you want maturin to skip linking libpython into the wheel)
+# Install: `pip install target/wheels/ohd_storage-*.whl`
+# Run tests: `pip install -e .[dev] && pytest tests/`
+#
+# The cdylib is named `ohd_storage_bindings` (Cargo's `[lib].name`); maturin
+# renames it to `ohd_storage` per the `[tool.maturin].module-name` setting
+# below so Python users `import ohd_storage`.
+#
+# See README.md "Python wheel" for the end-to-end recipe.
+
+[build-system]
+requires = ["maturin>=1.7,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "ohd-storage"
+description = "OHD Storage Python wheel — PyO3 bindings to the OHD Storage Rust core"
+readme = "README.md"
+license = { text = "Apache-2.0 OR MIT" }
+authors = [{ name = "OHD contributors" }]
+requires-python = ">=3.11"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Healthcare Industry",
+    "License :: OSI Approved :: Apache Software License",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Rust",
+    "Topic :: Database",
+    "Topic :: Scientific/Engineering :: Medical Science Apps.",
+]
+# Version pulled from Cargo.toml workspace `version`; maturin reads it
+# directly. Declare it dynamic so we don't have two sources of truth.
+dynamic = ["version"]
+
+[project.urls]
+Homepage = "https://github.com/ohd-foundation/ohd"
+Repository = "https://github.com/ohd-foundation/ohd"
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[tool.maturin]
+# Python module name (what Python users `import`). Cargo's `[lib].name` is
+# `ohd_storage_bindings` (matches the symbol the uniffi build expects);
+# maturin uses *this* name for the wheel and the .so inside it.
+module-name = "ohd_storage"
+# Always compile with the pyo3 cargo feature on; otherwise the
+# `#[pymodule]` entrypoint is conditioned out and the wheel has no
+# `PyInit_ohd_storage` symbol.
+features = ["pyo3", "extension-module"]
+# Keep the wheel slim — strip debug symbols (release profile already does
+# `strip = "symbols"` per workspace Cargo.toml; this is belt-and-braces).
+strip = true
+# Pure-Rust extension; no companion Python source tree. The `abi3-py311`
+# cargo feature on the pyo3 dep (Cargo.toml) is what makes one wheel cover
+# CPython 3.11+ — maturin picks that up automatically.

@@ -1,0 +1,21 @@
+pkgbase = ohd-care
+	pkgdesc = OHD Care CLI — terminal interface for the OHD reference clinical app
+	pkgver = 0.1.0
+	pkgrel = 1
+	url = https://github.com/openhealth-data/ohd
+	arch = any
+	license = Apache
+	license = MIT
+	makedepends = python-build
+	makedepends = python-installer
+	makedepends = python-hatchling
+	depends = python>=3.11
+	depends = python-click
+	depends = python-httpx
+	depends = python-keyring
+	depends = python-protobuf
+	depends = python-pydantic
+	source = ohd-0.1.0.tar.gz::https://github.com/openhealth-data/ohd/archive/care-v0.1.0.tar.gz
+	sha256sums = SKIP
+
+pkgname = ohd-care

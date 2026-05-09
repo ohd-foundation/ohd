@@ -1,0 +1,65 @@
+[Unit]
+Description=OHD Relay (NAT bridge for OHDC consumers)
+Documentation=https://github.com/openhealth-data/ohd
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ohd-relay
+Group=ohd-relay
+
+# Mirrors `relay/deploy/Dockerfile`: serve REST + WebSocket tunnel/attach
+# paths on 8443/tcp (HTTP/2) plus 8443/udp (HTTP/3 REST endpoints). The
+# config file lives in /etc/ohd-relay and is the source of truth for push
+# providers + authority-mode wiring; transport binding is the CLI's job.
+ExecStart=/usr/bin/ohd-relay serve \
+    --config /etc/ohd-relay/relay.toml \
+    --db /var/lib/ohd-relay/relay.db \
+    --bind 0.0.0.0 \
+    --port 8443 \
+    --http3-listen 0.0.0.0:8443
+
+EnvironmentFile=-/etc/default/ohd-relay
+EnvironmentFile=-/etc/sysconfig/ohd-relay
+
+Restart=on-failure
+RestartSec=5
+
+# --- Hardening (sandbox) ---------------------------------------------------
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectHome=true
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+
+# Relay writes its registration SQLite + scratch under /var/lib/ohd-relay.
+# Push secrets (FCM service-account JSON, APNs .p8) are read from
+# /etc/ohd-relay or /run/secrets — both stay read-only.
+ReadWritePaths=/var/lib/ohd-relay
+
+PrivateMounts=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

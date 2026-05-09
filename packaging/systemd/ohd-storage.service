@@ -1,0 +1,73 @@
+[Unit]
+Description=OHD Storage server (OHDC over Connect-RPC)
+Documentation=https://github.com/openhealth-data/ohd
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# The ohd-storage-server binary does not currently speak sd_notify; revisit
+# once it does and switch to Type=notify for proper readiness signalling.
+Type=simple
+User=ohd-storage
+Group=ohd-storage
+
+# CLI surface mirrors `deploy/Dockerfile` CMD: serve over both HTTP/2 (TCP)
+# and HTTP/3 (QUIC) on 8443, against the per-user data file under
+# /var/lib/ohd-storage. Operators that terminate TLS upstream (Caddy,
+# nginx, etc.) keep the listener cleartext h2c on TCP; HTTP/3 needs real
+# certs — pass them via `--http3-cert` / `--http3-key` (see the OHD
+# Storage deploy README).
+ExecStart=/usr/bin/ohd-storage-server serve \
+    --db /var/lib/ohd-storage/storage.db \
+    --listen 0.0.0.0:8443 \
+    --http3-listen 0.0.0.0:8443
+
+# Environment overrides via /etc/default/ohd-storage (Debian) or
+# /etc/sysconfig/ohd-storage (RPM). Both files are optional.
+EnvironmentFile=-/etc/default/ohd-storage
+EnvironmentFile=-/etc/sysconfig/ohd-storage
+
+Restart=on-failure
+RestartSec=5
+
+# --- Hardening (sandbox) ---------------------------------------------------
+# Drop all capabilities; the binary is a userspace HTTP server and needs
+# none.
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectHome=true
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+
+# Storage writes the SQLCipher database file + WAL + sidecar blobs under
+# /var/lib/ohd-storage. ProtectSystem=strict makes everything else
+# read-only.
+ReadWritePaths=/var/lib/ohd-storage
+
+# IPC isolation; the server only opens TCP/UDP on 8443.
+PrivateMounts=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+# Resource limits (generous for a SQLCipher-backed RPC server).
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

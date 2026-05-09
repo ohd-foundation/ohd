@@ -1,0 +1,29 @@
+{
+  "events": [
+    {
+      "timestamp_ms": 1700000000000,
+      "event_type": "std.blood_glucose",
+      "channels": [{ "channel_path": "value", "real_value": 5.4 }]
+    },
+    {
+      "timestamp_ms": 1700000060000,
+      "event_type": "std.heart_rate_resting",
+      "channels": [{ "channel_path": "value", "real_value": 64.0 }]
+    },
+    {
+      "timestamp_ms": 1700000120000,
+      "event_type": "std.body_temperature",
+      "channels": [{ "channel_path": "value", "real_value": 36.7 }]
+    }
+  ],
+  "grant": {
+    "default_action": "allow",
+    "event_type_rules": [
+      ["std.heart_rate_resting", "deny"]
+    ]
+  },
+  "query": {
+    "from_ms": 1699999999999,
+    "to_ms": 1700000120001
+  }
+}

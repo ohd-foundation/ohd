@@ -1,0 +1,53 @@
+#!/bin/sh
+# postinst maintainer script for ohd-relay.
+# Creates the system user, tightens perms, reloads systemd, enables the unit
+# on first install.
+
+set -e
+
+USER=ohd-relay
+GROUP=ohd-relay
+DATA_DIR=/var/lib/ohd-relay
+CONF_DIR=/etc/ohd-relay
+
+case "$1" in
+    configure)
+        if ! getent group "$GROUP" >/dev/null; then
+            addgroup --system "$GROUP"
+        fi
+        if ! getent passwd "$USER" >/dev/null; then
+            adduser --system \
+                --ingroup "$GROUP" \
+                --home "$DATA_DIR" \
+                --no-create-home \
+                --shell /usr/sbin/nologin \
+                --gecos "OHD Relay" \
+                "$USER"
+        fi
+
+        mkdir -p "$DATA_DIR" "$CONF_DIR"
+        chown -R "$USER:$GROUP" "$DATA_DIR"
+        chmod 0750 "$DATA_DIR"
+        chmod 0755 "$CONF_DIR"
+
+        # Push secrets (FCM service-account JSON, APNs .p8) live under
+        # /etc/ohd-relay/secrets if the operator drops them there. Tighten
+        # if it exists.
+        if [ -d "$CONF_DIR/secrets" ]; then
+            chown -R "$USER:$GROUP" "$CONF_DIR/secrets"
+            chmod 0700 "$CONF_DIR/secrets"
+        fi
+
+        if [ -d /run/systemd/system ]; then
+            systemctl daemon-reload >/dev/null 2>&1 || true
+            if [ -z "$2" ]; then
+                systemctl enable ohd-relay.service >/dev/null 2>&1 || true
+            else
+                systemctl try-restart ohd-relay.service >/dev/null 2>&1 || true
+            fi
+        fi
+        ;;
+    abort-upgrade|abort-remove|abort-deconfigure) ;;
+esac
+
+exit 0
