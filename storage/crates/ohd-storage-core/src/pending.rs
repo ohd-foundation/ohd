@@ -428,6 +428,7 @@ fn event_from_input(input: EventInput, ulid_bytes: &Ulid) -> Event {
         notes: input.notes,
         superseded_by: None,
         deleted_at_ms: None,
+        top_level: input.top_level,
         signed_by: None,
     }
 }

@@ -19,11 +19,16 @@ ohd.dev, www.ohd.dev {
         Permissions-Policy "interest-cohort=()"
     }
 
-    # APK + future release artifacts. Until a real CI pipeline ships, redirect
-    # to GitHub Releases. Swap to `file_server` rooted at /srv/ohd-downloads
-    # when artifacts land.
+    # APK + release artifacts.
+    # File served from the `caddy` container's /srv/ohd-downloads (mounted
+    # read-only from /var/www/ohd-downloads on the host — see compose).
     handle /downloads/* {
-        redir https://github.com/ohd-foundation/ohd/releases/latest 302
+        root * /srv/ohd-downloads
+        uri strip_prefix /downloads
+        @apk path *.apk
+        header @apk Content-Type "application/vnd.android.package-archive"
+        header @apk Content-Disposition "attachment"
+        file_server
     }
 
     # Static landing page. Index.html + styles.css + theme.js + /public/*.
@@ -55,6 +60,61 @@ relay.ohd.dev {
             versions h2c
         }
     }
+}
+
+# ---- api.ohd.dev ----------------------------------------------------------
+# OHD SaaS — account / plan / billing. Tiny axum service (see saas/SPEC.md).
+# Also proxies the OpenFoodFacts barcode lookup so the Android scanner can
+# go through us first (lower-latency + we'll cache once traffic justifies).
+api.ohd.dev {
+    encode gzip zstd
+
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+        X-Content-Type-Options nosniff
+    }
+
+    # SaaS account routes.
+    handle /v1/account* {
+        reverse_proxy ohd-saas:8444
+    }
+    handle /healthz {
+        reverse_proxy ohd-saas:8444
+    }
+
+    # OpenFoodFacts pass-through. Trims the prefix so /v1/openfoodfacts/<bc>
+    # hits OFF's `/api/v2/product/<bc>.json` and search.pl mirrors the
+    # generic CGI surface. Both are GET-only.
+    handle /v1/openfoodfacts/search {
+        uri replace /v1/openfoodfacts/search /cgi/search.pl
+        reverse_proxy https://world.openfoodfacts.org {
+            header_up Host world.openfoodfacts.org
+        }
+    }
+    handle /v1/openfoodfacts/* {
+        uri replace /v1/openfoodfacts/ /api/v2/product/
+        # OFF expects `<barcode>.json` — clients pass the bare barcode, we
+        # append the suffix here.
+        @json path_regexp barcode_id ^/api/v2/product/([^/]+)$
+        rewrite @json /api/v2/product/{re.barcode_id.1}.json
+        reverse_proxy https://world.openfoodfacts.org {
+            header_up Host world.openfoodfacts.org
+        }
+    }
+}
+
+# ---- mcp.ohd.dev ----------------------------------------------------------
+# OHD MCP server — JSON-RPC 2.0 surface over the ohd-mcp-core tool catalog.
+# Speaks MCP 2024-11-05; HTTP transport. See connect/mcp-rs/SPEC.
+mcp.ohd.dev {
+    encode gzip zstd
+
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+        X-Content-Type-Options nosniff
+    }
+
+    reverse_proxy ohd-mcp:8445
 }
 
 # ---- openhealthdata.org → ohd.dev -----------------------------------------

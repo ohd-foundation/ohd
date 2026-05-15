@@ -93,6 +93,9 @@ EXPECTED_TOOLS = {
     "issue_retrospective_grant",
     # Audit
     "audit_query",
+    # OpenFoodFacts resolvers
+    "food_lookup_barcode",
+    "food_search",
 }
 
 
@@ -112,7 +115,7 @@ async def test_all_expected_tools_registered(mcp_server) -> None:
 
 @pytest.mark.anyio
 async def test_tool_count_matches_spec(mcp_server) -> None:
-    """27 tools per connect/SPEC.md 'Connect MCP — tool list'."""
+    """29 tools — 27 per connect/SPEC.md plus the two OFF resolvers."""
     async with Client(mcp_server) as c:
         tools = await c.list_tools()
     assert len(tools) == len(EXPECTED_TOOLS)

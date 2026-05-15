@@ -20,6 +20,7 @@ from typing import Annotated, Any
 from fastmcp import FastMCP
 from pydantic import Field
 
+from . import openfoodfacts
 from .ohdc_client import OhdcClient
 
 
@@ -626,3 +627,47 @@ def register_tools(mcp: FastMCP, client: OhdcClient) -> None:
             to_time_ms=_resolve_ts(to_time) if to_time else None,
             limit=limit,
         )
+
+    # ------------------------------------------------------------------
+    # OpenFoodFacts resolvers — chain these into ``log_food``
+    # ------------------------------------------------------------------
+
+    @mcp.tool
+    async def food_lookup_barcode(
+        barcode: Annotated[
+            str,
+            Field(
+                description=(
+                    "EAN-13 / UPC-A barcode digits (6-14 digits, no dashes). "
+                    "Resolved via the OHD OpenFoodFacts proxy first, then the "
+                    "public OpenFoodFacts API."
+                )
+            ),
+        ],
+    ) -> dict[str, Any] | None:
+        """Resolve a barcode to product name, brand, package size and per-100g nutrition.
+
+        Returns ``None`` when neither endpoint recognises the code. The returned
+        dict is structured so the LLM can preview it to the user before calling
+        ``log_food`` with the resolved description / quantity / barcode.
+        """
+        return await openfoodfacts.lookup_barcode(barcode)
+
+    @mcp.tool
+    async def food_search(
+        query: Annotated[
+            str,
+            Field(description="Free-text product search, e.g. 'red bull', 'oat milk'."),
+        ],
+        page_size: Annotated[
+            int,
+            Field(description="Max results to return (1-50).", ge=1, le=50),
+        ] = 10,
+    ) -> list[dict[str, Any]]:
+        """Search OpenFoodFacts by product name; returns ranked candidates.
+
+        Each hit has the same shape as ``food_lookup_barcode``. Use this when
+        the user names a product without scanning a barcode; pick the best match
+        and feed its ``barcode`` + ``name`` into ``log_food``.
+        """
+        return await openfoodfacts.search(query, page_size=page_size)

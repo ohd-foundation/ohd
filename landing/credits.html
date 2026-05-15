@@ -1,0 +1,326 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Credits &amp; open-source licences — Open Health Data</title>
+  <meta name="description" content="Every third-party library, framework and dataset that OHD Connect builds on, with upstream links and SPDX identifiers." />
+
+  <meta property="og:title" content="Credits &amp; open-source licences — OHD" />
+  <meta property="og:description" content="OHD Connect is built on the shoulders of giants. Every library we depend on, listed." />
+  <meta property="og:type" content="website" />
+  <meta property="og:url" content="https://ohd.dev/credits.html" />
+
+  <link rel="icon" type="image/svg+xml" href="/public/favicon.svg" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Outfit:wght@200;300;400;500&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" />
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+
+<header class="site-header">
+  <a class="brand" href="/" aria-label="Open Health Data home">
+    <span class="brand-mark" aria-hidden="true">
+      <svg viewBox="0 0 32 32" width="22" height="22" role="img" aria-label="OHD mark">
+        <rect x="2" y="2" width="10" height="10" fill="currentColor" />
+        <rect x="20" y="20" width="10" height="10" fill="currentColor" />
+        <rect x="14" y="2" width="4" height="28" fill="var(--accent)" />
+      </svg>
+    </span>
+    <span class="brand-word">OHD</span>
+  </a>
+  <nav class="site-nav" aria-label="Primary">
+    <a href="/">&larr; Home</a>
+    <a href="/how-it-works.html">How it works</a>
+    <a href="/roadmap.html">Roadmap</a>
+    <a href="https://github.com/ohd-foundation/ohd" target="_blank" rel="noopener">Repository</a>
+  </nav>
+  <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Toggle colour theme">
+    <span class="theme-toggle__icon" aria-hidden="true"></span>
+  </button>
+</header>
+
+<main>
+
+  <!-- HERO -->
+  <section class="hero hero--centered">
+    <div class="hero__inner">
+      <p class="eyebrow">Credits</p>
+      <h1 class="hero__title">Open-source licences.</h1>
+      <p class="hero__lede">
+        OHD Connect is built on the shoulders of giants. Every library, framework
+        and dataset we depend on, listed with upstream links and SPDX identifiers
+        so anyone — auditors, packagers, curious users — can verify the supply
+        chain end to end.
+      </p>
+      <p class="hero__pre">
+        <span class="pill">Apache-2.0 OR MIT</span>
+        OHD Connect itself is dual-licensed. Pick whichever fits your project.
+      </p>
+    </div>
+  </section>
+
+  <!-- JETPACK & ANDROIDX -->
+  <section class="section">
+    <div class="section__head">
+      <p class="eyebrow">Jetpack &amp; AndroidX</p>
+      <h2>The Android UI &amp; runtime stack.</h2>
+      <p class="section__lede">
+        Every Compose, Lifecycle, Activity, CameraX, Health Connect, WorkManager and
+        Security-Crypto module the app pulls in. All Apache-2.0.
+      </p>
+    </div>
+
+    <div class="feature-grid">
+      <div class="feature">
+        <h3><a class="link-arrow" href="https://developer.android.com/jetpack/androidx/releases/compose-ui" target="_blank" rel="noopener">Jetpack Compose (UI)</a></h3>
+        <p class="muted small"><code>androidx.compose.ui:ui</code> &middot; BOM 2024.10.01 &middot; Apache-2.0</p>
+      </div>
+      <div class="feature">
+        <h3><a class="link-arrow" href="https://developer.android.com/jetpack/androidx/releases/compose-foundation" target="_blank" rel="noopener">Compose Foundation</a></h3>
+        <p class="muted small"><code>androidx.compose.foundation:foundation</code> &middot; BOM 2024.10.01 &middot; Apache-2.0</p>
+      </div>
+      <div class="feature">
+        <h3><a class="link-arrow" href="https://developer.android.com/jetpack/androidx/releases/compose-material3" target="_blank" rel="noopener">Material 3</a></h3>
+        <p class="muted small"><code>androidx.compose.material3:material3</code> &middot; BOM 2024.10.01 &middot; Apache-2.0</p>
+      </div>
+      <div class="feature">
+        <h3><a class="link-arrow" href="https://developer.android.com/jetpack/androidx/releases/compose-material" target="_blank" rel="noopener">Material Icons Extended</a></h3>
+        <p class="muted small"><code>androidx.compose.material:material-icons-extended</code> &middot; BOM 2024.10.01 &middot; Apache-2.0</p>
+      </div>
+      <div class="feature">
+        <h3><a class="link-arrow" href="https://developer.android.com/jetpack/androidx/releases/navigation" target="_blank" rel="noopener">Navigation Compose</a></h3>
+        <p class="muted small"><code>androidx.navigation:navigation-compose</code> &middot; v2.8.4 &middot; Apache-2.0</p>
+      </div>
+      <div class="feature">
+        <h3><a class="link-arrow" href="https://developer.android.com/jetpack/androidx/releases/lifecycle" target="_blank" rel="noopener">Lifecycle Runtime KTX</a></h3>
+        <p class="muted small"><code>androidx.lifecycle:lifecycle-runtime-ktx</code> &middot; v2.8.7 &middot; Apache-2.0</p>
+      </div>
+      <div class="feature">
+        <h3><a class="link-arrow" href="https://developer.android.com/jetpack/androidx/releases/activity" target="_blank" rel="noopener">Activity Compose</a></h3>
+        <p class="muted small"><code>androidx.activity:activity-compose</code> &middot; v1.9.3 &middot; Apache-2.0</p>
+      </div>
+      <div class="feature">
+        <h3><a class="link-arrow" href="https://developer.android.com/jetpack/androidx/releases/core" target="_blank" rel="noopener">Core KTX</a></h3>
+        <p class="muted small"><code>androidx.core:core-ktx</code> &middot; v1.13.1 &middot; Apache-2.0</p>
+      </div>
+      <div class="feature">
+        <h3><a class="link-arrow" href="https://developer.android.com/jetpack/androidx/releases/security" target="_blank" rel="noopener">Security Crypto</a></h3>
+        <p class="muted small"><code>androidx.security:security-crypto</code> &middot; v1.1.0-alpha06 &middot; Apache-2.0</p>
+      </div>
+      <div class="feature">
+        <h3><a class="link-arrow" href="https://developer.android.com/jetpack/androidx/releases/health-connect" target="_blank" rel="noopener">Health Connect Client</a></h3>
+        <p class="muted small"><code>androidx.health.connect:connect-client</code> &middot; v1.1.0-alpha07 &middot; Apache-2.0</p>
+      </div>
+      <div class="feature">
+        <h3><a class="link-arrow" href="https://developer.android.com/jetpack/androidx/releases/camera" target="_blank" rel="noopener">CameraX (core / camera2 / lifecycle / view)</a></h3>
+        <p class="muted small"><code>androidx.camera:camera-*</code> &middot; v1.4.1 &middot; Apache-2.0</p>
+      </div>
+      <div class="feature">
+        <h3><a class="link-arrow" href="https://developer.android.com/jetpack/androidx/releases/work" target="_blank" rel="noopener">WorkManager</a></h3>
+        <p class="muted small"><code>androidx.work:work-runtime-ktx</code> &middot; v2.9.1 &middot; Apache-2.0</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- GOOGLE PLAY SERVICES -->
+  <section class="section section--alt">
+    <div class="section__head">
+      <p class="eyebrow">Google Play Services</p>
+      <h2>ML Kit &amp; barcode scanning.</h2>
+      <p class="section__lede">
+        The unbundled barcode scanner and the fullscreen code-scanner UI used as a
+        fallback when CameraX can't be bound. Both ship under the Google Play
+        Services terms — link below.
+      </p>
+    </div>
+
+    <div class="cards">
+      <article class="card">
+        <h3><a class="link-arrow" href="https://developers.google.com/ml-kit/vision/barcode-scanning" target="_blank" rel="noopener">ML Kit Barcode Scanning (unbundled)</a></h3>
+        <p class="muted small"><code>com.google.android.gms:play-services-mlkit-barcode-scanning</code> &middot; v18.3.1 &middot; Google Play Services Terms</p>
+        <p>Powers the inline barcode reader inside the Food logger.</p>
+      </article>
+      <article class="card">
+        <h3><a class="link-arrow" href="https://developers.google.com/ml-kit/code-scanner" target="_blank" rel="noopener">Google Code Scanner</a></h3>
+        <p class="muted small"><code>com.google.android.gms:play-services-code-scanner</code> &middot; v16.1.0 &middot; Google Play Services Terms</p>
+        <p>Fullscreen scanner fallback when CAMERA permission is denied.</p>
+      </article>
+    </div>
+  </section>
+
+  <!-- OTHER LIBRARIES -->
+  <section class="section">
+    <div class="section__head">
+      <p class="eyebrow">Other libraries</p>
+      <h2>Identity, FFI, Kotlin runtime.</h2>
+    </div>
+
+    <div class="feature-grid">
+      <div class="feature">
+        <h3><a class="link-arrow" href="https://github.com/openid/AppAuth-Android" target="_blank" rel="noopener">AppAuth-Android</a></h3>
+        <p class="muted small"><code>net.openid:appauth</code> &middot; v0.11.1 &middot; Apache-2.0</p>
+        <p>OIDC code-flow + PKCE against your storage authorisation server.</p>
+      </div>
+      <div class="feature">
+        <h3><a class="link-arrow" href="https://github.com/java-native-access/jna" target="_blank" rel="noopener">JNA (Java Native Access)</a></h3>
+        <p class="muted small"><code>net.java.dev.jna:jna</code> &middot; v5.14.0 &middot; Apache-2.0</p>
+        <p>Dual-licensed Apache-2.0 OR LGPL-2.1+; OHD elects the Apache option.</p>
+      </div>
+      <div class="feature">
+        <h3><a class="link-arrow" href="https://github.com/google/guava" target="_blank" rel="noopener">Guava (Android)</a></h3>
+        <p class="muted small"><code>com.google.guava:guava</code> &middot; v33.3.1-android &middot; Apache-2.0</p>
+        <p>ListenableFuture plumbing for CameraX.</p>
+      </div>
+      <div class="feature">
+        <h3><a class="link-arrow" href="https://kotlinlang.org/" target="_blank" rel="noopener">Kotlin Standard Library</a></h3>
+        <p class="muted small"><code>org.jetbrains.kotlin:kotlin-stdlib</code> &middot; v1.9+ &middot; Apache-2.0</p>
+      </div>
+      <div class="feature">
+        <h3><a class="link-arrow" href="https://github.com/Kotlin/kotlinx.coroutines" target="_blank" rel="noopener">Kotlin Coroutines</a></h3>
+        <p class="muted small"><code>org.jetbrains.kotlinx:kotlinx-coroutines-core</code> &middot; v1.8+ &middot; Apache-2.0</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- TOOLING -->
+  <section class="section section--alt">
+    <div class="section__head">
+      <p class="eyebrow">Tooling &amp; tests</p>
+      <h2>Test runners and screenshot harnesses.</h2>
+    </div>
+
+    <div class="feature-grid">
+      <div class="feature">
+        <h3><a class="link-arrow" href="https://junit.org/junit4/" target="_blank" rel="noopener">JUnit 4</a></h3>
+        <p class="muted small"><code>junit:junit</code> &middot; v4.13.2 &middot; EPL-1.0</p>
+      </div>
+      <div class="feature">
+        <h3><a class="link-arrow" href="https://developer.android.com/jetpack/androidx/releases/test" target="_blank" rel="noopener">AndroidX Test (ext:junit / rules)</a></h3>
+        <p class="muted small"><code>androidx.test.*</code> &middot; v1.2.1 / v1.6.1 &middot; Apache-2.0</p>
+      </div>
+      <div class="feature">
+        <h3><a class="link-arrow" href="https://developer.android.com/training/testing/espresso" target="_blank" rel="noopener">Espresso Core</a></h3>
+        <p class="muted small"><code>androidx.test.espresso:espresso-core</code> &middot; v3.6.1 &middot; Apache-2.0</p>
+      </div>
+      <div class="feature">
+        <h3><a class="link-arrow" href="https://developer.android.com/training/testing/other-components/ui-automator" target="_blank" rel="noopener">UI Automator</a></h3>
+        <p class="muted small"><code>androidx.test.uiautomator:uiautomator</code> &middot; v2.3.0 &middot; Apache-2.0</p>
+      </div>
+      <div class="feature">
+        <h3><a class="link-arrow" href="https://github.com/cashapp/paparazzi" target="_blank" rel="noopener">Paparazzi</a></h3>
+        <p class="muted small"><code>app.cash.paparazzi</code> &middot; Gradle plugin &middot; Apache-2.0</p>
+        <p>Layout-rendered screenshot tests for the design-system components.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- NATIVE -->
+  <section class="section">
+    <div class="section__head">
+      <p class="eyebrow">Native dependencies</p>
+      <h2>The Rust core inside the <code>.so</code>.</h2>
+      <p class="section__lede">
+        Each Android ABI in the APK ships a single shared object built from the
+        OHD storage workspace. That binary statically links a long tail of Rust
+        crates — rusqlite (SQLCipher), uniffi, connectrpc, quinn (HTTP/3),
+        openssl-src, and others. Rather than mirror every transitive crate
+        version here, the canonical list lives in the storage workspace.
+      </p>
+    </div>
+
+    <div class="cards">
+      <article class="card">
+        <h3><a class="link-arrow" href="https://github.com/ohd-foundation/ohd/tree/main/storage" target="_blank" rel="noopener">OHD Storage core</a></h3>
+        <p class="muted small"><code>storage/Cargo.toml</code> &middot; Apache-2.0 OR MIT</p>
+        <p>
+          Full transitive crate list resolves out of <code>storage/Cargo.lock</code>.
+          Generate a fresh attribution sheet with <code>cargo about</code> or
+          <code>cargo-deny licenses</code> against that workspace.
+        </p>
+      </article>
+    </div>
+  </section>
+
+  <!-- DATA -->
+  <section class="section section--alt">
+    <div class="section__head">
+      <p class="eyebrow">Data sources</p>
+      <h2>Public datasets we read at runtime.</h2>
+      <p class="section__lede">
+        OHD Connect queries one external dataset today: Open Food Facts, for
+        product lookup in the Food logger. The data is under ODbL — please
+        respect attribution if you build on top of the same query path.
+      </p>
+    </div>
+
+    <div class="cards">
+      <article class="card">
+        <h3><a class="link-arrow" href="https://openfoodfacts.org" target="_blank" rel="noopener">Open Food Facts</a></h3>
+        <p class="muted small"><code>data.openfoodfacts.org</code> &middot; rolling &middot; ODbL-1.0</p>
+        <p>Product attributes, nutritional metadata, and barcode-to-product resolution.</p>
+      </article>
+    </div>
+  </section>
+
+  <!-- FOOTER LINKS -->
+  <section class="section">
+    <div class="section__head">
+      <p class="eyebrow">OHD Connect itself</p>
+      <h2>Apache-2.0 OR MIT.</h2>
+      <p class="section__lede">
+        Pick whichever licence fits your project. The full text of both lives in
+        the repository.
+      </p>
+    </div>
+
+    <div class="dev-grid">
+      <div class="dev">
+        <h3>Repository</h3>
+        <p>Source, issues, discussions, and PRs.</p>
+        <a class="link-arrow" href="https://github.com/ohd-foundation/ohd" target="_blank" rel="noopener">github.com/ohd-foundation/ohd &rarr;</a>
+      </div>
+      <div class="dev">
+        <h3>Licence text</h3>
+        <p>Apache-2.0 OR MIT — full text inline.</p>
+        <a class="link-arrow" href="https://github.com/ohd-foundation/ohd/blob/main/LICENSE" target="_blank" rel="noopener">LICENSE &rarr;</a>
+      </div>
+      <div class="dev">
+        <h3>Specification</h3>
+        <p>Wire protocol, event vocabulary, grant model.</p>
+        <a class="link-arrow" href="https://github.com/ohd-foundation/ohd/tree/main/spec" target="_blank" rel="noopener">Open the spec &rarr;</a>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer class="site-footer">
+  <div class="site-footer__inner">
+    <div class="site-footer__brand">
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 32 32" width="20" height="20">
+          <rect x="2" y="2" width="10" height="10" fill="currentColor" />
+          <rect x="20" y="20" width="10" height="10" fill="currentColor" />
+          <rect x="14" y="2" width="4" height="28" fill="var(--accent)" />
+        </svg>
+      </span>
+      <span>Open Health Data</span>
+    </div>
+    <nav class="site-footer__links" aria-label="Footer">
+      <a href="/">Home</a>
+      <a href="/how-it-works.html">How it works</a>
+      <a href="/roadmap.html">Roadmap</a>
+      <a href="/credits.html">Credits</a>
+      <a href="https://github.com/ohd-foundation/ohd" target="_blank" rel="noopener">Repository</a>
+      <a href="https://github.com/ohd-foundation/ohd/blob/main/LICENSE" target="_blank" rel="noopener">Apache-2.0 OR MIT</a>
+    </nav>
+    <p class="site-footer__attr muted small">Built in the open. No accounts on our side; your data lives with you.</p>
+  </div>
+</footer>
+
+<script src="/theme.js" defer></script>
+
+</body>
+</html>

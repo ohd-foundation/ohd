@@ -146,13 +146,24 @@ fun GrantsScreen(contentPadding: PaddingValues) {
             CreateGrantSheet(
                 onSubmit = { tplId, label, purpose ->
                     val input = GrantTemplates.forTemplate(tplId, label, purpose)
-                    val result = StorageRepository.createGrant(input).getOrNull()
-                    if (result != null) {
-                        lastShare = result
-                        refreshTick++
-                    } else {
-                        error = "Create grant failed."
-                    }
+                    StorageRepository.createGrant(input).fold(
+                        onSuccess = { share ->
+                            lastShare = share
+                            refreshTick++
+                            android.util.Log.i(
+                                "OhdGrants",
+                                "createGrant ok: tpl=$tplId label=$label",
+                            )
+                        },
+                        onFailure = { e ->
+                            error = "Create grant failed: ${e.message ?: e.javaClass.simpleName}"
+                            android.util.Log.e(
+                                "OhdGrants",
+                                "createGrant failed: tpl=$tplId label=$label",
+                                e,
+                            )
+                        },
+                    )
                     scope.launch { sheetState.hide() }
                         .invokeOnCompletion { showCreate = false }
                 },

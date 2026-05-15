@@ -27,7 +27,6 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -39,6 +38,10 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import com.ohd.connect.data.EmergencyConfig
+import com.ohd.connect.data.EventChannelInput
+import com.ohd.connect.data.EventInput
+import com.ohd.connect.data.NotificationCenter
+import com.ohd.connect.data.OhdScalar
 import com.ohd.connect.data.StorageRepository
 import com.ohd.connect.ui.theme.OhdConnectTheme
 import kotlinx.coroutines.launch
@@ -63,22 +66,34 @@ import kotlinx.coroutines.launch
  * `STATUS.md`).
  */
 @Composable
-fun EmergencySettingsScreen(contentPadding: PaddingValues) {
+fun EmergencySettingsScreen(
+    contentPadding: PaddingValues,
+    onToast: (String) -> Unit = {},
+) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
 
-    var cfg by remember {
-        mutableStateOf(StorageRepository.getEmergencyConfig().getOrDefault(EmergencyConfig()))
+    // Use the State<EmergencyConfig> directly (not a delegated var) so the
+    // local `update` lambda reads via .value at call time and writes via
+    // .value setter — avoids the closure-capture trap where a local `fun`
+    // could capture a snapshot of the delegated property's current value
+    // and overwrite the user's most-recent toggle (bug #2 — feature toggle
+    // "visual only").
+    val cfgState = remember {
+        mutableStateOf(
+            StorageRepository.getEmergencyConfig().getOrDefault(EmergencyConfig()),
+        )
     }
+    val cfg = cfgState.value
+    val update: ((EmergencyConfig) -> EmergencyConfig) -> Unit = { transform ->
+        val next = transform(cfgState.value)
+        cfgState.value = next
+        scope.launch { StorageRepository.setEmergencyConfig(next) }
+    }
+
     var showResetDialog by remember { mutableStateOf(false) }
     var showAddRoot by remember { mutableStateOf(false) }
     var newRootName by remember { mutableStateOf("") }
-
-    fun update(transform: (EmergencyConfig) -> EmergencyConfig) {
-        val next = transform(cfg)
-        cfg = next
-        scope.launch { StorageRepository.setEmergencyConfig(next) }
-    }
 
     val disabled = !cfg.featureEnabled
 
@@ -410,6 +425,27 @@ fun EmergencySettingsScreen(contentPadding: PaddingValues) {
                     ) { Text("Disable emergency feature") }
                 }
             }
+
+            // --- 9. Test emergency (bug #3) -------------------------------
+            // Fires a local notification + appends an `emergency.test_run`
+            // event so the user can rehearse what responders would see.
+            // No BLE, no responder dialog — purely local.
+            Spacer(Modifier.height(8.dp))
+            OutlinedButton(
+                enabled = !disabled,
+                onClick = {
+                    runTestEmergencyAlert(ctx, cfg, onToast)
+                },
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text("Run test alert") }
+            Text(
+                text = "Fires a local-only test notification and writes an audit event. " +
+                    "Nothing leaves the device. Use this to preview what responders would see.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 4.dp, vertical = 4.dp),
+            )
+
             Spacer(Modifier.height(24.dp))
         }
     }
@@ -421,8 +457,9 @@ fun EmergencySettingsScreen(contentPadding: PaddingValues) {
             text = { Text("All channel toggles, sensitivity classes, trust roots and timing settings will be restored to factory defaults.") },
             confirmButton = {
                 TextButton(onClick = {
-                    cfg = EmergencyConfig()
-                    scope.launch { StorageRepository.setEmergencyConfig(cfg) }
+                    val reset = EmergencyConfig()
+                    cfgState.value = reset
+                    scope.launch { StorageRepository.setEmergencyConfig(reset) }
                     showResetDialog = false
                 }) { Text("Reset") }
             },
@@ -484,6 +521,70 @@ fun EmergencySettingsScreen(contentPadding: PaddingValues) {
             },
         )
     }
+}
+
+/**
+ * Bug #3 — locally fire a test emergency alert.
+ *
+ * Three side-effects:
+ *  1. Build a list of the fields a real responder would see (allergies,
+ *     blood type, current meds, advance directives, diagnoses) based on the
+ *     user's current `EmergencyConfig` channel toggles.
+ *  2. Fire a system notification via [NotificationCenter] so it lands in the
+ *     phone's status bar AND the in-app inbox.
+ *  3. Append an `emergency.test_run` event so the audit log / Recent Events
+ *     screen surfaces the rehearsal.
+ *
+ * Snackbar feedback is delegated to the caller via `onToast` (the activity
+ * owns the SnackbarHost — see `OhdConnectShell`).
+ */
+private fun runTestEmergencyAlert(
+    ctx: android.content.Context,
+    cfg: EmergencyConfig,
+    onToast: (String) -> Unit,
+) {
+    val ch = cfg.channels
+    val visibleFields = buildList {
+        if (ch.allergies) add("Allergies")
+        if (ch.bloodType) add("Blood type")
+        if (ch.medications) add("Current medications")
+        if (ch.advanceDirectives) add("Advance directives")
+        if (ch.diagnoses) add("Active diagnoses")
+        if (ch.glucose) add("Glucose")
+        if (ch.heartRate) add("Heart rate")
+        if (ch.bloodPressure) add("Blood pressure")
+        if (ch.spo2) add("SpO2")
+        if (ch.temperature) add("Temperature")
+    }.take(5).ifEmpty { listOf("(no channels enabled)") }
+
+    val body = "If a real responder approved now, they would see: " +
+        visibleFields.joinToString(", ") + "."
+    NotificationCenter.append(
+        ctx,
+        NotificationCenter.NotificationEntry(
+            id = "emergency-test-${System.currentTimeMillis()}",
+            timestampMs = System.currentTimeMillis(),
+            title = "Emergency test — what would happen now",
+            body = body,
+            kind = NotificationCenter.Kind.TEST,
+            actionRoute = null,
+        ),
+    )
+
+    // Audit log — events.put. Silent if storage isn't open or the event-type
+    // is unknown (migration 018 must include `emergency.test_run`).
+    StorageRepository.putEvent(
+        EventInput(
+            timestampMs = System.currentTimeMillis(),
+            eventType = "emergency.test_run",
+            channels = listOf(
+                EventChannelInput(path = "kind", scalar = OhdScalar.Text("test")),
+            ),
+            notes = "Test alert via Emergency settings — local-only rehearsal",
+        ),
+    )
+
+    onToast("Test alert fired. Check notifications + Recent Events.")
 }
 
 @Composable

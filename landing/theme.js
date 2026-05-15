@@ -8,16 +8,16 @@
   }
 
   function current() {
-    return root.getAttribute("data-theme") || "dark";
+    return root.getAttribute("data-theme") || "light";
   }
 
-  // Initial: stored preference > system preference > dark default.
+  // Initial: stored preference > system preference > light default.
   try {
     var stored = localStorage.getItem(STORAGE_KEY);
     if (stored === "light" || stored === "dark") {
       apply(stored);
-    } else if (window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches) {
-      apply("light");
+    } else if (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) {
+      apply("dark");
     }
   } catch (_) {}
 

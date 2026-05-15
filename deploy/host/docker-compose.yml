@@ -58,6 +58,41 @@ services:
     networks:
       - ohd-net
 
+  ohd-mcp:
+    build:
+      context: ../../
+      dockerfile: connect/mcp-rs/deploy/Dockerfile
+    image: ohd-mcp-rs:dev
+    container_name: ohd-mcp
+    restart: unless-stopped
+    expose:
+      - "8445"
+    volumes:
+      - mcp_data:/var/lib/ohd-mcp
+    environment:
+      RUST_LOG: ${RUST_LOG:-info}
+    networks:
+      - ohd-net
+
+  ohd-saas:
+    build:
+      context: ../../
+      dockerfile: saas/deploy/Dockerfile
+    image: ohd-saas:dev
+    container_name: ohd-saas
+    restart: unless-stopped
+    expose:
+      - "8444"
+    volumes:
+      - saas_data:/var/lib/ohd-saas
+    environment:
+      RUST_LOG: ${RUST_LOG:-info}
+      # MUST be overridden in production via .env — Caddyfile references it
+      # implicitly for token signing. Dev fallback is the default in main.rs.
+      OHD_SAAS_JWT_SECRET: ${OHD_SAAS_JWT_SECRET:-dev-only-replace-me}
+    networks:
+      - ohd-net
+
   caddy:
     image: caddy:2-alpine
     container_name: ohd-caddy
@@ -69,6 +104,7 @@ services:
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - ../../landing:/srv/ohd-landing:ro
+      - /var/www/ohd-downloads:/srv/ohd-downloads:ro
       - caddy_data:/data
       - caddy_config:/config
     networks:
@@ -76,12 +112,18 @@ services:
     depends_on:
       - ohd-storage
       - ohd-relay
+      - ohd-saas
+      - ohd-mcp
 
 volumes:
   storage_data:
     name: ohd_storage_data
   relay_data:
     name: ohd_relay_data
+  saas_data:
+    name: ohd_saas_data
+  mcp_data:
+    name: ohd_mcp_data
   caddy_data:
   caddy_config:
 

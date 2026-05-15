@@ -120,6 +120,14 @@ pub struct Event {
     pub superseded_by: Option<String>,
     /// Soft-delete marker.
     pub deleted_at_ms: Option<i64>,
+    /// True when this row is a top-level event that timelines / Recent /
+    /// home-count surface by default. `false` on detail rows (`intake.*`
+    /// children of `food.eaten`, per-second `measurement.ecg_second`
+    /// children of an `ecg_session`, …). Search queries that target a
+    /// specific event type (e.g. `intake.carbs_g` for "carbs over time")
+    /// ignore this flag — it's a UI hint, not a permission gate.
+    #[serde(default = "default_true")]
+    pub top_level: bool,
     /// Source-signing metadata when the event was committed with a verified
     /// `source_signature`. UI surfaces use this to render
     /// "signed by Libre" / "signed by Quest Diagnostics" badges.
@@ -161,6 +169,13 @@ pub struct EventInput {
     pub source_id: Option<String>,
     /// Short freeform notes.
     pub notes: Option<String>,
+    /// `false` on detail rows (intake.* under a food.eaten, per-second ECG
+    /// samples under a session). Defaults to `true` — every existing call
+    /// site keeps minting top-level events. Producers grouping detail rows
+    /// under a parent emit a `correlation_id` channel to thread them
+    /// together (same pattern as consumption_started ↔ finished).
+    #[serde(default = "default_true")]
+    pub top_level: bool,
     /// Sample-block payloads (pre-compressed by the codec). Optional. Each
     /// block writes one row to `event_samples` referencing the channel
     /// resolved against the event's type.
@@ -251,10 +266,52 @@ pub struct EventFilter {
     /// tagged with `case_id`; the case's filters pull them in.
     #[serde(default)]
     pub case_ulids_in: Vec<String>,
+
+    /// Predicate over the `top_level` column. Default `All` keeps existing
+    /// callers working unchanged. UI surfaces (Recent / home count) flip to
+    /// `TopLevelOnly`; "show the detail rows under this entry" drill-downs
+    /// pass `NonTopLevelOnly` alongside a `correlation_id` channel filter.
+    #[serde(default)]
+    pub visibility: EventVisibility,
+}
+
+/// Filter dimension over the `top_level` column. See [`crate::events::Event::top_level`].
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum EventVisibility {
+    /// No filter — matches every event.
+    #[default]
+    All,
+    /// `top_level = 1` — entry-level rows the UI surfaces by default.
+    TopLevelOnly,
+    /// `top_level = 0` — detail / derived rows (intake.* under a food.eaten,
+    /// per-second ECG samples, …).
+    NonTopLevelOnly,
 }
 
 fn default_true() -> bool {
     true
+}
+
+/// Soft-delete every non-deleted event with `timestamp_ms < cutoff_ms`.
+/// Returns the number of rows updated. Used by the Android free-tier
+/// retention worker to enforce the 7-day window.
+///
+/// Sets `deleted_at_ms = now_ms`. The rows stay in the file (so audit /
+/// case scope still resolves) but every standard query
+/// (`include_deleted = false`) skips them. A future GC pass can drop the
+/// blob storage; v0 keeps it for cheap undelete.
+pub fn soft_delete_events_before(conn: &Connection, cutoff_ms: i64) -> Result<i64> {
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    let updated = conn.execute(
+        "UPDATE events SET deleted_at_ms = ?1
+            WHERE timestamp_ms < ?2 AND deleted_at_ms IS NULL",
+        params![now_ms, cutoff_ms],
+    )?;
+    Ok(updated as i64)
 }
 
 /// One channel-value predicate. `op` is one of `eq`, `neq`, `gt`, `gte`,
@@ -386,12 +443,33 @@ fn write_one(
     envelope_key: Option<&EnvelopeKey>,
 ) -> Result<PutEventResult> {
     let event_type_name = EventTypeName::parse(&input.event_type)?;
-    let etype = registry::resolve_event_type(tx, &event_type_name)?;
+    // Open-ended schema: if the name isn't canonical or already shadowed under
+    // `custom.*`, register it as `custom.<original_dotted>` on first write.
+    // Reads resolve the same way (canonical → custom shadow → fail) so the
+    // writer/reader never needs to know which side it landed on. Promotion of
+    // a custom row to canonical is a one-line UPDATE in a future migration.
+    let etype = match registry::resolve_event_type_with_custom_fallback(tx, &event_type_name) {
+        Ok(row) => row,
+        Err(Error::UnknownType(_)) => {
+            registry::register_event_type_as_custom(tx, &event_type_name)?
+        }
+        Err(e) => return Err(e),
+    };
 
-    // Resolve all channel definitions up front; reject early on unknown.
+    // Resolve all channel definitions up front. Unknown channels are
+    // auto-registered with a value_type inferred from the supplied scalar
+    // — the producer-side schema (Android, MCP, sync agent) is the source
+    // of truth, not pre-listed migration rows.
     let mut resolved: Vec<(ChannelRow, &ChannelValue)> = Vec::new();
     for cv in &input.channels {
-        let chan = registry::resolve_channel(tx, etype.id, &cv.channel_path)?;
+        let inferred = match &cv.value {
+            ChannelScalar::Real { .. } => registry::ValueType::Real,
+            ChannelScalar::Int { .. } => registry::ValueType::Int,
+            ChannelScalar::Bool { .. } => registry::ValueType::Bool,
+            ChannelScalar::Text { .. } => registry::ValueType::Text,
+            ChannelScalar::EnumOrdinal { .. } => registry::ValueType::Enum,
+        };
+        let chan = registry::resolve_channel_or_register(tx, etype.id, &cv.channel_path, inferred)?;
         validate_channel_value(&chan, cv)?;
         resolved.push((chan, cv));
     }
@@ -463,8 +541,8 @@ fn write_one(
     tx.execute(
         "INSERT INTO events
             (ulid_random, timestamp_ms, tz_offset_minutes, tz_name, duration_ms,
-             event_type_id, device_id, app_id, source, source_id, notes)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+             event_type_id, device_id, app_id, source, source_id, notes, top_level)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         params![
             rand_tail.to_vec(),
             input.timestamp_ms,
@@ -477,6 +555,7 @@ fn write_one(
             input.source,
             input.source_id,
             input.notes,
+            if input.top_level { 1i64 } else { 0i64 },
         ],
     )?;
     let event_rowid = tx.last_insert_rowid();
@@ -682,11 +761,12 @@ fn get_event_by_ulid_inner(
         Option<String>,
         Option<i64>,
         Option<i64>,
+        bool,
     )> = conn
         .query_row(
             "SELECT id, timestamp_ms, tz_offset_minutes, tz_name, duration_ms,
                     event_type_id, device_id, app_id, source, source_id, notes,
-                    superseded_by, deleted_at_ms
+                    superseded_by, deleted_at_ms, top_level
                FROM events WHERE ulid_random = ?1",
             params![rand_tail.to_vec()],
             |r| {
@@ -704,6 +784,7 @@ fn get_event_by_ulid_inner(
                     r.get(10)?,
                     r.get(11)?,
                     r.get(12)?,
+                    r.get::<_, i64>(13)? != 0,
                 ))
             },
         )
@@ -722,6 +803,7 @@ fn get_event_by_ulid_inner(
         notes,
         superseded_by,
         deleted_at,
+        top_level,
     ) = row.ok_or(Error::NotFound)?;
     let etype = registry::event_type_by_id(conn, et_id)?;
     let channels = load_channels(conn, event_id, ulid, envelope_key)?;
@@ -782,6 +864,7 @@ fn get_event_by_ulid_inner(
         notes,
         superseded_by: superseded_by_str,
         deleted_at_ms: deleted_at,
+        top_level,
         signed_by,
     })
 }
@@ -966,6 +1049,72 @@ pub fn query_events(
     query_events_inner(conn, filter, grant_scope, None)
 }
 
+/// Count events matching `filter` without materialising the rows.
+///
+/// Pure `SELECT COUNT(*)` over the same WHERE clause as [`query_events`],
+/// minus the bits that need post-SQL evaluation (channel predicates, grant
+/// scope intersection). Use when callers only need a number — e.g. the Home
+/// stat tile that says "847 events today" — to side-step the 10 000-row
+/// query cap.
+///
+/// Caveat: ignores `channel_predicates`, `case_ulids_in`, and `grant_scope`.
+/// These are applied row-by-row in [`query_events_inner`] after the SQL
+/// fetch, and replicating them in pure SQL is non-trivial. Filters that
+/// matter for the stat tile (`from_ms`, `to_ms`, `event_types_in`,
+/// `event_types_not_in`, `include_deleted`) are honoured.
+pub fn count_events(conn: &Connection, filter: &EventFilter) -> Result<i64> {
+    let mut sql = String::from("SELECT COUNT(*) FROM events WHERE 1=1");
+    let mut args: Vec<rusqlite::types::Value> = Vec::new();
+
+    if let Some(from) = filter.from_ms {
+        sql.push_str(" AND timestamp_ms >= ?");
+        args.push(from.into());
+    }
+    if let Some(to) = filter.to_ms {
+        sql.push_str(" AND timestamp_ms <= ?");
+        args.push(to.into());
+    }
+    if !filter.event_types_in.is_empty() {
+        let placeholders = (0..filter.event_types_in.len())
+            .map(|_| "?")
+            .collect::<Vec<_>>()
+            .join(",");
+        sql.push_str(&format!(
+            " AND event_type_id IN (SELECT id FROM event_types WHERE namespace || '.' || name IN ({placeholders}))"
+        ));
+        for t in &filter.event_types_in {
+            args.push(t.clone().into());
+        }
+    }
+    if !filter.event_types_not_in.is_empty() {
+        let placeholders = (0..filter.event_types_not_in.len())
+            .map(|_| "?")
+            .collect::<Vec<_>>()
+            .join(",");
+        sql.push_str(&format!(
+            " AND event_type_id NOT IN (SELECT id FROM event_types WHERE namespace || '.' || name IN ({placeholders}))"
+        ));
+        for t in &filter.event_types_not_in {
+            args.push(t.clone().into());
+        }
+    }
+    if !filter.include_deleted {
+        sql.push_str(" AND deleted_at_ms IS NULL");
+    }
+    match &filter.visibility {
+        EventVisibility::All => {}
+        EventVisibility::TopLevelOnly => sql.push_str(" AND top_level = 1"),
+        EventVisibility::NonTopLevelOnly => sql.push_str(" AND top_level = 0"),
+    }
+
+    let count: i64 = conn.query_row(
+        &sql,
+        rusqlite::params_from_iter(args.iter()),
+        |r| r.get(0),
+    )?;
+    Ok(count)
+}
+
 /// Same as [`query_events`] but threads an envelope key for value-level
 /// decryption. The envelope key comes from
 /// [`crate::storage::Storage::envelope_key`].
@@ -1015,7 +1164,7 @@ fn query_events_inner(
         let mut ids = Vec::new();
         for t in &filter.event_types_in {
             let n = EventTypeName::parse(t)?;
-            if let Ok(et) = registry::resolve_event_type(conn, &n) {
+            if let Ok(et) = registry::resolve_event_type_with_custom_fallback(conn, &n) {
                 ids.push(et.id);
             }
         }
@@ -1032,7 +1181,7 @@ fn query_events_inner(
         let mut ids = Vec::new();
         for t in &filter.event_types_not_in {
             let n = EventTypeName::parse(t)?;
-            if let Ok(et) = registry::resolve_event_type(conn, &n) {
+            if let Ok(et) = registry::resolve_event_type_with_custom_fallback(conn, &n) {
                 ids.push(et.id);
             }
         }
@@ -1120,6 +1269,11 @@ fn query_events_inner(
         for s in &filter.sensitivity_classes_not_in {
             args.push(s.clone().into());
         }
+    }
+    match &filter.visibility {
+        EventVisibility::All => {}
+        EventVisibility::TopLevelOnly => sql.push_str(" AND top_level = 1"),
+        EventVisibility::NonTopLevelOnly => sql.push_str(" AND top_level = 0"),
     }
     sql.push_str(" ORDER BY timestamp_ms DESC");
     let limit = filter.limit.unwrap_or(1000).min(10_000);
@@ -1533,6 +1687,9 @@ fn intersect_filters(outer: &EventFilter, inner: &EventFilter) -> EventFilter {
         // Crucial: clear case_ulids_in to prevent infinite recursion when the
         // intersected filter is dispatched through `query_events`.
         case_ulids_in: vec![],
+        // Outer filter wins — case scope shouldn't suddenly pull in detail
+        // rows behind a top-level-only filter.
+        visibility: outer.visibility.clone(),
     }
 }
 

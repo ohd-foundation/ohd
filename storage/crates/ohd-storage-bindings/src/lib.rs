@@ -329,6 +329,10 @@ pub struct EventInputDto {
     pub source_id: Option<String>,
     /// Notes.
     pub notes: Option<String>,
+    /// `false` on detail rows (intake.* / measurement.ecg_second / sample
+    /// rows). Defaults to `true` so every existing call site keeps minting
+    /// top-level events. See `EventDto.top_level`.
+    pub top_level: Option<bool>,
 }
 
 impl EventInputDto {
@@ -350,6 +354,7 @@ impl EventInputDto {
             source: self.source,
             source_id: self.source_id,
             notes: self.notes,
+            top_level: self.top_level.unwrap_or(true),
             // Sample blocks aren't yet exposed across the FFI boundary; the
             // bindings caller writes channel scalars only. Adding sample-block
             // support to the uniffi DTO is a v1.x deliverable; today the
@@ -382,6 +387,11 @@ pub struct EventDto {
     pub source: Option<String>,
     /// Soft-delete marker.
     pub deleted_at_ms: Option<i64>,
+    /// `true` for entry-level events (what timelines / Recent / home counts
+    /// surface by default). `false` for detail rows (intake.* under a
+    /// food.eaten, per-second ECG samples, …). Search queries that target a
+    /// specific event type ignore this — it's a UI hint, not a permission gate.
+    pub top_level: bool,
 }
 
 impl EventDto {
@@ -399,6 +409,7 @@ impl EventDto {
             notes: e.notes,
             source: e.source,
             deleted_at_ms: e.deleted_at_ms,
+            top_level: e.top_level,
         }
     }
 }
@@ -469,10 +480,21 @@ pub struct EventFilterDto {
     pub include_deleted: bool,
     /// Result cap.
     pub limit: Option<i64>,
+    /// Predicate over the `top_level` column. `"all"` (default), `"top_level_only"`,
+    /// `"non_top_level_only"`. Anything else is treated as `"all"`.
+    pub visibility: Option<String>,
+    /// Restrict to events with `source` exactly in this list. Empty = no filter.
+    #[uniffi(default = [])]
+    pub source_in: Vec<String>,
 }
 
 impl EventFilterDto {
     fn into_core(self) -> core::events::EventFilter {
+        let visibility = match self.visibility.as_deref() {
+            Some("top_level_only") => core::events::EventVisibility::TopLevelOnly,
+            Some("non_top_level_only") => core::events::EventVisibility::NonTopLevelOnly,
+            _ => core::events::EventVisibility::All,
+        };
         core::events::EventFilter {
             from_ms: self.from_ms,
             to_ms: self.to_ms,
@@ -482,12 +504,13 @@ impl EventFilterDto {
             include_superseded: true,
             limit: self.limit,
             device_id_in: vec![],
-            source_in: vec![],
+            source_in: self.source_in,
             event_ulids_in: vec![],
             sensitivity_classes_in: vec![],
             sensitivity_classes_not_in: vec![],
             channel_predicates: vec![],
             case_ulids_in: vec![],
+            visibility,
         }
     }
 }
@@ -1175,6 +1198,52 @@ impl OhdStorage {
             .with_conn(|conn| core::events::query_events(conn, &core_filter, None))
             .map_err(OhdError::from)?;
         Ok(events.into_iter().map(EventDto::from_core).collect())
+    }
+
+    /// Count events matching `filter` without materialising the rows.
+    ///
+    /// Pure SQL `COUNT(*)` over the same time / event-type / deleted-flag
+    /// predicates as [`query_events`], used by the Home stat tile to
+    /// side-step the 10 000-row response cap. See
+    /// [`core::events::count_events`] for the caveat about which filter
+    /// fields are honoured (channel predicates and case scope are not).
+    pub fn count_events(&self, filter: EventFilterDto) -> Result<u64> {
+        let core_filter = filter.into_core();
+        let count = self
+            .inner
+            .with_conn(|conn| core::events::count_events(conn, &core_filter))
+            .map_err(OhdError::from)?;
+        Ok(count as u64)
+    }
+
+    /// Soft-delete every event with `timestamp_ms < cutoff_ms` that isn't
+    /// already deleted. Used by the free-tier 7-day retention worker on
+    /// Android. Returns the number of rows touched.
+    pub fn soft_delete_events_before(&self, cutoff_ms: i64) -> Result<u64> {
+        let n = self
+            .inner
+            .with_conn(|conn| core::events::soft_delete_events_before(conn, cutoff_ms))
+            .map_err(OhdError::from)?;
+        Ok(n as u64)
+    }
+
+    // -------------------------------------------------------------------------
+    // Agent tools (CORD + MCP) — uniffi shim over `ohd-mcp-core`.
+    // -------------------------------------------------------------------------
+
+    /// Catalog of agent tools as JSON. Same payload the standalone MCP
+    /// server returns from `tools/list`. Kotlin / Android CORD calls this
+    /// instead of carrying a hardcoded list.
+    pub fn list_tools(&self) -> String {
+        ohd_mcp_core::catalog_json()
+    }
+
+    /// Execute one agent tool by name. `input_json` is the JSON the
+    /// model emitted inside its `tool_use` block; the return is the JSON
+    /// that gets handed back as `tool_result`. Errors come back as
+    /// `{"error": "..."}` strings — never throw.
+    pub fn execute_tool(&self, name: String, input_json: String) -> String {
+        ohd_mcp_core::dispatch_json(&name, &input_json, &self.inner)
     }
 
     /// On-disk format version (e.g. `"1.0"`).

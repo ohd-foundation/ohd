@@ -33,11 +33,15 @@ impl EventTypeName {
                 namespace: ns.to_string(),
                 name: name.to_string(),
             })
-        } else if let Some(rest) = ns.strip_prefix("com") {
+        } else if ns == "com" {
             // form: com.<owner>.<name>
             // The first split gave us ns="com" and name="<owner>.<rest>".
             // Re-parse so the owner stays in the namespace.
-            let _ = rest;
+            //
+            // (Earlier this checked `ns.strip_prefix("com")`, which silently
+            // misclassified `composition.X.Y` / `command.X.Y` / any other
+            // `com…`-prefixed namespace as `com.<owner>.<leaf>`. Exact
+            // match is correct.)
             let (owner, leaf) = match name.split_once('.') {
                 Some(p) => p,
                 None => {
@@ -168,6 +172,69 @@ pub fn resolve_event_type(conn: &Connection, name: &EventTypeName) -> Result<Eve
     Err(Error::UnknownType(name.as_dotted()))
 }
 
+/// Resolve a wire event-type name, transparently falling back to its
+/// `custom.<original_dotted>` shadow when the canonical row is missing.
+///
+/// Use this on both reads and writes when you want open-ended-schema semantics:
+/// users can keep writing `composition.allergen.gluten` even before that type
+/// is promoted to the canonical registry — the data lands under
+/// `custom.composition.allergen.gluten` (registered on first write) and is
+/// transparently found by both read variants of this lookup.
+///
+/// Already-`custom.*` names skip the fallback (no `custom.custom.foo`).
+pub fn resolve_event_type_with_custom_fallback(
+    conn: &Connection,
+    name: &EventTypeName,
+) -> Result<EventTypeRow> {
+    match resolve_event_type(conn, name) {
+        Ok(row) => Ok(row),
+        Err(Error::UnknownType(_)) if name.namespace != "custom" => {
+            let shadow = EventTypeName {
+                namespace: "custom".to_string(),
+                name: name.as_dotted(),
+            };
+            resolve_event_type(conn, &shadow)
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// Auto-register an unknown event type under the `custom.*` namespace.
+///
+/// Used by `put_events` when a writer submits a name that's not in the
+/// canonical registry. The original name is preserved as the suffix so a
+/// future migration can promote it via a single `UPDATE event_types` (or by
+/// inserting the canonical row and a `type_aliases` row pointing the custom
+/// shadow at it).
+///
+/// Idempotent on the (namespace, name) UNIQUE: a second call returns the
+/// row inserted by the first.
+pub fn register_event_type_as_custom(
+    conn: &Connection,
+    original: &EventTypeName,
+) -> Result<EventTypeRow> {
+    // Don't double-prefix custom.X → custom.custom.X.
+    let custom_name = if original.namespace == "custom" {
+        original.name.clone()
+    } else {
+        original.as_dotted()
+    };
+    let description = format!("Auto-registered (was: {})", original.as_dotted());
+    conn.execute(
+        "INSERT OR IGNORE INTO event_types
+             (namespace, name, description, default_sensitivity_class)
+         VALUES ('custom', ?1, ?2, 'general')",
+        params![custom_name, description],
+    )?;
+    resolve_event_type(
+        conn,
+        &EventTypeName {
+            namespace: "custom".to_string(),
+            name: custom_name,
+        },
+    )
+}
+
 /// Look up event type by primary key.
 pub fn event_type_by_id(conn: &Connection, id: i64) -> Result<EventTypeRow> {
     conn.query_row(
@@ -220,6 +287,61 @@ pub fn resolve_channel(
         event_type: format!("{}.{}", event_type.namespace, event_type.name),
         channel_path: channel_path.to_string(),
     })
+}
+
+/// Resolve a channel, **auto-registering it on first use** if no row exists.
+///
+/// Connect-side event types (food, measurement, symptom, …) are open-shape:
+/// the producer knows the channels its UI emits, but pre-listing every
+/// nutriment / micronutrient / OFF tag in `migrations/*.sql` is brittle —
+/// adding a field to the UI required a Rust-core rebuild before this
+/// helper existed. Instead we let `put_events` register unknown channels
+/// inline, inferring the [`ValueType`] from the supplied scalar variant.
+///
+/// Inferred fields:
+///  - `value_type`            ← scalar variant
+///  - `unit`                  ← `NULL` (the path-name carries unit suffixes
+///                              like `_mg` / `_g` in practice; explicit
+///                              unit metadata stays opt-in via migrations)
+///  - `sensitivity_class`     ← inherits the event type's default
+///  - `parent_id`             ← `NULL`
+///  - `enum_values`           ← `NULL`
+///
+/// Idempotent: a second call with the same `(event_type_id, channel_path)`
+/// hits the existing row (via [`resolve_channel`]) and never re-inserts.
+pub fn resolve_channel_or_register(
+    conn: &Connection,
+    event_type_id: i64,
+    channel_path: &str,
+    inferred_value_type: ValueType,
+) -> Result<ChannelRow> {
+    match resolve_channel(conn, event_type_id, channel_path) {
+        Ok(row) => Ok(row),
+        Err(Error::UnknownChannel { .. }) => {
+            let etype = event_type_by_id(conn, event_type_id)?;
+            let value_type_str = match inferred_value_type {
+                ValueType::Real => "real",
+                ValueType::Int => "int",
+                ValueType::Bool => "bool",
+                ValueType::Text => "text",
+                ValueType::Enum => "enum",
+                ValueType::Group => "group",
+            };
+            conn.execute(
+                "INSERT OR IGNORE INTO channels
+                     (event_type_id, parent_id, name, path, value_type, unit, sensitivity_class)
+                 VALUES (?1, NULL, ?2, ?2, ?3, NULL, ?4)",
+                params![
+                    event_type_id,
+                    channel_path,
+                    value_type_str,
+                    etype.default_sensitivity_class,
+                ],
+            )?;
+            resolve_channel(conn, event_type_id, channel_path)
+        }
+        Err(e) => Err(e),
+    }
 }
 
 /// Look up channel by primary key.

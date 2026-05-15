@@ -81,10 +81,22 @@ cd storage/crates/ohd-storage-bindings
 cargo ndk \
   -t arm64-v8a \
   -t armeabi-v7a \
-  -t x86_64 \
   -o ../../../connect/android/app/src/main/jniLibs \
   build --release
 ```
+
+> **`x86_64` is intentionally dropped.** Building the vendored OpenSSL for
+> `x86_64-linux-android` with NDK r26 fails — clang's integrated assembler
+> rejects the modern SHA-NI / SM3 SIMD mnemonics in `crypto/sm3/sm3-x86_64.S`
+> (`invalid instruction mnemonic 'vsm3rnds2'`). Real devices are arm64; this
+> target is emulator-only. Re-add when (a) the NDK ships a newer clang or
+> (b) the openssl-src crate disables those asm files for android-x86_64.
+
+> **Why vendored OpenSSL?** The workspace `Cargo.toml` enables
+> `rusqlite/bundled-sqlcipher-vendored-openssl` (not just `bundled-sqlcipher`)
+> so SQLCipher's OpenSSL dependency is built from source instead of looked
+> up via system headers. The NDK doesn't ship `openssl/crypto.h`, and we
+> don't want to pin to a per-host openssl install.
 
 What this does:
 
@@ -122,18 +134,20 @@ finish in seconds.
 
 ## Stage 2 — generate Kotlin bindings
 
-Once Stage 1 has produced an `.so` for at least one host-runnable ABI (typical:
-the Linux/macOS `target/release/libohd_storage_bindings.so` from a normal
-`cargo build`), run:
+Build a host-platform `.so` **in debug mode** so the symbol table is
+preserved (uniffi 0.28's library-mode bindgen reads `.symtab`, which
+`cargo build --release` strips — the bindgen exits 0 silently with no
+output if it can't find the symbols):
 
 ```bash
 # From the repo root:
 cd storage
+cargo build -p ohd-storage-bindings        # debug, symtab intact
 cargo run --features cli --bin uniffi-bindgen -- \
   generate \
-  --library target/release/libohd_storage_bindings.so \
-  --language kotlin \
-  --out-dir ../connect/android/app/src/main/java/uniffi
+  --library --language kotlin \
+  --out-dir ../connect/android/app/src/main/java/uniffi \
+  target/debug/libohd_storage_bindings.so
 ```
 
 Output:
@@ -141,6 +155,27 @@ Output:
 ```
 connect/android/app/src/main/java/uniffi/ohd_storage/ohd_storage.kt
 ```
+
+> **uniffi 0.28 + Kotlin 2.0 patch.** The generated file declares
+> `val \`message\`: kotlin.String` in each `OhdException` variant constructor
+> (a property), and ALSO an `override val message get() = "…"` block —
+> Kotlin 2.0's stricter overload-resolution rejects the duplicate. Fix:
+> add `override` to the constructor val and drop the formatter `get()`:
+>
+> ```bash
+> sed -i 's/val \`message\`: kotlin\.String/override val \`message\`: kotlin.String/g' \
+>   ../connect/android/app/src/main/java/uniffi/ohd_storage/ohd_storage.kt
+> # then strip the per-variant `override val message  get() = "…"` blocks.
+> ```
+>
+> A future bump to uniffi 0.29+ should obviate this — track upstream issue
+> for "uniffi error variants collide with Throwable.message under Kotlin 2".
+
+> **The bindgen output is placed at `<out-dir>/uniffi/ohd_storage/ohd_storage.kt`,
+> not directly at `<out-dir>/ohd_storage/...`.** uniffi prepends a redundant
+> `uniffi/` directory; either move it up one level or accept the deeper path
+> (Kotlin packages are decided by the `package` declaration, not by directory
+> layout, so AGP compiles it either way).
 
 This is the Kotlin façade — every `OhdStorage` method, `EventInputDto`,
 `PutEventOutcomeDto`, and `OhdError` variant from
@@ -173,6 +208,18 @@ uniffi's Kotlin codegen surfaces `OhdError` variants as
 `OhdException.NotFound`, `OhdException.Internal` (sealed class).
 
 ## Stage 3 — Gradle assemble
+
+> **First-time only — generate the gradle wrapper.** `gradlew` and
+> `gradle/wrapper/` are not committed today; bootstrap them with a
+> system-installed gradle:
+>
+> ```bash
+> cd connect/android
+> gradle wrapper --gradle-version 8.7
+> ```
+>
+> Subsequent runs use `./gradlew` directly. `ANDROID_HOME` /
+> `ANDROID_SDK_ROOT` must point at the SDK (e.g. `/opt/android-sdk`).
 
 ```bash
 cd connect/android

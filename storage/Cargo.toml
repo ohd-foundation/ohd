@@ -5,6 +5,9 @@ members = [
     "crates/ohd-storage-server",
     "crates/ohd-storage-bindings",
     "crates/ohd-storage-conformance",
+    # Shared agent-tool catalog + dispatch (CORD on Android via uniffi
+    # AND the MCP server share this — single source of truth).
+    "crates/ohd-mcp-core",
     # Shared CLI helper crates (consumed by ../connect/cli/ and
     # ../emergency/cli/ via path deps that walk up out of the storage
     # tree). Both CLIs used to carry near-identical copies of these
@@ -17,6 +20,16 @@ members = [
     # which stays in each binary.
     "crates/ohd-h3-helpers",
 ]
+
+# OHD patch: openssl-src is forced to skip x86_64 assembly via a local
+# vendored copy. Reason: NDK r26's clang assembler rejects the modern
+# SHA-NI / SM3 / SM4 SIMD mnemonics that OpenSSL 3.6 emits via
+# crypto/sm{3,4}/{sm3,sm4}-x86_64.S, breaking cross-builds for
+# `x86_64-linux-android` (emulator target). The patch adds a single
+# `configure.arg("no-asm")` for that triple. Drop when openssl-src
+# upstream gains an env knob or the NDK clang catches up.
+[patch.crates-io]
+openssl-src = { path = "vendor-openssl-src" }
 
 [workspace.package]
 version = "0.0.0"
@@ -45,7 +58,7 @@ clap = { version = "4", features = ["derive", "env"] }
 tokio = { version = "1", features = ["full"] }
 
 # SQLite + SQLCipher engine.
-rusqlite = { version = "0.32", features = ["bundled-sqlcipher"] }
+rusqlite = { version = "0.32", features = ["bundled-sqlcipher-vendored-openssl"] }
 
 # Serde for JSON encodings (audit query_params_json, payload_json, OHDC JSON wire).
 serde = { version = "1", features = ["derive"] }

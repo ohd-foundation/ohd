@@ -1,0 +1,238 @@
+package com.ohd.connect
+
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.unit.dp
+import app.cash.paparazzi.DeviceConfig
+import app.cash.paparazzi.Paparazzi
+import com.android.ide.common.rendering.api.SessionParams
+import com.android.resources.ScreenOrientation
+import com.ohd.connect.ui.screens.FoodScreen
+import com.ohd.connect.ui.screens.FoodSearchScreen
+import com.ohd.connect.ui.screens.FormBuilderScreen
+import com.ohd.connect.ui.screens.HomeScreen
+import com.ohd.connect.ui.screens.MeasurementScreen
+import com.ohd.connect.ui.screens.MedicationScreen
+import com.ohd.connect.ui.screens.OnboardingStorageScreen
+import com.ohd.connect.ui.screens.RecentEventsScreen
+import com.ohd.connect.ui.screens.SymptomLogScreen
+import com.ohd.connect.ui.screens.UrineStripScreen
+import com.ohd.connect.ui.screens.cord.CordChatScreen
+import com.ohd.connect.ui.screens.settings.AccessSettingsScreen
+import com.ohd.connect.ui.screens.settings.SettingsHubScreen
+import com.ohd.connect.ui.screens.settings.StorageSettingsScreen
+import com.ohd.connect.ui.theme.OhdTheme
+import org.junit.Rule
+import org.junit.Test
+
+/**
+ * Pencil screenshot regression — one snapshot per top-level screen.
+ *
+ * The goal isn't pixel-matching the Pencil PNG exports (font rendering on
+ * Layoutlib differs from the Figma renderer); the goal is a **checked-in
+ * baseline**: any future commit that nudges layout, removes a row, or
+ * accidentally rewrites a colour-token gets caught by `verifyPaparazziDebug`.
+ *
+ * Workflow:
+ *  1. First run: `./gradlew :app:recordPaparazziDebug` — writes PNGs
+ *     under `app/src/test/snapshots/images/`.
+ *  2. Subsequent runs: `./gradlew :app:verifyPaparazziDebug` (or just
+ *     `:app:test`) — fails if the rendered bitmap drifts from the baseline.
+ *  3. Intentional UI change: re-run record, review the diff, commit.
+ *
+ * Device configuration:
+ *  - Width 390 dp × height 844 dp matches the Pencil canvas size for the
+ *    iPhone-13 reference frames the designer uses (`spec/design/...`).
+ *  - `xxhdpi` density (3.0) so we hit the ~390 × 3 = 1170 px baseline
+ *    pixel width that Pixel 5/7-class devices ship at.
+ *  - Light mode — the design system has no dark variant in v1.
+ *
+ * Network / storage isolation:
+ *  - Repository-fed screens (`RecentEventsScreen`) call into
+ *    `StorageRepository`, which is `runCatching` wrapped at every call site.
+ *    Without an open uniffi handle (Paparazzi runs on the JVM with no .so
+ *    loaded) those calls fail and the screens fall back to `StubData`. That
+ *    fallback is exactly what we want to baseline.
+ *  - Other screens are pure stateless / hold-only-local-state, so they
+ *    snapshot deterministically.
+ */
+class PencilScreenshotsTest {
+
+    @get:Rule
+    val paparazzi = Paparazzi(
+        // PIXEL_5 is the closest stock Layoutlib config; we override the
+        // dp-equivalent dimensions so the canvas matches the Pencil frame.
+        // 390 × 844 dp at xxhdpi (density 3.0) → 1170 × 2532 px.
+        deviceConfig = DeviceConfig.PIXEL_5.copy(
+            screenWidth = 1170,
+            screenHeight = 2532,
+            xdpi = 480,
+            ydpi = 480,
+            orientation = ScreenOrientation.PORTRAIT,
+        ),
+        renderingMode = SessionParams.RenderingMode.NORMAL,
+        showSystemUi = false,
+    )
+
+    /**
+     * Wrap every snapshot with the OHD theme so colour tokens / typography
+     * resolve. `contentPadding` matches what the Scaffold would supply at
+     * runtime — 0 dp because Paparazzi has no inset bars.
+     */
+    private fun snapshot(content: @Composable () -> Unit) {
+        paparazzi.snapshot {
+            OhdTheme {
+                content()
+            }
+        }
+    }
+
+    private val noPadding = PaddingValues(0.dp)
+
+    @Test
+    fun onboarding() = snapshot {
+        OnboardingStorageScreen(onContinue = {})
+    }
+
+    @Test
+    fun home() = snapshot {
+        HomeScreen(
+            contentPadding = noPadding,
+            onOpenCord = {},
+            onOpenNotifications = {},
+            onOpenSettings = {},
+            onOpenHistory = {},
+            onLogMedication = {},
+            onLogFood = {},
+            onLogMeasurement = {},
+            onLogSymptom = {},
+            onAddFavourite = {},
+        )
+    }
+
+    @Test
+    fun medication() = snapshot {
+        MedicationScreen(
+            contentPadding = noPadding,
+            onBack = {},
+            onOpenLibrary = {},
+            onAddToOnHand = {},
+        )
+    }
+
+    @Test
+    fun food() = snapshot {
+        FoodScreen(
+            onBack = {},
+            onOpenScan = {},
+            onOpenSearch = {},
+            onPickRecent = {},
+            contentPadding = noPadding,
+        )
+    }
+
+    @Test
+    fun foodSearch() = snapshot {
+        FoodSearchScreen(
+            onBack = {},
+            onOpenScan = {},
+            onPickFood = {},
+            contentPadding = noPadding,
+        )
+    }
+
+    @Test
+    fun symptom() = snapshot {
+        SymptomLogScreen(
+            onBack = {},
+            onLog = { _, _ -> },
+            contentPadding = noPadding,
+        )
+    }
+
+    @Test
+    fun measurement() = snapshot {
+        MeasurementScreen(
+            onBack = {},
+            onLog = {},
+            onOpenBloodPressure = {},
+            onOpenGlucose = {},
+            onOpenWeight = {},
+            onOpenTemperature = {},
+            onOpenUrineStrip = {},
+            onOpenPainScore = {},
+            contentPadding = noPadding,
+        )
+    }
+
+    @Test
+    fun urineStrip() = snapshot {
+        UrineStripScreen(
+            onBack = {},
+            onLog = {},
+            contentPadding = noPadding,
+        )
+    }
+
+    @Test
+    fun recentEvents() = snapshot {
+        // RecentEventsScreen calls StorageRepository.queryEvents in a
+        // LaunchedEffect; that returns Result.failure here (no .so loaded)
+        // and falls back to StubData.recentEventsSample. The snapshot
+        // baselines the stub-data branch, which is what ships during
+        // onboarding anyway.
+        RecentEventsScreen(
+            contentPadding = noPadding,
+            onBack = {},
+        )
+    }
+
+    @Test
+    fun settingsHub() = snapshot {
+        SettingsHubScreen(
+            contentPadding = noPadding,
+            onNavigate = {},
+        )
+    }
+
+    @Test
+    fun storageSettings() = snapshot {
+        StorageSettingsScreen(
+            contentPadding = noPadding,
+            onBack = {},
+            onContinue = {},
+        )
+    }
+
+    @Test
+    fun access() = snapshot {
+        AccessSettingsScreen(
+            contentPadding = noPadding,
+            onBack = {},
+            onOpenGrants = {},
+            onOpenPending = {},
+            onOpenCases = {},
+            onOpenAudit = {},
+            onOpenEmergency = {},
+            onOpenExport = {},
+        )
+    }
+
+    @Test
+    fun formBuilder() = snapshot {
+        FormBuilderScreen(
+            onBack = {},
+            onSave = { _, _ -> },
+            contentPadding = noPadding,
+        )
+    }
+
+    @Test
+    fun cordChat() = snapshot {
+        CordChatScreen(
+            onBack = {},
+            onPickModel = {},
+            contentPadding = noPadding,
+        )
+    }
+}

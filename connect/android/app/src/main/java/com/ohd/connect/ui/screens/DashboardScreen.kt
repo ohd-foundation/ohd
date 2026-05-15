@@ -30,6 +30,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.ohd.connect.data.EventFilter
+import com.ohd.connect.data.EventVisibility
 import com.ohd.connect.data.OhdEvent
 import com.ohd.connect.data.StorageRepository
 import com.ohd.connect.ui.theme.MonoStyle

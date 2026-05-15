@@ -99,6 +99,12 @@ data class OhdEvent(
     val channels: List<OhdChannel>,
     val notes: String?,
     val source: String?,
+    /**
+     * `true` for entry-level events (what Recent / History / home count
+     * surface by default). `false` for detail rows like `intake.*` under a
+     * food.eaten or `measurement.ecg_second` under an ECG session.
+     */
+    val topLevel: Boolean = true,
 )
 
 data class OhdChannel(
@@ -187,6 +193,9 @@ object StorageRepository {
 
     fun isInitialised(): Boolean = storageFile().exists()
 
+    /** True iff [openOrCreate] or [open] has populated a live handle in this process. */
+    fun isOpen(): Boolean = handle != null
+
     /**
      * First-launch path. Calls `OhdStorage.create(path, keyHex)` and
      * issues a self-session token via `issueSelfSessionToken()`.
@@ -255,6 +264,36 @@ object StorageRepository {
     /** Read recent events under self-session scope. */
     fun queryEvents(filter: EventFilter): Result<List<OhdEvent>> = withStorage {
         queryEvents(filter.toDto()).map { it.toDomain() }
+    }
+
+    /**
+     * Pure SQL `COUNT(*)` over the same filter as [queryEvents]. Used by the
+     * Home stat tile to side-step the 10 000-row response cap of `queryEvents`.
+     * Channel-predicate / case-scope / grant filters are NOT applied — see
+     * `core::events::count_events` in the Rust core for the contract.
+     */
+    fun countEvents(filter: EventFilter): Result<Long> = withStorage {
+        countEvents(filter.toDto()).toLong()
+    }
+
+    /**
+     * Soft-delete every event with `timestamp_ms < cutoffMs`. Used by the
+     * free-tier 7-day retention worker. Returns the number of rows touched.
+     */
+    fun softDeleteEventsBefore(cutoffMs: Long): Result<Long> = withStorage {
+        softDeleteEventsBefore(cutoffMs).toLong()
+    }
+
+    // =========================================================================
+    // Agent tools (CORD + future MCP) — thin shim over ohd-mcp-core.
+    // =========================================================================
+
+    /** Tool catalog as JSON. Same payload the MCP server returns. */
+    fun listToolsJson(): Result<String> = withStorage { listTools() }
+
+    /** Execute one tool. JSON in, JSON out. Errors come back as `{"error": …}`. */
+    fun executeToolJson(name: String, inputJson: String): Result<String> = withStorage {
+        executeTool(name, inputJson)
     }
 
     // =========================================================================
@@ -455,6 +494,14 @@ data class EventInput(
     val source: String? = "manual:android_app",
     val sourceId: String? = null,
     val notes: String? = null,
+    /**
+     * `false` for detail rows the UI groups under a parent (`intake.*` under
+     * a `food.eaten`, `measurement.ecg_second` under an `ecg_session`).
+     * Defaults to `true` so every existing call site keeps minting entry-level
+     * events. Producers grouping a set of detail rows emit a `correlation_id`
+     * channel to thread them together.
+     */
+    val topLevel: Boolean = true,
 )
 
 data class EventChannelInput(
@@ -470,7 +517,28 @@ data class EventFilter(
     val eventTypesNotIn: List<String> = emptyList(),
     val includeDeleted: Boolean = false,
     val limit: Long? = 50,
+    /**
+     * Default `All` matches the historical behaviour. UI surfaces that want
+     * to hide derived rows (Recent, History list, home event count) pass
+     * `TopLevelOnly`. Drill-down ("show me the children of this row") uses
+     * `NonTopLevelOnly` together with a `correlation_id` channel filter.
+     */
+    val visibility: EventVisibility = EventVisibility.All,
+    /**
+     * Restrict to events whose `source` matches one of these strings exactly.
+     * Used by the Health Connect sync watermark: looks up the latest event
+     * of a given type from `source = "health_connect"` to compute the
+     * incremental cursor.
+     */
+    val sourceIn: List<String> = emptyList(),
 )
+
+/** Filter dimension over the `top_level` column. */
+enum class EventVisibility(internal val wire: String?) {
+    All(null),
+    TopLevelOnly("top_level_only"),
+    NonTopLevelOnly("non_top_level_only");
+}
 
 // =============================================================================
 // Grants / Pending / Cases / Audit DTOs
@@ -679,6 +747,7 @@ internal fun EventInput.toDto(): EventInputDto = EventInputDto(
     source = source,
     sourceId = sourceId,
     notes = notes,
+    topLevel = topLevel,
 )
 
 internal fun EventFilter.toDto(): EventFilterDto = EventFilterDto(
@@ -688,6 +757,8 @@ internal fun EventFilter.toDto(): EventFilterDto = EventFilterDto(
     eventTypesNotIn = eventTypesNotIn,
     includeDeleted = includeDeleted,
     limit = limit,
+    visibility = visibility.wire,
+    sourceIn = sourceIn,
 )
 
 internal fun EventDto.toDomain(): OhdEvent = OhdEvent(
@@ -698,6 +769,7 @@ internal fun EventDto.toDomain(): OhdEvent = OhdEvent(
     channels = channels.map { it.toDomain() },
     notes = notes,
     source = source,
+    topLevel = topLevel,
 )
 
 internal fun PutEventOutcomeDto.toDomain(): PutEventOutcome = when (outcome) {

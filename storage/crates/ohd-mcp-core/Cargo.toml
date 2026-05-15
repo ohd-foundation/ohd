@@ -1,0 +1,23 @@
+[package]
+name = "ohd-mcp-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "OHD shared agent-tool catalog + dispatch. Backs both the in-app CORD (via uniffi) and the standalone MCP server. One implementation of every tool — query_events, summarize, log_food, create_grant — wrapping ohd-storage-core."
+
+[lib]
+name = "ohd_mcp_core"
+path = "src/lib.rs"
+
+[dependencies]
+ohd-storage-core = { path = "../ohd-storage-core" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+time = { version = "0.3", features = ["formatting"] }
+
+[dev-dependencies]
+tempfile = "3"

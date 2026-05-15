@@ -50,6 +50,7 @@ extension-module = ["pyo3", "pyo3/extension-module"]
 
 [dependencies]
 ohd-storage-core = { path = "../ohd-storage-core" }
+ohd-mcp-core = { path = "../ohd-mcp-core" }
 # uniffi 0.28 is the stable target as of 2026-Q1: ships proc-macro bindings
 # (`#[uniffi::export]`), Kotlin + Swift + Python codegen, and an in-tree
 # `uniffi_bindgen_main()` entrypoint. Newer (0.29+) is API-compatible for our

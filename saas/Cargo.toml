@@ -1,0 +1,49 @@
+[package]
+name = "ohd-saas"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+description = "OHD SaaS — account, recovery, OIDC linking, plan + billing endpoints fronted by api.ohd.dev. Tiny by design: it knows profile_ulid ↔ OIDC, plan, and payment receipts. The user's health data never touches this service."
+license = "Apache-2.0 OR MIT"
+repository = "https://github.com/ohd-foundation/ohd"
+readme = "README.md"
+publish = false
+
+[[bin]]
+name = "ohd-saas"
+path = "src/main.rs"
+
+[lib]
+name = "ohd_saas"
+path = "src/lib.rs"
+
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "time"] }
+axum = { version = "0.7", features = ["macros"] }
+tower = "0.5"
+tower-http = { version = "0.5", features = ["trace", "cors"] }
+hyper = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rusqlite = { version = "0.32", features = ["bundled"] }
+r2d2 = "0.8"
+r2d2_sqlite = "0.25"
+sha2 = "0.10"
+hex = "0.4"
+rand = "0.8"
+jsonwebtoken = "9"
+thiserror = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1"
+clap = { version = "4", features = ["derive", "env"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+base64 = "0.22"
+async-trait = "0.1"
+time = { version = "0.3", features = ["serde"] }
+ulid = { version = "1", features = ["serde"] }
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+tokio = { version = "1", features = ["test-util"] }
+http-body-util = "0.1"

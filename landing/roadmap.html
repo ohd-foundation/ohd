@@ -1,0 +1,263 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Roadmap — Open Health Data</title>
+  <meta name="description" content="What's shipping, what's building, and what's planned. Vote on features and request your own via GitHub issues." />
+  <meta property="og:title" content="Open Health Data — roadmap" />
+  <meta property="og:description" content="What's shipping, what's building, what's planned. Help prioritise by voting on GitHub." />
+  <meta property="og:type" content="website" />
+  <meta property="og:url" content="https://ohd.dev/roadmap.html" />
+
+  <link rel="icon" type="image/svg+xml" href="/public/favicon.svg" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Outfit:wght@200;300;400;500&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" />
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+
+<header class="site-header">
+  <a class="brand" href="/" aria-label="Open Health Data home">
+    <span class="brand-mark" aria-hidden="true">
+      <svg viewBox="0 0 32 32" width="22" height="22" role="img" aria-label="OHD mark">
+        <rect x="2" y="2" width="10" height="10" fill="currentColor" />
+        <rect x="20" y="20" width="10" height="10" fill="currentColor" />
+        <rect x="14" y="2" width="4" height="28" fill="var(--accent)" />
+      </svg>
+    </span>
+    <span class="brand-word">OHD</span>
+  </a>
+  <nav class="site-nav" aria-label="Primary">
+    <a href="/">Home</a>
+    <a href="/how-it-works.html">Docs</a>
+    <a href="https://github.com/ohd-foundation/ohd" target="_blank" rel="noopener">GitHub</a>
+  </nav>
+  <a class="btn btn--primary btn--pill site-header__cta" href="https://github.com/ohd-foundation/ohd/issues/new?labels=feature-request" target="_blank" rel="noopener">Request a feature</a>
+  <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Toggle colour theme">
+    <span class="theme-toggle__icon" aria-hidden="true"></span>
+  </button>
+</header>
+
+<main>
+
+  <!-- HERO -->
+  <section class="hero hero--centered">
+    <div class="hero__inner">
+      <p class="eyebrow">Roadmap</p>
+      <h1 class="hero__title">What we're building.</h1>
+      <p class="hero__lede">
+        OHD is built in the open. Below is what's shipped this beta cycle,
+        what's actively being implemented, and what's planned next. To vote
+        on what we should build next, react with 👍 on a GitHub issue.
+        To ask for something new, open one.
+      </p>
+      <div class="hero__ctas">
+        <a class="btn btn--primary btn--pill btn--lg" href="https://github.com/ohd-foundation/ohd/issues/new?labels=feature-request" target="_blank" rel="noopener">Request a feature</a>
+        <a class="btn btn--ghost btn--pill btn--lg" href="https://github.com/ohd-foundation/ohd/issues?q=is%3Aopen+label%3Afeature-request+sort%3Areactions-%2B1-desc" target="_blank" rel="noopener">Browse open requests</a>
+      </div>
+      <p class="hero__pre">
+        <span class="pill">Updated weekly</span>
+        Items move between columns as PRs land. Vote counts mirror GitHub reactions.
+      </p>
+    </div>
+  </section>
+
+  <!-- SHIPPED THIS CYCLE -->
+  <section class="section">
+    <div class="section__head section__head--center">
+      <p class="eyebrow">Done</p>
+      <h2>Shipped this beta cycle.</h2>
+      <p class="section__lede">
+        Live in the current APK download. Bug reports for any of these are
+        welcome — open a GitHub issue with the "bug" label.
+      </p>
+    </div>
+
+    <ul class="status-list">
+      <li>
+        <strong>Pencil-aligned Connect Android UX</strong>
+        Home (KADlx) · Medication v2 · Food v3 + search · Symptom log · Measurement log · Urine strip · Pain score · Form builder · Recent events · Settings hub + 8 sub-screens · Personal CORD chat skeleton.
+      </li>
+      <li>
+        <strong>Inline barcode camera + OpenFoodFacts lookup</strong>
+        CameraX preview embedded in the food screen, ML Kit barcode detection, OFF lookup for both barcode + free-text product search.
+      </li>
+      <li>
+        <strong>Android Health Connect sync</strong>
+        Read-only sync of Steps / Heart rate / Blood pressure / Glucose / Weight / Body temperature / Sleep / SpO2. WorkManager 15-min periodic backgrounded; 30 s foreground polling. 5-year initial backfill on first install.
+      </li>
+      <li>
+        <strong>Local notifications + reminders engine</strong>
+        In-app inbox at the bell icon, system notifications via the WorkManager reminders worker, medication-due alerts, optional daily summary.
+      </li>
+      <li>
+        <strong>Operator screens accessible via Settings → Profile & Access</strong>
+        Grants, Pending approvals, Cases, Audit log, Emergency, Export — full operator flow reachable from a consumer-first home.
+      </li>
+      <li>
+        <strong>Honest deploy story</strong>
+        Single Hetzner ARM box runs storage + relay + Caddy. Beta APK served from <code>/downloads/</code>. Specification + source dual-licensed Apache-2.0 OR MIT.
+      </li>
+    </ul>
+  </section>
+
+  <!-- IN PROGRESS -->
+  <section class="section section--alt">
+    <div class="section__head section__head--center">
+      <p class="eyebrow">Building</p>
+      <h2>Right now.</h2>
+      <p class="section__lede">
+        Open pull requests + the work landing in the next 1–2 weeks of betas. Watch a PR to get pinged when it merges.
+      </p>
+    </div>
+
+    <ul class="status-list">
+      <li>
+        <strong>Cross-runtime metrics registry</strong>
+        Single canonical TOML for the supported measurement types. The Android app, the Rust storage core, and the server all load from the same source. Custom-measurement management surfaces in Settings → Forms.
+      </li>
+      <li>
+        <strong>CORD chat — provider API keys</strong>
+        Bring your own Anthropic / OpenAI / Gemini key, or sign up for the OHD managed model (Gemini + MCP access to your data, your grant rules).
+      </li>
+      <li>
+        <strong>OHD Cloud / Self-hosted / Provider-hosted storage</strong>
+        First-run storage chooser already shows the four options; only on-device is wired today. Cloud + self-hosted + provider-hosted backends are next.
+      </li>
+      <li>
+        <strong>Devices screen + paired sources</strong>
+        The "1 device" tile on Home will list every connected source (Health Connect, future paired wearables, browser sessions, clinic-issued tokens).
+      </li>
+      <li>
+        <strong>Food consumption-in-progress</strong>
+        Some foods get consumed gradually (a Red Bull open 4 hours, a coffee sipped). Start now → finish later flow, with the "in progress" list on the food screen.
+      </li>
+      <li>
+        <strong>Extended nutrition panel</strong>
+        Show-more affordance on the food screen to reveal fibre, sodium, cholesterol, saturated fat, vitamins — every nutriment OpenFoodFacts has.
+      </li>
+    </ul>
+  </section>
+
+  <!-- PLANNED -->
+  <section class="section">
+    <div class="section__head section__head--center">
+      <p class="eyebrow">Planned</p>
+      <h2>Next.</h2>
+      <p class="section__lede">
+        Scoped + on the agenda, not yet implementation-started.
+        Vote with 👍 on the matching issue to bump priority.
+      </p>
+    </div>
+
+    <div class="cards">
+      <article class="card">
+        <h3>OpenFoodFacts proxy via OHD SaaS</h3>
+        <p>
+          So the app doesn't hit world.openfoodfacts.org directly on every search. Same response shape; rate-limited + cached.
+        </p>
+        <a class="link-arrow" href="https://github.com/ohd-foundation/ohd/issues?q=is%3Aopen+label%3Afeature-request+openfoodfacts" target="_blank" rel="noopener">Vote / discuss &rarr;</a>
+      </article>
+      <article class="card">
+        <h3>iOS Connect app</h3>
+        <p>
+          The Rust core already cross-compiles for iOS via uniffi. The SwiftUI scaffolding needs to catch up to the Android UI parity we have today.
+        </p>
+        <a class="link-arrow" href="https://github.com/ohd-foundation/ohd/issues?q=is%3Aopen+label%3Afeature-request+ios" target="_blank" rel="noopener">Vote / discuss &rarr;</a>
+      </article>
+      <article class="card">
+        <h3>Health Connect Changes API</h3>
+        <p>
+          Migrate from time-range reads to OFF's <code>getChangesToken</code> + <code>getChanges</code> for proper deltas including deletions, and cheaper polling.
+        </p>
+        <a class="link-arrow" href="https://github.com/ohd-foundation/ohd/issues?q=is%3Aopen+label%3Afeature-request+health-connect" target="_blank" rel="noopener">Vote / discuss &rarr;</a>
+      </article>
+      <article class="card">
+        <h3>Wearables: Wear OS companion</h3>
+        <p>
+          A small watch face complication + quick-log tile for medication / mood / pain — writes directly to OHD via Health Connect on the phone.
+        </p>
+        <a class="link-arrow" href="https://github.com/ohd-foundation/ohd/issues?q=is%3Aopen+label%3Afeature-request+wear" target="_blank" rel="noopener">Vote / discuss &rarr;</a>
+      </article>
+      <article class="card">
+        <h3>EU eIDAS / smart-ID clinician auth</h3>
+        <p>
+          Existing Grants flow assumes a custom OIDC. Wire the common European national-ID issuers so clinicians can authenticate without bespoke per-clinic setup.
+        </p>
+        <a class="link-arrow" href="https://github.com/ohd-foundation/ohd/issues?q=is%3Aopen+label%3Afeature-request+eidas" target="_blank" rel="noopener">Vote / discuss &rarr;</a>
+      </article>
+      <article class="card">
+        <h3>Calendar export for medication reminders</h3>
+        <p>
+          Push the prescribed-medication schedule into Google / iCloud calendars so reminders fire on watches without OHD running.
+        </p>
+        <a class="link-arrow" href="https://github.com/ohd-foundation/ohd/issues?q=is%3Aopen+label%3Afeature-request+calendar" target="_blank" rel="noopener">Vote / discuss &rarr;</a>
+      </article>
+    </div>
+  </section>
+
+  <!-- HOW TO CONTRIBUTE -->
+  <section class="section section--alt">
+    <div class="section__head section__head--center">
+      <p class="eyebrow">How to help</p>
+      <h2>Help us pick what to build.</h2>
+    </div>
+
+    <div class="cards">
+      <article class="card">
+        <h3>Vote on existing requests</h3>
+        <p>
+          Browse open feature-requests sorted by 👍 reactions. The top of that list is what we look at next when scoping a beta cycle.
+        </p>
+        <a class="link-arrow" href="https://github.com/ohd-foundation/ohd/issues?q=is%3Aopen+label%3Afeature-request+sort%3Areactions-%2B1-desc" target="_blank" rel="noopener">Open the issue list &rarr;</a>
+      </article>
+      <article class="card">
+        <h3>Request a new feature</h3>
+        <p>
+          One short paragraph: what does the feature do for you, and what existing flow would it replace or augment. We read every one.
+        </p>
+        <a class="link-arrow" href="https://github.com/ohd-foundation/ohd/issues/new?labels=feature-request" target="_blank" rel="noopener">Open a feature request &rarr;</a>
+      </article>
+      <article class="card">
+        <h3>File a bug</h3>
+        <p>
+          Anything in the shipped APK that crashes, persists wrong, or silently fails — open a bug with the "bug" label + a logcat snippet if you can grab one.
+        </p>
+        <a class="link-arrow" href="https://github.com/ohd-foundation/ohd/issues/new?labels=bug" target="_blank" rel="noopener">Open a bug report &rarr;</a>
+      </article>
+    </div>
+  </section>
+
+</main>
+
+<footer class="site-footer">
+  <div class="site-footer__inner">
+    <div class="site-footer__brand">
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 32 32" width="20" height="20">
+          <rect x="2" y="2" width="10" height="10" fill="currentColor" />
+          <rect x="20" y="20" width="10" height="10" fill="currentColor" />
+          <rect x="14" y="2" width="4" height="28" fill="var(--accent)" />
+        </svg>
+      </span>
+      <span>Open Health Data</span>
+    </div>
+    <nav class="site-footer__links" aria-label="Footer">
+      <a href="/">Home</a>
+      <a href="/how-it-works.html">How it works</a>
+      <a href="/roadmap.html">Roadmap</a>
+      <a href="/credits.html">Credits</a>
+      <a href="https://github.com/ohd-foundation/ohd" target="_blank" rel="noopener">Repository</a>
+      <a href="https://github.com/ohd-foundation/ohd/tree/main/spec" target="_blank" rel="noopener">Specification</a>
+      <a href="https://github.com/ohd-foundation/ohd/blob/main/LICENSE" target="_blank" rel="noopener">Apache-2.0 OR MIT</a>
+    </nav>
+    <p class="site-footer__attr muted small">Built in the open. No accounts on our side; your data lives with you.</p>
+  </div>
+</footer>
+
+<script src="/theme.js" defer></script>
+
+</body>
+</html>

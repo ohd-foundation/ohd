@@ -1,0 +1,341 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>How OHD works — protocol, architecture, and self-hosting</title>
+  <meta name="description" content="The OHDC protocol, three-tier architecture, what's built today, how to run your own OHD storage, and how AI agents talk to it via MCP." />
+
+  <meta property="og:title" content="How OHD works" />
+  <meta property="og:description" content="OHDC over Connect-RPC + HTTP/3, multi-storage E2E grants, three Python+FastMCP servers, docker compose for the full stack." />
+  <meta property="og:type" content="website" />
+  <meta property="og:url" content="https://ohd.dev/how-it-works.html" />
+
+  <link rel="icon" type="image/svg+xml" href="/public/favicon.svg" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Outfit:wght@200;300;400;500&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" />
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+
+<header class="site-header">
+  <a class="brand" href="/" aria-label="Open Health Data home">
+    <span class="brand-mark" aria-hidden="true">
+      <svg viewBox="0 0 32 32" width="22" height="22" role="img" aria-label="OHD mark">
+        <rect x="2" y="2" width="10" height="10" fill="currentColor" />
+        <rect x="20" y="20" width="10" height="10" fill="currentColor" />
+        <rect x="14" y="2" width="4" height="28" fill="var(--accent)" />
+      </svg>
+    </span>
+    <span class="brand-word">OHD</span>
+  </a>
+  <nav class="site-nav" aria-label="Primary">
+    <a href="/">&larr; Home</a>
+    <a href="https://github.com/ohd-foundation/ohd/tree/main/spec" target="_blank" rel="noopener">Specification</a>
+    <a href="https://github.com/ohd-foundation/ohd" target="_blank" rel="noopener">Repository</a>
+  </nav>
+  <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Toggle colour theme">
+    <span class="theme-toggle__icon" aria-hidden="true"></span>
+  </button>
+</header>
+
+<main>
+
+  <!-- HERO -->
+  <section class="hero">
+    <div class="hero__inner">
+      <p class="eyebrow">How it works</p>
+      <h1 class="hero__title">One protocol.<br/><em>Three tiers.</em></h1>
+      <p class="hero__lede">
+        Storage holds the events. OHDC moves them. Consumers — humans or agents —
+        read and write under grants the user issues, scopes, and revokes.
+        This page is the technical view of the project.
+      </p>
+      <div class="hero__ctas">
+        <a class="btn btn--primary" href="https://github.com/ohd-foundation/ohd/tree/main/spec" target="_blank" rel="noopener">
+          Read the spec
+          <span class="btn__sub">spec/README.md</span>
+        </a>
+        <a class="btn btn--ghost" href="#run">
+          Run your own
+          <span class="btn__sub">docker compose</span>
+        </a>
+      </div>
+    </div>
+  </section>
+
+  <!-- OHDC PROTOCOL -->
+  <section id="protocol" class="section">
+    <div class="section__head">
+      <p class="eyebrow">The OHDC protocol</p>
+      <h2>One Connect-RPC API, three auth profiles.</h2>
+      <p class="section__lede">
+        Every consumer — your Connect app, a clinician's Care SPA, an AI agent over MCP, a
+        paramedic's tablet — speaks the same wire to your storage. Different identities,
+        different scopes, same protocol.
+      </p>
+    </div>
+
+    <div class="cards">
+      <article class="card">
+        <h3>Self-session</h3>
+        <p>
+          You, talking to your own storage. Bootstrapped from a BIP39 mnemonic; a self-issued
+          bearer (<code>ohds_…</code>) authenticates subsequent requests.
+        </p>
+      </article>
+      <article class="card">
+        <h3>Grant token</h3>
+        <p>
+          A scoped, time-bound credential another party uses on your behalf. Per-channel,
+          per-class, optionally per-tool. Revoking it makes the consumer's next call fail.
+        </p>
+      </article>
+      <article class="card">
+        <h3>Device token</h3>
+        <p>
+          Long-lived credentials for trusted devices you own — your phone, your home server,
+          a paired tablet. Issued and revoked from the storage admin surface.
+        </p>
+      </article>
+    </div>
+
+    <ul class="how-list" style="margin-top: 2rem;">
+      <li><strong>Connect-RPC over HTTP/2</strong> for browsers and mobile clients, plus <strong>HTTP/3 (quinn + h3)</strong> opt-in for low-latency native paths.</li>
+      <li><strong>Per-channel XChaCha20-Poly1305</strong> for sensitive classes — mental health, sexual health, substance use — with separate keys derived from a class hierarchy.</li>
+      <li><strong>X25519 ECDH multi-storage grants:</strong> a grant can be re-targeted between your storages without re-issuing.</li>
+      <li><strong>Source signing</strong> (Ed25519 / RS256 / ES256) over canonical CBOR — events carry tamper-evident provenance.</li>
+      <li><strong>Two-sided audit:</strong> operators see who their staff queried; patients see who queried them.</li>
+      <li><strong>Synchronous revocation.</strong> Pull a grant; the consumer's next call is denied.</li>
+    </ul>
+  </section>
+
+  <!-- ARCHITECTURE -->
+  <section id="architecture" class="section section--alt">
+    <div class="section__head">
+      <p class="eyebrow">Architecture</p>
+      <h2>Three tiers. One protocol.</h2>
+    </div>
+
+    <div class="arch">
+      <div class="arch__row arch__row--consumers">
+        <div class="arch__label">Consumers</div>
+        <div class="arch__nodes">
+          <div class="node">
+            <h4>Connect</h4>
+            <p>Web, Android, CLI, MCP. Personal logging and dashboards.</p>
+          </div>
+          <div class="node">
+            <h4>Care</h4>
+            <p>Clinician roster, cases, write-with-approval, two-sided audit.</p>
+          </div>
+          <div class="node">
+            <h4>Emergency</h4>
+            <p>Paramedic-scoped beacon read with authority signing.</p>
+          </div>
+          <div class="node node--agent">
+            <h4>Your AI agent</h4>
+            <p>Any MCP-aware client. Acts under explicit user grants.</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="arch__bus">
+        <span class="arch__bus-label">OHDC over Connect-RPC + HTTP/3</span>
+        <span class="arch__bus-sub">grants &middot; channels &middot; audit log &middot; revocation</span>
+      </div>
+
+      <div class="arch__row arch__row--storage">
+        <div class="arch__label">Storage</div>
+        <div class="arch__nodes">
+          <div class="node node--storage"><h4>On your phone</h4><p>Embedded SQLite (SQLCipher) via uniffi.</p></div>
+          <div class="node node--storage"><h4>Home server</h4><p>Docker compose, single VPS, or NAS.</p></div>
+          <div class="node node--storage"><h4>OHD Cloud</h4><p>Managed instance, same protocol.</p></div>
+          <div class="node node--storage"><h4>Clinic operator</h4><p>Self-hosted, OIDC-delegated.</p></div>
+        </div>
+      </div>
+
+      <div class="arch__relay">
+        <strong>Relay</strong> — NAT-bridges home instances over a raw QUIC tunnel (ALPN <code>ohd-tnl1</code>) and signs emergency-authority tokens.
+      </div>
+    </div>
+  </section>
+
+  <!-- WHAT'S BUILT -->
+  <section id="built" class="section">
+    <div class="section__head">
+      <p class="eyebrow">What's built</p>
+      <h2>Real, not just spec.</h2>
+      <p class="section__lede">
+        Reference implementations across mobile, web, CLI, and MCP — with an end-to-end test
+        suite. The goal is to show every interesting flow already running.
+      </p>
+    </div>
+
+    <div class="cards">
+      <article class="card">
+        <h3>11 form factors</h3>
+        <p>
+          3 web SPAs (Connect / Care / Emergency dispatch), 2 Android Compose apps,
+          4 CLIs, 3 Python+FastMCP servers — all against the same OHDC protocol.
+        </p>
+      </article>
+      <article class="card">
+        <h3>600+ tests</h3>
+        <p>
+          Across the project: protocol-level integration tests, encryption invariants,
+          grant lifecycle, audit semantics, cross-language FFI bindings.
+        </p>
+      </article>
+      <article class="card">
+        <h3>Native packages</h3>
+        <p>
+          <code>.deb</code> for Debian / Ubuntu, <code>.rpm</code> for Fedora / RHEL,
+          Arch <code>PKGBUILD</code>. Systemd units, sane defaults, log rotation.
+        </p>
+      </article>
+      <article class="card">
+        <h3>Docker compose stacks</h3>
+        <p>
+          Per-component compose files plus a top-level <code>docker-compose.yml</code>
+          that brings up the whole reference stack on a single host.
+        </p>
+      </article>
+    </div>
+  </section>
+
+  <!-- RUN YOUR OWN -->
+  <section id="run" class="section section--alt">
+    <div class="section__head">
+      <p class="eyebrow">Run your own</p>
+      <h2>The full stack on your machine in one command.</h2>
+    </div>
+
+    <div class="dev-grid">
+      <div class="dev">
+        <h3>Local stack</h3>
+        <pre><code>git clone https://github.com/ohd-foundation/ohd
+cd ohd
+docker compose up --build -d</code></pre>
+        <p class="muted small">
+          Brings up storage, relay, Connect, Care, Emergency, and the three MCP servers. Open
+          <code>http://localhost:8080</code> for the Connect web app.
+        </p>
+      </div>
+
+      <div class="dev">
+        <h3>Single-host deployment</h3>
+        <p>
+          The live <code>ohd.dev</code> reference deployment runs on a single Hetzner ARM box —
+          Caddy, storage, relay, all in compose. Recipe in <code>DEPLOYMENT.md</code>.
+        </p>
+        <a class="link-arrow" href="https://github.com/ohd-foundation/ohd/blob/main/DEPLOYMENT.md" target="_blank" rel="noopener">DEPLOYMENT.md &rarr;</a>
+      </div>
+
+      <div class="dev">
+        <h3>Bring your own identity</h3>
+        <p>
+          Plug in any OIDC provider — Google, Okta, Authentik, Keycloak — or use the storage's
+          built-in OAuth endpoints for small deployments.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <!-- AI / MCP -->
+  <section id="agents" class="section">
+    <div class="section__head">
+      <p class="eyebrow">AI agents</p>
+      <h2>Three MCP servers. Yours to wire to any LLM.</h2>
+      <p class="section__lede">
+        Each server exposes OHDC operations as MCP tools. Drop them into Claude Desktop,
+        Claude Code, or any MCP-aware client. Grants are checked per call; audit entries
+        are written on every read.
+      </p>
+    </div>
+
+    <div class="dev-grid">
+      <div class="dev">
+        <h3>Connect MCP</h3>
+        <p>
+          Personal context. Read your events, write new ones, manage your own grants.
+          For the assistant on <em>your</em> side of the conversation.
+        </p>
+        <a class="link-arrow" href="https://github.com/ohd-foundation/ohd/tree/main/connect/mcp" target="_blank" rel="noopener">connect/mcp &rarr;</a>
+      </div>
+      <div class="dev">
+        <h3>Care MCP</h3>
+        <p>
+          Clinical context. Roster, cases, write-with-approval, two-sided audit.
+          For an assistant working alongside a clinician.
+        </p>
+        <a class="link-arrow" href="https://github.com/ohd-foundation/ohd/tree/main/care/mcp" target="_blank" rel="noopener">care/mcp &rarr;</a>
+      </div>
+      <div class="dev">
+        <h3>Emergency MCP</h3>
+        <p>
+          Authority-signed beacon reads, scoped to an active case, with full audit.
+          For dispatch-side and on-scene assistants.
+        </p>
+        <a class="link-arrow" href="https://github.com/ohd-foundation/ohd/tree/main/emergency/mcp" target="_blank" rel="noopener">emergency/mcp &rarr;</a>
+      </div>
+    </div>
+  </section>
+
+  <!-- SPEC + REPO -->
+  <section id="spec" class="section section--alt">
+    <div class="section__head">
+      <p class="eyebrow">Specification</p>
+      <h2>Build any client.</h2>
+      <p class="section__lede">
+        Wire protocol, event vocabulary, grant model, encryption, and audit semantics —
+        all in <code>/spec</code>. Reference implementations under <code>/connect</code>,
+        <code>/care</code>, <code>/emergency</code>.
+      </p>
+    </div>
+
+    <div class="dev-grid">
+      <div class="dev">
+        <h3>Spec entry point</h3>
+        <p>Start at <code>spec/README.md</code>. Then <code>spec/docs/00-vision.md</code> for the why, and <code>spec/docs/design/</code> for the how.</p>
+        <a class="link-arrow" href="https://github.com/ohd-foundation/ohd/tree/main/spec" target="_blank" rel="noopener">Open the spec &rarr;</a>
+      </div>
+      <div class="dev">
+        <h3>Repository</h3>
+        <p>Dual-licensed <strong>Apache-2.0 OR MIT</strong>. Issues, discussions, and PRs welcome.</p>
+        <a class="link-arrow" href="https://github.com/ohd-foundation/ohd" target="_blank" rel="noopener">github.com/ohd-foundation/ohd &rarr;</a>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer class="site-footer">
+  <div class="site-footer__inner">
+    <div class="site-footer__brand">
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 32 32" width="20" height="20">
+          <rect x="2" y="2" width="10" height="10" fill="currentColor" />
+          <rect x="20" y="20" width="10" height="10" fill="currentColor" />
+          <rect x="14" y="2" width="4" height="28" fill="var(--accent)" />
+        </svg>
+      </span>
+      <span>Open Health Data</span>
+    </div>
+    <nav class="site-footer__links" aria-label="Footer">
+      <a href="/">Home</a>
+      <a href="/credits.html">Credits</a>
+      <a href="https://github.com/ohd-foundation/ohd" target="_blank" rel="noopener">Repository</a>
+      <a href="https://github.com/ohd-foundation/ohd/tree/main/spec" target="_blank" rel="noopener">Specification</a>
+      <a href="https://github.com/ohd-foundation/ohd/blob/main/LICENSE" target="_blank" rel="noopener">Apache-2.0 OR MIT</a>
+      <a href="mailto:hello@ohd.dev">Contact</a>
+    </nav>
+    <p class="site-footer__attr muted small">Built in the open. No accounts on our side; your data lives with you.</p>
+  </div>
+</footer>
+
+<script src="/theme.js" defer></script>
+
+</body>
+</html>

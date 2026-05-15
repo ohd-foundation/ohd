@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OHD MCP — API docs</title>
+  <link rel="icon" type="image/svg+xml" href="https://ohd.dev/public/favicon.svg">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Outfit:wght@200;300;400;500&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+  <style>
+    :root { --ink:#111; --muted:#666; --line:#e5e5e5; --bg:#fafafa; --bg-elevated:#fff; --blue:#2563eb; --green:#16a34a; }
+    * { box-sizing: border-box; }
+    body { margin:0; padding:0; background:var(--bg); color:var(--ink); font-family:'Inter',system-ui,sans-serif; font-size:15px; line-height:1.55; }
+    header { padding:32px 24px 16px; border-bottom:1px solid var(--line); }
+    header h1 { font-family:'Outfit',sans-serif; font-weight:300; font-size:32px; margin:0; letter-spacing:-0.5px; }
+    header .sub { color:var(--muted); margin-top:8px; font-size:14px; }
+    .container { max-width:920px; margin:0 auto; padding:0 24px; }
+    main { padding:24px 0 80px; }
+    h2 { font-family:'Outfit',sans-serif; font-weight:400; font-size:22px; margin:32px 0 12px; border-bottom:1px solid var(--line); padding-bottom:6px; }
+    h3 { font-family:'Outfit',sans-serif; font-weight:500; font-size:16px; margin:20px 0 6px; }
+    code, pre { font-family:'JetBrains Mono',ui-monospace,Menlo,monospace; }
+    pre { background:var(--bg-elevated); border:1px solid var(--line); border-radius:6px; padding:12px 14px; font-size:12.5px; overflow-x:auto; }
+    .endpoint { background:var(--bg-elevated); border:1px solid var(--line); border-radius:8px; padding:14px 16px; margin:12px 0 20px; }
+    .pill { display:inline-block; padding:2px 8px; border-radius:4px; font-size:11px; background:#eef; color:var(--blue); margin-right:4px; }
+    table { border-collapse:collapse; width:100%; font-size:13px; }
+    th, td { text-align:left; padding:6px 10px; border-bottom:1px solid var(--line); }
+    th { font-weight:500; color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:0.4px; }
+    footer { border-top:1px solid var(--line); padding:16px 24px; color:var(--muted); font-size:12px; }
+    nav { margin-top:18px; display:flex; gap:20px; flex-wrap:wrap; font-size:13px; }
+    nav a { color:var(--blue); text-decoration:none; }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="container">
+    <h1>OHD MCP — server</h1>
+    <div class="sub">
+      JSON-RPC 2.0 over HTTP. MCP protocol version <code>2024-11-05</code>.
+      Backed by the <a href="https://github.com/ohd-foundation/ohd/tree/main/storage/crates/ohd-mcp-core">ohd-mcp-core</a> Rust crate.
+    </div>
+    <nav>
+      <a href="#configure">Configure your client</a>
+      <a href="#endpoints">Endpoints</a>
+      <a href="#tools">Tool catalog</a>
+      <a href="https://ohd.dev">ohd.dev</a>
+    </nav>
+  </div>
+</header>
+
+<main class="container">
+
+  <section id="configure">
+    <h2>Configure your client</h2>
+
+    <h3>Claude Code / Codex / any MCP-aware CLI</h3>
+    <p>Add an HTTP MCP server pointing at this host:</p>
+<pre>{
+  "mcpServers": {
+    "ohd": {
+      "url": "https://mcp.ohd.dev/mcp",
+      "transport": "http"
+    }
+  }
+}</pre>
+    <p>(Some clients still expect stdio; run <code>ohd-mcp-rs stdio</code> locally for those — see the repo README.)</p>
+
+    <h3>Auth</h3>
+    <p>
+      v1 ships single-user — the deployed instance opens one storage file
+      and serves it without bearer auth. Multi-user routing tracks against
+      <a href="https://api.ohd.dev/docs">api.ohd.dev</a>'s profile model
+      and lands in the next iteration. For now: don't point untrusted
+      clients at <code>mcp.ohd.dev</code>.
+    </p>
+  </section>
+
+  <section id="endpoints">
+    <h2>Endpoints</h2>
+
+    <div class="endpoint">
+      <span class="pill">POST</span> <code>/mcp</code> (also <code>/</code>)
+      <p>JSON-RPC 2.0 entrypoint. Accepts one request or an array (batch).</p>
+<pre>{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "tools/list"
+}</pre>
+    </div>
+
+    <div class="endpoint">
+      <span class="pill">GET</span> <code>/healthz</code>
+      <p>Returns <code>200 ok</code>.</p>
+    </div>
+
+    <div class="endpoint">
+      <span class="pill">GET</span> <code>/docs</code>, <code>/</code>
+      <p>This page.</p>
+    </div>
+  </section>
+
+  <section id="tools">
+    <h2>Tool catalog</h2>
+    <p>28 tools. Live list available via <code>tools/list</code> JSON-RPC. Grouped:</p>
+
+    <table>
+      <tr><th>Group</th><th>Tools</th></tr>
+      <tr><td>Utility</td><td><code>now</code></td></tr>
+      <tr><td>Read</td><td><code>query_events</code>, <code>query_latest</code>, <code>describe_data</code>, <code>summarize</code>, <code>correlate</code>, <code>chart</code>, <code>get_food_log</code>, <code>get_medications_taken</code></td></tr>
+      <tr><td>Write</td><td><code>log_symptom</code>, <code>log_food</code>, <code>log_medication</code>, <code>log_measurement</code>, <code>log_exercise</code>, <code>log_mood</code>, <code>log_sleep</code>, <code>log_free_event</code></td></tr>
+      <tr><td>Operator</td><td><code>list_grants</code>, <code>revoke_grant</code>, <code>list_pending</code>, <code>approve_pending</code>, <code>reject_pending</code>, <code>list_cases</code>, <code>get_case</code>, <code>force_close_case</code>, <code>create_grant</code>, <code>issue_retrospective_grant</code>, <code>audit_query</code></td></tr>
+    </table>
+
+    <p>Each tool's JSON Schema is returned inline in <code>tools/list</code>. Call one via:</p>
+<pre>{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "tools/call",
+  "params": {
+    "name": "query_events",
+    "arguments": { "event_type": "measurement.heart_rate", "limit": 10 }
+  }
+}</pre>
+  </section>
+
+</main>
+
+<footer>
+  <div class="container">
+    <a href="https://ohd.dev">ohd.dev</a> · <a href="https://api.ohd.dev/docs">api.ohd.dev</a> · <a href="https://github.com/ohd-foundation/ohd">repo</a> · Apache-2.0 OR MIT
+  </div>
+</footer>
+
+</body>
+</html>

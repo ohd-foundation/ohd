@@ -22,16 +22,104 @@
                                  the v0 scaffold doesn't lose it on a
                                  manifest reformat.
 
-        Health Connect, FCM full-screen-intent, and camera (barcode) come in
-        the implementation phase — see `connect/android/BUILD.md` and the
-        relevant spec docs at `connect/spec/health-connect.md`,
-        `connect/spec/notifications.md`, `connect/spec/screens-emergency.md`,
-        `connect/spec/barcode-scanning.md`.
+        FCM full-screen-intent and camera (barcode) come in the
+        implementation phase — see `connect/android/BUILD.md` and the
+        relevant spec docs at `connect/spec/notifications.md`,
+        `connect/spec/screens-emergency.md`, `connect/spec/barcode-scanning.md`.
+        Health Connect read permissions are declared just below.
     -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.USE_BIOMETRIC" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <!--
+        CAMERA — used by the FoodScreen inline barcode preview (CameraX +
+        ML Kit). Marked optional via `<uses-feature required="false">` so
+        devices without a camera (rare on phones, but Wear / TV variants
+        may lack one) still install. Permission is requested at runtime
+        the first time the user opens the food scanner.
+    -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera.any" android:required="false" />
+
+    <!--
+        Health Connect read permissions.
+
+        Each `android.permission.health.READ_*` is a runtime permission
+        managed by the Health Connect app (com.google.android.apps.healthdata),
+        not by the standard Android permission UI. The strings below mirror
+        the constants returned by
+        `HealthPermission.getReadPermission(<RecordType>::class)` and must
+        appear in the manifest for the Health Connect permission dialog to
+        offer them. See `connect/spec/health-connect.md` for the mapping
+        from each Health Connect record type to the OHD event type.
+    -->
+    <!-- Vitals -->
+    <uses-permission android:name="android.permission.health.READ_HEART_RATE" />
+    <uses-permission android:name="android.permission.health.READ_RESTING_HEART_RATE" />
+    <uses-permission android:name="android.permission.health.READ_HEART_RATE_VARIABILITY" />
+    <uses-permission android:name="android.permission.health.READ_BLOOD_PRESSURE" />
+    <uses-permission android:name="android.permission.health.READ_BLOOD_GLUCOSE" />
+    <uses-permission android:name="android.permission.health.READ_OXYGEN_SATURATION" />
+    <uses-permission android:name="android.permission.health.READ_RESPIRATORY_RATE" />
+    <uses-permission android:name="android.permission.health.READ_BODY_TEMPERATURE" />
+    <uses-permission android:name="android.permission.health.READ_BASAL_BODY_TEMPERATURE" />
+    <uses-permission android:name="android.permission.health.READ_SKIN_TEMPERATURE" />
+
+    <!-- Body measurements -->
+    <uses-permission android:name="android.permission.health.READ_WEIGHT" />
+    <uses-permission android:name="android.permission.health.READ_HEIGHT" />
+    <uses-permission android:name="android.permission.health.READ_BODY_FAT" />
+    <uses-permission android:name="android.permission.health.READ_BODY_WATER_MASS" />
+    <uses-permission android:name="android.permission.health.READ_BONE_MASS" />
+    <uses-permission android:name="android.permission.health.READ_LEAN_BODY_MASS" />
+
+    <!-- Activity -->
+    <uses-permission android:name="android.permission.health.READ_STEPS" />
+    <uses-permission android:name="android.permission.health.READ_DISTANCE" />
+    <uses-permission android:name="android.permission.health.READ_ELEVATION_GAINED" />
+    <uses-permission android:name="android.permission.health.READ_FLOORS_CLIMBED" />
+    <uses-permission android:name="android.permission.health.READ_EXERCISE" />
+    <uses-permission android:name="android.permission.health.READ_ACTIVE_CALORIES_BURNED" />
+    <uses-permission android:name="android.permission.health.READ_TOTAL_CALORIES_BURNED" />
+    <uses-permission android:name="android.permission.health.READ_BASAL_METABOLIC_RATE" />
+    <uses-permission android:name="android.permission.health.READ_VO2_MAX" />
+    <uses-permission android:name="android.permission.health.READ_POWER" />
+    <uses-permission android:name="android.permission.health.READ_SPEED" />
+
+    <uses-permission android:name="android.permission.health.READ_STEPS_CADENCE" />
+    <uses-permission android:name="android.permission.health.READ_WHEELCHAIR_PUSHES" />
+
+    <!-- Sleep -->
+    <uses-permission android:name="android.permission.health.READ_SLEEP" />
+
+    <!-- Nutrition -->
+    <uses-permission android:name="android.permission.health.READ_NUTRITION" />
+    <uses-permission android:name="android.permission.health.READ_HYDRATION" />
+
+    <!--
+        Special access permissions:
+        - HEALTH_DATA_IN_BACKGROUND — lets the periodic WorkManager sync read
+          while the app isn't foregrounded.
+        - HEALTH_DATA_HISTORY — unlocks data older than 30 days (default cap
+          for apps installed after the data point's write time). Required
+          for our 5-year backfill on first install.
+    -->
+    <uses-permission android:name="android.permission.health.READ_HEALTH_DATA_IN_BACKGROUND" />
+    <uses-permission android:name="android.permission.health.READ_HEALTH_DATA_HISTORY" />
+
+    <!--
+        Package visibility queries — Android 11+ filters `PackageManager`
+        lookups by default; we have to declare which packages we want to
+        see. The Health Connect provider lives in
+        `com.google.android.apps.healthdata`; without this entry,
+        `HealthConnectClient.getSdkStatus(...)` returns `SDK_UNAVAILABLE`
+        even when Health Connect is installed.
+    -->
+    <queries>
+        <package android:name="com.google.android.apps.healthdata" />
+    </queries>
 
     <application
         android:label="@string/app_name"
@@ -39,6 +127,18 @@
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="false"
         tools:targetApi="33">
+
+        <!--
+            Auto-download the ML Kit barcode scanner model on first install.
+            Used by the inline CameraX preview in `FoodScreen` /
+            `FoodSearchScreen`. Without this, the first scan triggers an
+            on-the-fly download with a visible spinner; with it, the model
+            is fetched in the background right after install.
+        -->
+        <meta-data
+            android:name="com.google.mlkit.vision.DEPENDENCIES"
+            android:value="barcode" />
+
 
         <activity
             android:name=".MainActivity"
@@ -53,10 +153,33 @@
         </activity>
 
         <!--
-            Health Connect rationale activity, FCM service, full-screen
-            emergency dialog activity, and barcode-scanning camera permissions
-            land in the implementation phase. See:
-              - ../spec/health-connect.md
+            Health Connect "permission rationale" activity-alias.
+
+            Health Connect's permission UI launches this activity (via the
+            `VIEW_PERMISSION_USAGE` intent action with the
+            `HEALTH_PERMISSIONS` category) whenever the user taps the "Read
+            our privacy policy" link inside the permission dialog. We don't
+            ship a separate rationale screen yet — for v1 the alias points
+            back at `MainActivity`, which lands the user at the in-app
+            Health Connect settings screen. The
+            `START_VIEW_PERMISSION_USAGE` permission protection means only
+            the Health Connect provider can trigger the alias.
+        -->
+        <activity-alias
+            android:name="ViewPermissionUsageActivity"
+            android:exported="true"
+            android:targetActivity=".MainActivity"
+            android:permission="android.permission.START_VIEW_PERMISSION_USAGE">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW_PERMISSION_USAGE" />
+                <category android:name="android.intent.category.HEALTH_PERMISSIONS" />
+            </intent-filter>
+        </activity-alias>
+
+        <!--
+            FCM service, full-screen emergency dialog activity, and
+            barcode-scanning camera permissions land in the implementation
+            phase. See:
               - ../spec/notifications.md
               - ../spec/screens-emergency.md
               - ../spec/barcode-scanning.md

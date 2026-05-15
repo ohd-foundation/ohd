@@ -1,14 +1,14 @@
 <!doctype html>
-<html lang="en" data-theme="dark">
+<html lang="en" data-theme="light">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Open Health Data — your health, agent-native</title>
-  <meta name="description" content="An open, agent-native protocol for personal health data. Your storage, your grants, your AI agents. Reference implementations across web, Android, CLI, and MCP." />
+  <title>Open Health Data — your complete health record</title>
+  <meta name="description" content="An open protocol to collect, store and retrieve personal health data. Measurements, medication logs, meals, symptoms and wearable data today — built to extend toward medical records and beyond." />
 
   <!-- Open Graph -->
-  <meta property="og:title" content="Open Health Data — your health, agent-native" />
-  <meta property="og:description" content="A protocol and reference implementation for the AI agent era. Your data lives where you choose. Your AI assistants act on it under grants you control." />
+  <meta property="og:title" content="Open Health Data — your complete health record" />
+  <meta property="og:description" content="An open protocol to collect, store and retrieve personal health data. You own the data, the keys, and the audit trail." />
   <meta property="og:type" content="website" />
   <meta property="og:url" content="https://ohd.dev/" />
   <meta property="og:image" content="/public/og-image.png" />
@@ -34,12 +34,12 @@
     <span class="brand-word">OHD</span>
   </a>
   <nav class="site-nav" aria-label="Primary">
-    <a href="#why">Why OHD</a>
-    <a href="#how">How it works</a>
-    <a href="#beta">Beta</a>
-    <a href="#developers">Developers</a>
-    <a href="#operators">Operators</a>
+    <a href="/how-it-works.html">Docs</a>
+    <a href="/roadmap.html">Roadmap</a>
+    <a href="https://github.com/ohd-foundation/ohd" target="_blank" rel="noopener">GitHub</a>
+    <a href="/how-it-works.html">How it works</a>
   </nav>
+  <a class="btn btn--primary btn--pill site-header__cta" href="/downloads/ohd-connect-latest.apk" download>Get the beta APK</a>
   <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Toggle colour theme">
     <span class="theme-toggle__icon" aria-hidden="true"></span>
   </button>
@@ -48,153 +48,358 @@
 <main>
 
   <!-- HERO -->
-  <section class="hero">
+  <section class="hero hero--centered">
     <div class="hero__inner">
-      <p class="eyebrow">Open Health Data Protocol</p>
-      <h1 class="hero__title">Your health,<br/><em>agent-native.</em></h1>
+      <h1 class="hero__title">Your complete health record.</h1>
       <p class="hero__lede">
-        OHD is an open protocol and reference implementation for the AI-agent era of personal health.
-        Your data lives where you choose. Your assistants act on it under grants you control.
-        Doctors, paramedics, family — same protocol, scoped access.
+        An open protocol to collect, store and retrieve personal health data.
+        Measurements, medication logs, meals, symptoms and wearable data today
+        — built to extend toward medical records and beyond.
       </p>
       <div class="hero__ctas">
-        <a class="btn btn--primary" href="/downloads/ohd-connect-latest.apk" download>
-          Get the beta APK
-          <span class="btn__sub">Connect for Android</span>
-        </a>
-        <a class="btn btn--ghost" href="https://github.com/ohd-foundation/ohd" target="_blank" rel="noopener">
-          Read the spec
-          <span class="btn__sub">github.com/ohd-foundation/ohd</span>
-        </a>
+        <a class="btn btn--primary btn--pill btn--lg" href="/downloads/ohd-connect-latest.apk" download>Get the beta APK</a>
+        <a class="btn btn--ghost btn--pill btn--lg" href="/how-it-works.html">How it works</a>
       </div>
       <p class="hero__pre">
-        <span class="pill">Pre-release</span>
-        Beta channel. Expect rough edges. The protocol is stabilising.
+        <span class="pill">Early access</span>
+        Some pieces work, some don't. Building in the open — this site is catching up to where the protocol is now.
       </p>
     </div>
   </section>
 
-  <!-- WHY OHD -->
-  <section id="why" class="section">
-    <div class="section__head">
-      <p class="eyebrow">Why OHD</p>
-      <h2>Designed for an era where agents do the work.</h2>
+  <!-- THREE THINGS NARRATIVE -->
+  <section id="cases" class="section">
+    <div class="section__head section__head--center">
+      <p class="eyebrow">What it's for</p>
+      <h2>Three things OHD wants to make ordinary.</h2>
+      <p class="section__lede">
+        Your health record should follow you, not get rebuilt from scratch every visit.
+        These are the moments OHD is being designed for.
+      </p>
     </div>
-    <div class="cards">
-      <article class="card">
-        <h3>Agent-native, not bolted-on</h3>
+
+    <div class="cases">
+      <article class="case">
+        <p class="case__num">01</p>
+        <h3>Visit your doctor</h3>
+        <p class="case__lede">
+          You walk in feeling sick. The clinician already sees the last few days of
+          your temperature, what you've taken, your symptom log — because you granted
+          them a scoped, time-bound view from your phone on the way in.
+        </p>
         <p>
-          Three FastMCP servers ship on day one — <strong>Connect</strong> for personal use,
-          <strong>Care</strong> for clinicians, <strong>Emergency</strong> for paramedics.
-          LLMs are first-class consumers, not a sidecar.
+          They add their findings. You approve them on your phone before they land
+          in your record. No re-asking the same questions. No partial picture. When
+          the visit is done, the grant expires.
         </p>
       </article>
-      <article class="card">
-        <h3>Your data, your storage</h3>
+
+      <article class="case">
+        <p class="case__num">02</p>
+        <h3>In an emergency</h3>
+        <p class="case__lede">
+          An ambulance picks you up. A paramedic taps a tablet. With your phone in
+          proximity — or via a pre-issued emergency grant — they see your allergies,
+          blood type, current medications, recent vitals, advance directives.
+        </p>
         <p>
-          Run storage on your phone, your home server, OHD Cloud, or a clinic operator.
-          The protocol is identical — only the deployment topology differs.
+          Only what you flagged for emergencies. Only for the duration of the case.
+          Every access is logged on both sides. Break-glass is auditable, scoped,
+          time-bound — not a free-for-all.
         </p>
       </article>
-      <article class="card">
-        <h3>Real, not just spec</h3>
+
+      <article class="case">
+        <p class="case__num">03</p>
+        <h3>Ask your AI</h3>
+        <p class="case__lede">
+          Your assistant, your LLM, your phone's agent — through OHD it can actually
+          read your data, with your permission, scoped to what you allow. "How was my
+          sleep last week and why does my morning HR look off?" becomes a real answer,
+          not a guess.
+        </p>
         <p>
-          11 form factors built: 3 web SPAs, 2 Android Compose apps, 4 CLIs, 3 Python MCP servers.
-          600+ tests across the project.
+          AI agents are first-class citizens of the protocol, not bolted on. You decide
+          which agent gets which class of data, for how long, and you can pull a grant
+          and watch the next call get denied.
         </p>
       </article>
-      <article class="card">
-        <h3>Open + dual-licensed</h3>
-        <p>
-          OHDC over Connect-RPC and HTTP/3. Specifications and reference implementations
-          dual-licensed <strong>Apache-2.0 OR MIT</strong>. Build any client.
-        </p>
-      </article>
+    </div>
+  </section>
+
+  <!-- SCREENSHOTS — fan of phones rotated in 3D -->
+  <section class="section section--alt screens">
+    <div class="section__head section__head--center">
+      <p class="eyebrow">See it in action</p>
+      <h2>Built for daily use, not demos.</h2>
+      <p class="section__lede">
+        The Android app — what shipping today actually looks like. Mockups
+        from the Pencil spec; the real APK renders to the same pixels.
+      </p>
+    </div>
+
+    <div class="screens__fan" aria-hidden="false">
+      <figure class="screens__phone screens__phone--left">
+        <img src="/public/screens/medication.png" alt="Medication v2 screen with prescribed dose list and missed-dose badge" />
+        <figcaption>Medication</figcaption>
+      </figure>
+      <figure class="screens__phone screens__phone--center">
+        <img src="/public/screens/home.png" alt="Home screen with today's event count, quick-log grid and favourites" />
+        <figcaption>Home</figcaption>
+      </figure>
+      <figure class="screens__phone screens__phone--right">
+        <img src="/public/screens/food.png" alt="Food screen with nutrition gauges and barcode scanner" />
+        <figcaption>Food</figcaption>
+      </figure>
+    </div>
+
+    <div class="screens__row">
+      <figure class="screens__phone screens__phone--mini">
+        <img src="/public/screens/recent.png" alt="Recent events history list" />
+        <figcaption>History</figcaption>
+      </figure>
+      <figure class="screens__phone screens__phone--mini">
+        <img src="/public/screens/cord.png" alt="Personal CORD chat answering a health question" />
+        <figcaption>Ask your CORD</figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <!-- TRACK EVERYTHING -->
+  <section class="section">
+    <div class="section__head section__head--center">
+      <h2>Track everything that matters</h2>
+      <p class="section__lede">
+        OHD records over 20 types of health data — structured with vocabulary codes
+        so every entry is queryable, portable and permanently yours.
+      </p>
+    </div>
+
+    <div class="feature-grid">
+      <div class="feature">
+        <span class="feature__icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M3 12h4l2-5 4 10 2-5h6"/>
+          </svg>
+        </span>
+        <h3>Clinical data</h3>
+        <p>Blood pressure, glucose, heart rate, lab results — any measurement with a vocabulary code.</p>
+      </div>
+      <div class="feature">
+        <span class="feature__icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="5" y="3" width="14" height="18" rx="2"/>
+            <path d="M9 8h6M9 12h6M9 16h4"/>
+          </svg>
+        </span>
+        <h3>Daily logs</h3>
+        <p>Medications with dose and timing, food via barcode or free text, symptoms with severity, and custom forms you design yourself for anything else.</p>
+      </div>
+      <div class="feature">
+        <span class="feature__icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M5.6 18.4l2.1-2.1M16.3 7.7l2.1-2.1"/>
+            <circle cx="12" cy="12" r="3"/>
+          </svg>
+        </span>
+        <h3>Passive tracking</h3>
+        <p>Sleep stages, steps, exercise sessions and all 18 Health Connect record types — synced automatically from your Android device in the background.</p>
+      </div>
     </div>
   </section>
 
   <!-- HOW IT WORKS -->
-  <section id="how" class="section section--alt">
-    <div class="section__head">
-      <p class="eyebrow">How it works</p>
-      <h2>Three tiers. One protocol.</h2>
+  <section class="section section--alt">
+    <div class="section__head section__head--center">
+      <h2>How it works</h2>
+    </div>
+
+    <div class="tiers">
+      <div class="tier">
+        <span class="tier__icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="6" y="2" width="12" height="20" rx="2.5"/>
+            <path d="M10 18h4"/>
+          </svg>
+        </span>
+        <h3 class="tier__title">OHDC</h3>
+        <p class="tier__label">COLLECT</p>
+        <p class="tier__body">Android app, web connector, and manual logging. Syncs Health Connect data automatically.</p>
+      </div>
+
+      <span class="tier__arrow" aria-hidden="true">→</span>
+
+      <div class="tier">
+        <span class="tier__icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+            <ellipse cx="12" cy="5" rx="8" ry="2.5"/>
+            <path d="M4 5v7c0 1.4 3.6 2.5 8 2.5s8-1.1 8-2.5V5"/>
+            <path d="M4 12v7c0 1.4 3.6 2.5 8 2.5s8-1.1 8-2.5v-7"/>
+          </svg>
+        </span>
+        <h3 class="tier__title">OHD Core</h3>
+        <p class="tier__label">STORE</p>
+        <p class="tier__body">Self-hosted REST API and Postgres event store. You own the server, the data, the encryption keys.</p>
+      </div>
+
+      <span class="tier__arrow" aria-hidden="true">→</span>
+
+      <div class="tier">
+        <span class="tier__icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 3l1.6 4.4L18 9l-4.4 1.6L12 15l-1.6-4.4L6 9l4.4-1.6z"/>
+            <path d="M19 15l.7 2 2 .7-2 .7L19 21l-.7-2.6-2-.7 2-.7z"/>
+          </svg>
+        </span>
+        <h3 class="tier__title">CORD</h3>
+        <p class="tier__label">VIEW</p>
+        <p class="tier__body">AI health agent and preset dashboards. Ask questions in plain language or browse structured views. Doctors connect via time-limited read tokens.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- DATA STAYS YOURS (DARK BAND) -->
+  <section class="dark-band">
+    <div class="dark-band__inner">
+      <div class="section__head section__head--center section__head--invert">
+        <h2>Your data stays yours.</h2>
+      </div>
+      <div class="trust-grid">
+        <div class="trust">
+          <h3>No accounts on our side</h3>
+          <p>Enter your OHD URL into the browser. We never see your credentials or your records.</p>
+        </div>
+        <div class="trust">
+          <h3>Fully auditable</h3>
+          <p>Every read and write is logged to OHD Core. You can see exactly who accessed what and when.</p>
+        </div>
+        <div class="trust">
+          <h3>Open source</h3>
+          <p>All components are MIT-licensed. Run it yourself, fork it, audit it. No lock-in.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- WHERE YOUR DATA LIVES -->
+  <section class="section">
+    <div class="section__head section__head--center">
+      <h2>Where your data lives</h2>
       <p class="section__lede">
-        Storage holds the events. OHDC moves them. Consumers — humans or agents —
-        read and write under grants the user issues, scopes, and revokes.
+        Your data never passes through our servers. You choose where it lives — and you
+        can switch at any time without losing anything.
       </p>
     </div>
 
-    <div class="arch">
-      <div class="arch__row arch__row--consumers">
-        <div class="arch__label">Consumers</div>
-        <div class="arch__nodes">
-          <div class="node">
-            <h4>Connect</h4>
-            <p>Web, Android, CLI, MCP. Personal logging and dashboards.</p>
-          </div>
-          <div class="node">
-            <h4>Care</h4>
-            <p>Clinician roster, cases, write-with-approval, two-sided audit.</p>
-          </div>
-          <div class="node">
-            <h4>Emergency</h4>
-            <p>Paramedic-scoped beacon read with authority signing.</p>
-          </div>
-          <div class="node node--agent">
-            <h4>Your AI agent</h4>
-            <p>Any MCP-aware client. Acts under explicit user grants.</p>
-          </div>
-        </div>
+    <div class="hosts-grid">
+      <div class="host">
+        <span class="host__icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M7 18h10a4 4 0 0 0 .4-7.98 6 6 0 0 0-11.6 1.4A3.5 3.5 0 0 0 7 18z"/>
+          </svg>
+        </span>
+        <h3>OHD Cloud</h3>
+        <p>Managed by us. Syncs across all your devices. No setup — create an account and start logging.</p>
       </div>
-
-      <div class="arch__bus">
-        <span class="arch__bus-label">OHDC over Connect-RPC + HTTP/3</span>
-        <span class="arch__bus-sub">grants &middot; channels &middot; audit log &middot; revocation</span>
+      <div class="host">
+        <span class="host__icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="7" y="2" width="10" height="20" rx="2.5"/>
+            <path d="M11 18h2"/>
+          </svg>
+        </span>
+        <h3>On this device</h3>
+        <p>Local SQLite only, no network required. Android and iOS only. Zero data leaves your phone.</p>
       </div>
-
-      <div class="arch__row arch__row--storage">
-        <div class="arch__label">Storage</div>
-        <div class="arch__nodes">
-          <div class="node node--storage"><h4>On your phone</h4><p>Embedded Postgres-compatible store.</p></div>
-          <div class="node node--storage"><h4>Home server</h4><p>Docker compose, single VPS, or NAS.</p></div>
-          <div class="node node--storage"><h4>OHD Cloud</h4><p>Managed instance, same protocol.</p></div>
-          <div class="node node--storage"><h4>Clinic operator</h4><p>Self-hosted, OIDC-delegated.</p></div>
-        </div>
+      <div class="host">
+        <span class="host__icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="4" width="18" height="6" rx="1.5"/>
+            <rect x="3" y="14" width="18" height="6" rx="1.5"/>
+            <path d="M7 7h.01M7 17h.01"/>
+          </svg>
+        </span>
+        <h3>Self-hosted</h3>
+        <p>Run OHD Core on your own server. Point the app at your URL — we never see or touch your data.</p>
       </div>
-
-      <div class="arch__relay">
-        <strong>Relay</strong> — NAT-bridges home instances and signs emergency-authority tokens.
+      <div class="host">
+        <span class="host__icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M3 21h18"/>
+            <path d="M5 21V10l7-5 7 5v11"/>
+            <path d="M10 21v-6h4v6"/>
+          </svg>
+        </span>
+        <h3>Provider hosted</h3>
+        <p>Your clinic, employer or insurer runs OHD. They give you a URL and a token — your data stays on their infrastructure, under their consent rules.</p>
       </div>
     </div>
+  </section>
 
-    <ul class="how-list">
-      <li><strong>Per-channel encryption</strong> for sensitive classes — mental health, sexual health, substance use — with separate keys.</li>
-      <li><strong>Audit log on every grant</strong> ever queried. Two-sided between operators and patients.</li>
-      <li><strong>Synchronous revocation.</strong> Pull a grant; the consumer's next call is denied.</li>
-      <li><strong>Predecessor / parent inheritance</strong> for clinical cases. Built for real workflows.</li>
-    </ul>
+  <!-- YOU CONTROL WHO READS IT -->
+  <section class="section section--alt">
+    <div class="section__head section__head--center">
+      <h2>You control who reads it</h2>
+      <p class="section__lede">
+        No accounts on our side. No implicit sharing. Access is explicit, audited and always revocable.
+      </p>
+    </div>
+
+    <div class="access-grid">
+      <div class="access">
+        <span class="access__icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="9" cy="14" r="3"/>
+            <path d="M11.1 12 L21 2 M17 6l3 3 M15 8l3 3"/>
+          </svg>
+        </span>
+        <h3>Grant read access</h3>
+        <p>Share a scoped read token with your doctor, an app, or CORD. Set an expiry date — it stops working automatically.</p>
+      </div>
+      <div class="access">
+        <span class="access__icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="11" cy="11" r="6"/>
+            <path d="M20 20l-4.5-4.5"/>
+          </svg>
+        </span>
+        <h3>Audit every read</h3>
+        <p>Every API call is logged to a tamper-evident audit trail. You can see exactly who read what, and when.</p>
+      </div>
+      <div class="access">
+        <span class="access__icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="9"/>
+            <path d="M6 6l12 12"/>
+          </svg>
+        </span>
+        <h3>Revoke instantly</h3>
+        <p>Delete any token from your OHD instance — access is revoked immediately. No waiting, no support tickets.</p>
+      </div>
+    </div>
   </section>
 
   <!-- BETA DOWNLOAD -->
   <section id="beta" class="section">
-    <div class="section__head">
-      <p class="eyebrow">Beta channel</p>
-      <h2>Connect for Android.</h2>
+    <div class="section__head section__head--center">
+      <p class="eyebrow">Try it</p>
+      <h2>Connect for Android — beta.</h2>
       <p class="section__lede">
-        The flagship logger. Health Connect sync, manual entry, custom forms, NFC first-responder beacon.
+        The flagship logger. Manual entry, custom forms, dashboards, grants you can
+        issue and revoke from your phone. This is the most complete piece today.
       </p>
     </div>
 
     <div class="download">
       <div class="download__primary">
-        <a class="btn btn--primary btn--lg" href="/downloads/ohd-connect-latest.apk" download>
+        <a class="btn btn--primary btn--lg btn--pill" href="/downloads/ohd-connect-latest.apk" download>
           Download ohd-connect-latest.apk
         </a>
         <dl class="download__meta">
-          <div><dt>Version</dt><dd><code>0.0.0-dev</code></dd></div>
-          <div><dt>Size</dt><dd><code>~ TBA</code></dd></div>
-          <div><dt>SHA-256</dt><dd><code>pending first signed build</code></dd></div>
-          <div><dt>Min Android</dt><dd><code>13 (API 33)</code></dd></div>
+          <div><dt>Version</dt><dd><code>0.1.0-beta46 (debug)</code></dd></div>
+          <div><dt>Size</dt><dd><code>94 MB</code></dd></div>
+          <div><dt>SHA-256</dt><dd><code>9e64a54c2d69b29641f2d244cb1dde01076f593a978fb2f2308cf3058d080407</code></dd></div>
+          <div><dt>ABIs / min Android</dt><dd><code>arm64-v8a, armeabi-v7a · 10 (API 29)</code></dd></div>
         </dl>
       </div>
 
@@ -210,85 +415,66 @@
         </p>
       </div>
     </div>
+
+    <p class="beta__followup muted small">
+      Want to run your own storage, or build a client?
+      <a class="link-arrow" href="/how-it-works.html">Read how it works &rarr;</a>
+    </p>
   </section>
 
-  <!-- DEVELOPERS -->
-  <section id="developers" class="section section--alt">
-    <div class="section__head">
-      <p class="eyebrow">For developers</p>
-      <h2>Run the demo. Read the spec. Build a client.</h2>
+  <!-- STATUS -->
+  <section id="status" class="section section--alt">
+    <div class="section__head section__head--center">
+      <p class="eyebrow">Where we're at</p>
+      <h2>Honest status.</h2>
+      <p class="section__lede">
+        OHD had some initial work and is being filled in piece by piece. Here's
+        the real state today, not a roadmap of promises.
+      </p>
     </div>
 
-    <div class="dev-grid">
-      <div class="dev">
-        <h3>Run the full stack locally</h3>
-        <pre><code>git clone https://github.com/ohd-foundation/ohd
-cd ohd
-docker compose up --build -d</code></pre>
-        <p class="muted small">
-          Brings up storage, relay, Connect, Care, Emergency, and the three MCP servers. Open
-          <code>http://localhost:8080</code> for the Connect web app.
-        </p>
-      </div>
-
-      <div class="dev">
-        <h3>Spec entry point</h3>
-        <p>
-          Start at <code>/spec/README.md</code> in the repo. The wire protocol (OHDC), event vocabulary,
-          grant model, and audit semantics are all there. Reference clients live in
-          <code>/connect</code>, <code>/care</code>, <code>/emergency</code>.
-        </p>
-        <a class="link-arrow" href="https://github.com/ohd-foundation/ohd" target="_blank" rel="noopener">Open the repo &rarr;</a>
-      </div>
-
-      <div class="dev">
-        <h3>Wire your AI agent</h3>
-        <p>
-          Any MCP-aware client (Claude Desktop, Claude Code, custom) can talk to OHD via Connect MCP.
-          Grants are scoped per-tool and per-channel; audit entries are written on every read.
-        </p>
-        <a class="link-arrow" href="https://github.com/ohd-foundation/ohd/tree/main/connect/mcp" target="_blank" rel="noopener">Connect MCP server &rarr;</a>
-      </div>
-    </div>
-  </section>
-
-  <!-- OPERATORS -->
-  <section id="operators" class="section">
-    <div class="section__head">
-      <p class="eyebrow">For operators</p>
-      <h2>Self-host for a clinic, an EMS, or a household.</h2>
-    </div>
-
-    <div class="ops-grid">
-      <div class="ops">
-        <h3>Native packages</h3>
-        <p>
-          <code>.deb</code> for Debian / Ubuntu, <code>.rpm</code> for Fedora / RHEL,
-          <code>PKGBUILD</code> for Arch. Systemd units, sane defaults, log rotation.
-        </p>
-      </div>
-      <div class="ops">
-        <h3>Containers</h3>
-        <p>
-          A <code>docker-compose.yml</code> template ships with the repo. Production deployments use
-          Caddy in front for TLS and HTTP/3.
-        </p>
-      </div>
-      <div class="ops">
-        <h3>Identity</h3>
-        <p>
-          Bring your own OIDC provider — Google, Okta, Authentik, Keycloak — or use the storage's
-          built-in OAuth endpoints for small deployments.
-        </p>
-      </div>
-      <div class="ops">
-        <h3>Two-sided audit</h3>
-        <p>
-          Operators see who their staff queried; patients see who queried them. Both sides keep
-          tamper-evident logs.
-        </p>
-      </div>
-    </div>
+    <ul class="status-list">
+      <li>
+        <strong>Live reference deployment.</strong>
+        Storage and relay running at <code>storage.ohd.dev</code> and
+        <code>relay.ohd.dev</code>. You can talk to them.
+      </li>
+      <li>
+        <strong>Connect for Android — daily beta.</strong>
+        Sideload the APK below. Onboarding, home dashboard, medication / food / measurement / symptom / urine-strip / pain logging, custom forms, grants, audit log, emergency settings, in-app notifications inbox.
+      </li>
+      <li>
+        <strong>Health Connect sync.</strong>
+        Background sync of Steps, Heart rate, Blood pressure, Glucose, Weight, Body temperature, Sleep, SpO2. WorkManager every 15 min when backgrounded, every 30 s in foreground. 5-year initial backfill on first install.
+      </li>
+      <li>
+        <strong>Barcode + nutrition.</strong>
+        Inline camera barcode preview on the food screen (CameraX + ML Kit). OpenFoodFacts lookup for both barcode + free-text product search.
+      </li>
+      <li>
+        <strong>AI / MCP servers.</strong>
+        Three Python+FastMCP servers — Connect, Care, Emergency — exposing OHDC operations as tools. CORD chat skeleton in-app with API-key configuration (Anthropic / OpenAI / Gemini) plus a planned managed model.
+      </li>
+      <li>
+        <strong>Care &amp; Emergency apps.</strong>
+        Clinician web workflow and paramedic tablet UX exist as reference implementations.
+      </li>
+      <li>
+        <strong>Native packages &amp; self-host.</strong>
+        Docker compose for the full stack; <code>.deb</code>, <code>.rpm</code>,
+        Arch <code>PKGBUILD</code> for bare-metal operators.
+      </li>
+      <li>
+        <strong>Specification public.</strong>
+        Wire protocol, event vocabulary, grant model, audit semantics — all in the repo.
+        Versioned <code>v0</code> while it stabilises; <code>v1</code> when it does.
+      </li>
+      <li class="status-list__warn">
+        <strong>Rough edges.</strong>
+        Pre-release software. Breaking changes will happen. Don't put irreplaceable data
+        in the live deployment yet — run your own.
+      </li>
+    </ul>
   </section>
 
 </main>
@@ -303,15 +489,16 @@ docker compose up --build -d</code></pre>
           <rect x="14" y="2" width="4" height="28" fill="var(--accent)" />
         </svg>
       </span>
-      <span>Open Health Data</span>
+      <span>OHD</span>
     </div>
     <nav class="site-footer__links" aria-label="Footer">
+      <a href="/how-it-works.html">How it works</a>
+      <a href="/roadmap.html">Roadmap</a>
+      <a href="/credits.html">Credits</a>
       <a href="https://github.com/ohd-foundation/ohd" target="_blank" rel="noopener">Repository</a>
-      <a href="https://github.com/ohd-foundation/ohd/tree/main/spec" target="_blank" rel="noopener">Specification</a>
       <a href="https://github.com/ohd-foundation/ohd/blob/main/LICENSE" target="_blank" rel="noopener">Apache-2.0 OR MIT</a>
-      <a href="mailto:hello@ohd.dev">Contact</a>
     </nav>
-    <p class="site-footer__attr muted small">Built in the open. No accounts on our side; your data lives with you.</p>
+    <p class="site-footer__attr muted small">Open Health Data &middot; Apache-2.0 OR MIT</p>
   </div>
 </footer>
 

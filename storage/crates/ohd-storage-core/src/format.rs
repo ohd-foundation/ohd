@@ -81,6 +81,14 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "017_emergency_config",
         include_str!("../../../migrations/017_emergency_config.sql"),
     ),
+    (
+        "018_connect_android_types",
+        include_str!("../../../migrations/018_connect_android_types.sql"),
+    ),
+    (
+        "019_parent_event_link",
+        include_str!("../../../migrations/019_parent_event_link.sql"),
+    ),
 ];
 
 /// One of the three deployment modes a per-user file can be in.
