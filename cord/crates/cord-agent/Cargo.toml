@@ -1,0 +1,21 @@
+[package]
+name = "cord-agent"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "OHD CORD agent — the server-side tool-use loop, model-provider abstraction, and MCP client. Drives a conversation against a data source's tool surface."
+publish = false
+
+[lib]
+name = "cord_agent"
+path = "src/lib.rs"
+
+[dependencies]
+tokio = { version = "1", features = ["rt", "macros", "sync", "time"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+async-trait = "0.1"
+thiserror = "1"
+tracing = "0.1"

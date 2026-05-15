@@ -327,6 +327,31 @@ object StorageRepository {
         updateGrant(grantUlid, update)
     }
 
+    /**
+     * Suspend (`suspended = true`) or resume (`false`) a grant without
+     * deleting it. Backs the Shares tab's per-row quick toggle: a suspended
+     * grant keeps every rule but its token is rejected at auth time.
+     * Idempotent.
+     */
+    fun setGrantSuspended(grantUlid: String, suspended: Boolean): Result<Unit> = withStorage {
+        setGrantSuspended(grantUlid, suspended)
+    }
+
+    /**
+     * Read one grant by ULID. The uniffi surface has no single-grant getter,
+     * so we list with `includeRevoked` and pick the matching row — fine for
+     * the share-detail screen where the row was just shown in the list.
+     */
+    fun getGrant(grantUlid: String): Result<GrantSummary?> = withStorage {
+        val filter = ListGrantsFilterDto(
+            includeRevoked = true,
+            includeExpired = true,
+            granteeKind = null,
+            limit = null,
+        )
+        listGrants(filter).map { it.toDomain() }.firstOrNull { it.ulid == grantUlid }
+    }
+
     // =========================================================================
     // Pending — Pending.{ListPending,ApprovePending,RejectPending}
     // =========================================================================
@@ -557,6 +582,12 @@ data class GrantSummary(
     val createdAtMs: Long,
     val expiresAtMs: Long?,
     val revokedAtMs: Long?,
+    /**
+     * Suspension timestamp; `null` = not suspended. A suspended grant keeps
+     * every rule but its token is rejected at auth time — backs the Shares
+     * tab's per-row quick enable/disable toggle (non-destructive, reversible).
+     */
+    val suspendedAtMs: Long?,
     val approvalMode: String,
     val defaultAction: String,
     val readEventTypes: List<String>,
@@ -794,6 +825,7 @@ internal fun GrantDto.toDomain(): GrantSummary {
         createdAtMs = createdAtMs,
         expiresAtMs = expiresAtMs,
         revokedAtMs = revokedAtMs,
+        suspendedAtMs = suspendedAtMs,
         approvalMode = approvalMode,
         defaultAction = defaultAction,
         readEventTypes = readEventTypes,

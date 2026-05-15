@@ -66,6 +66,8 @@ import com.ohd.connect.ui.screens.OnboardingStorageScreen
 import com.ohd.connect.ui.screens.PainScoreScreen
 import com.ohd.connect.ui.screens.PendingScreen
 import com.ohd.connect.ui.screens.RecentEventsScreen
+import com.ohd.connect.ui.screens.ShareDetailScreen
+import com.ohd.connect.ui.screens.SharesScreen
 import com.ohd.connect.ui.screens.SymptomLogScreen
 import com.ohd.connect.ui.screens.UrineStripScreen
 import com.ohd.connect.ui.screens._shared.QuickMeasureKind
@@ -173,6 +175,28 @@ sealed class OhdRoute(val route: String) {
     data object SettingsProfileRecovery : OhdRoute("settings/profile/recovery")
     data object SettingsProfilePlan : OhdRoute("settings/profile/plan")
     data object SettingsProfileIdentities : OhdRoute("settings/profile/identities")
+
+    /**
+     * Shares — first-class data-sharing surface (`cord/spec/data-link.md`).
+     * Reachable from the Home header's shield icon and from
+     * Settings → Profile & Access. Lists every share (grants + the pinned
+     * emergency break-glass profile) with a per-row quick enable/disable
+     * toggle.
+     */
+    data object Shares : OhdRoute("shares")
+
+    /**
+     * Share detail — full scope, share-link artifact + QR, per-share audit,
+     * actions. The `shareId` path arg is a grant ULID, or the sentinel
+     * `emergency` for the pinned break-glass share. URL-encoded for safety.
+     */
+    data class ShareDetail(val shareId: String) : OhdRoute("shares/{shareId}") {
+        companion object {
+            const val PATTERN = "shares/{shareId}"
+            fun forId(shareId: String): String =
+                "shares/" + java.net.URLEncoder.encode(shareId, "UTF-8")
+        }
+    }
 
     // Operator (reached from Settings → Access)
     data object OperatorGrants : OhdRoute("operator/grants")
@@ -401,6 +425,7 @@ fun OhdNavHost(
                 onOpenCord = { navController.navigate(OhdRoute.CordChat.route) },
                 onOpenNotifications = { navController.navigate(OhdRoute.Notifications.route) },
                 onOpenSettings = { navController.navigate(OhdRoute.SettingsHub.route) },
+                onOpenShares = { navController.navigate(OhdRoute.Shares.route) },
                 onOpenHistory = { navController.navigate(OhdRoute.History.route) },
                 onLogMedication = { navController.navigate(OhdRoute.LogMedication.route) },
                 onLogFood = { navController.navigate(OhdRoute.LogFood.route) },
@@ -667,11 +692,20 @@ fun OhdNavHost(
             AccessSettingsScreen(
                 contentPadding = contentPadding,
                 onBack = { navController.popBackStack() },
-                onOpenGrants = { navController.navigate(OhdRoute.OperatorGrants.route) },
+                // The legacy "Grants" entry point now routes into the
+                // first-class Shares tab (`cord/spec/data-link.md`).
+                onOpenGrants = { navController.navigate(OhdRoute.Shares.route) },
                 onOpenPending = { navController.navigate(OhdRoute.OperatorPending.route) },
                 onOpenCases = { navController.navigate(OhdRoute.OperatorCases.route) },
                 onOpenAudit = { navController.navigate(OhdRoute.OperatorAudit.route) },
-                onOpenEmergency = { navController.navigate(OhdRoute.OperatorEmergency.route) },
+                // Emergency is a first-class share — route to its share row.
+                onOpenEmergency = {
+                    navController.navigate(
+                        OhdRoute.ShareDetail.forId(
+                            com.ohd.connect.data.ShareRow.EMERGENCY_SHARE_ID,
+                        ),
+                    )
+                },
                 onOpenExport = { navController.navigate(OhdRoute.OperatorExport.route) },
                 onOpenRecovery = { navController.navigate(OhdRoute.SettingsProfileRecovery.route) },
                 onOpenPlan = { navController.navigate(OhdRoute.SettingsProfilePlan.route) },
@@ -748,6 +782,43 @@ fun OhdNavHost(
             com.ohd.connect.ui.screens.settings.ProfileIdentitiesScreen(
                 contentPadding = contentPadding,
                 onBack = { navController.popBackStack() },
+            )
+        }
+
+        // -------- Shares (first-class data-sharing tab) --------
+        composable(OhdRoute.Shares.route) {
+            OperatorScaffold(
+                title = "Shares",
+                onBack = { navController.popBackStack() },
+                contentPadding = contentPadding,
+            ) { inner ->
+                SharesScreen(
+                    contentPadding = inner,
+                    onOpenShare = { shareId ->
+                        navController.navigate(OhdRoute.ShareDetail.forId(shareId))
+                    },
+                )
+            }
+        }
+        composable(
+            route = OhdRoute.ShareDetail.PATTERN,
+            arguments = listOf(
+                navArgument("shareId") {
+                    type = NavType.StringType
+                    nullable = false
+                },
+            ),
+        ) { entry ->
+            val raw = entry.arguments?.getString("shareId").orEmpty()
+            val shareId = runCatching {
+                java.net.URLDecoder.decode(raw, "UTF-8")
+            }.getOrDefault(raw)
+            ShareDetailScreen(
+                shareId = shareId,
+                contentPadding = contentPadding,
+                onBack = { navController.popBackStack() },
+                onEditEmergency = { navController.navigate(OhdRoute.OperatorEmergency.route) },
+                onToast = { msg -> toast(msg) },
             )
         }
 

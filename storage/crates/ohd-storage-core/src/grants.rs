@@ -313,6 +313,10 @@ pub struct GrantRow {
     pub expires_at_ms: Option<i64>,
     /// Revocation timestamp.
     pub revoked_at_ms: Option<i64>,
+    /// Suspension timestamp. Distinct from [`Self::revoked_at_ms`]: a
+    /// suspended grant keeps every rule but resolves to "deny all" until
+    /// resumed (set back to `None`). Backs the Connect Shares quick toggle.
+    pub suspended_at_ms: Option<i64>,
     /// `"allow"` or `"deny"`.
     pub default_action: String,
     /// Aggregation-only.
@@ -516,6 +520,60 @@ pub fn revoke_grant(conn: &Connection, grant_id: i64, reason: Option<&str>) -> R
     Ok(now)
 }
 
+/// Suspend or resume a grant without deleting it.
+///
+/// `suspended = true` stamps `suspended_at_ms = now`; `false` clears it back
+/// to `NULL`. A suspended grant keeps every rule but its token is rejected at
+/// auth time (see [`crate::auth::resolve_token`]) — the user-facing
+/// "instantly pause this share" toggle. Revoked grants are left untouched
+/// (revocation is terminal; suspension is reversible).
+pub fn set_grant_suspended(
+    conn: &Connection,
+    grant_id: i64,
+    suspended: bool,
+) -> Result<i64> {
+    let now = crate::format::now_ms();
+    let exists: Option<i64> = conn
+        .query_row(
+            "SELECT id FROM grants WHERE id = ?1",
+            params![grant_id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if exists.is_none() {
+        return Err(Error::NotFound);
+    }
+    let new_value: Option<i64> = if suspended { Some(now) } else { None };
+    conn.execute(
+        "UPDATE grants SET suspended_at_ms = ?1 WHERE id = ?2",
+        params![new_value, grant_id],
+    )?;
+    crate::audit::append(
+        conn,
+        &crate::audit::AuditEntry {
+            ts_ms: now,
+            actor_type: crate::audit::ActorType::Self_,
+            auto_granted: false,
+            grant_id: Some(grant_id),
+            action: if suspended {
+                "grant_suspend".into()
+            } else {
+                "grant_resume".into()
+            },
+            query_kind: None,
+            query_params_json: None,
+            rows_returned: None,
+            rows_filtered: None,
+            result: crate::audit::AuditResult::Success,
+            reason: None,
+            caller_ip: None,
+            caller_ua: None,
+            delegated_for_user_ulid: None,
+        },
+    )?;
+    Ok(now)
+}
+
 /// Sparse update for an existing grant. Mirrors the proto contract: only
 /// `grantee_label` and `expires_at_ms` are mutable in v1; the proto reserves
 /// room for richer updates in v1.x.
@@ -658,6 +716,7 @@ pub fn read_grant(conn: &Connection, grant_id: i64) -> Result<GrantRow> {
         Option<Vec<u8>>,
         Option<Vec<u8>>,
         Option<Vec<u8>>,
+        Option<i64>,
     );
     let row: Option<ReadGrantRow> = conn
         .query_row(
@@ -666,7 +725,8 @@ pub fn read_grant(conn: &Connection, grant_id: i64) -> Result<GrantRow> {
                     aggregation_only, strip_notes, require_approval_per_query,
                     approval_mode, notify_on_access, max_queries_per_day,
                     max_queries_per_hour, rolling_window_days, delegate_for_user_ulid,
-                    class_key_wraps, grantee_recovery_pubkey, issuer_recovery_pubkey
+                    class_key_wraps, grantee_recovery_pubkey, issuer_recovery_pubkey,
+                    suspended_at_ms
                FROM grants WHERE id = ?1",
             params![grant_id],
             |r| {
@@ -692,6 +752,7 @@ pub fn read_grant(conn: &Connection, grant_id: i64) -> Result<GrantRow> {
                     r.get(18)?,
                     r.get(19)?,
                     r.get(20)?,
+                    r.get(21)?,
                 ))
             },
         )
@@ -718,6 +779,7 @@ pub fn read_grant(conn: &Connection, grant_id: i64) -> Result<GrantRow> {
         class_key_wraps_blob,
         grantee_recovery_pubkey_blob,
         issuer_recovery_pubkey_blob,
+        suspended_at_ms,
     )) = row
     else {
         return Err(Error::NotFound);
@@ -798,6 +860,7 @@ pub fn read_grant(conn: &Connection, grant_id: i64) -> Result<GrantRow> {
         created_at_ms,
         expires_at_ms,
         revoked_at_ms,
+        suspended_at_ms,
         default_action,
         aggregation_only: aggregation_only != 0,
         strip_notes: strip_notes != 0,

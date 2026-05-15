@@ -590,6 +590,10 @@ pub struct GrantDto {
     pub expires_at_ms: Option<i64>,
     /// Revocation timestamp; `None` = active.
     pub revoked_at_ms: Option<i64>,
+    /// Suspension timestamp; `None` = not suspended. A suspended grant keeps
+    /// every rule but resolves to "deny all" until resumed — backs the
+    /// Connect Shares quick enable/disable toggle.
+    pub suspended_at_ms: Option<i64>,
     /// `"allow"` or `"deny"`.
     pub default_action: String,
     /// `"always" | "auto_for_event_types" | "never_required"`.
@@ -620,6 +624,7 @@ impl GrantDto {
             created_at_ms: g.created_at_ms,
             expires_at_ms: g.expires_at_ms,
             revoked_at_ms: g.revoked_at_ms,
+            suspended_at_ms: g.suspended_at_ms,
             default_action: g.default_action,
             approval_mode: g.approval_mode,
             aggregation_only: g.aggregation_only,
@@ -1339,6 +1344,21 @@ impl OhdStorage {
         };
         self.inner
             .with_conn_mut(|conn| core::grants::update_grant(conn, grant_id, &core_update))
+            .map_err(OhdError::from)?;
+        Ok(())
+    }
+
+    /// Suspend (`suspended = true`) or resume (`false`) a grant by its ULID
+    /// without deleting it. A suspended grant keeps every rule but its token
+    /// is rejected at auth time — the Connect Shares quick toggle. Idempotent.
+    pub fn set_grant_suspended(&self, grant_ulid: String, suspended: bool) -> Result<()> {
+        let ulid_bytes = core::ulid::parse_crockford(&grant_ulid).map_err(OhdError::from)?;
+        let grant_id = self
+            .inner
+            .with_conn(|conn| core::grants::grant_id_by_ulid(conn, &ulid_bytes))
+            .map_err(OhdError::from)?;
+        self.inner
+            .with_conn(|conn| core::grants::set_grant_suspended(conn, grant_id, suspended))
             .map_err(OhdError::from)?;
         Ok(())
     }

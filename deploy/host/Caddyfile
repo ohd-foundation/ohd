@@ -117,6 +117,21 @@ mcp.ohd.dev {
     reverse_proxy ohd-mcp:8445
 }
 
+# ---- cord.ohd.dev ---------------------------------------------------------
+# OHD CORD — the conversational agent web service. Backed by the ohd-cord
+# container, which only runs under the `cord` compose profile. See
+# cord/SPEC.md.
+cord.ohd.dev {
+    encode gzip zstd
+
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+        X-Content-Type-Options nosniff
+    }
+
+    reverse_proxy ohd-cord:8446
+}
+
 # ---- openhealthdata.org → ohd.dev -----------------------------------------
 openhealthdata.org, www.openhealthdata.org {
     redir https://ohd.dev{uri} 301

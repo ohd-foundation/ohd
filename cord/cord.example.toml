@@ -1,0 +1,47 @@
+# CORD server configuration. Copy to cord.toml and edit.
+# Secrets are referenced by environment-variable NAME, never inlined.
+
+[server]
+listen = "0.0.0.0:8446"
+public_url = "https://cord.ohd.dev"
+data_dir = "/var/lib/ohd-cord"
+# 32-byte key, base64-encoded, that seals share tokens + BYO keys at rest.
+data_key_env = "OHD_CORD_DATA_KEY"
+
+[auth]
+session_ttl_hours = 720          # 30 days
+session_jwt_secret_env = "OHD_CORD_SESSION_SECRET"
+
+# One or more OIDC providers. OHD Cloud points at OHD's IdP; a clinic
+# points at its own. Discovery is via <issuer>/.well-known/openid-configuration.
+[[auth.provider]]
+id = "ohd"
+issuer = "https://accounts.ohd.dev"
+client_id = "cord-web"
+client_secret_env = "OHD_CORD_OIDC_OHD_SECRET"
+scopes = ["openid", "email", "profile"]
+
+[models]
+default_provider = "anthropic"
+
+[[models.provider]]
+id = "anthropic"
+kind = "anthropic"
+api_key_env = "OHD_CORD_ANTHROPIC_KEY"
+models = ["claude-opus-4-7", "claude-sonnet-4-6"]
+
+# [[models.provider]]
+# id = "gemini"
+# kind = "gemini"
+# api_key_env = "OHD_CORD_GEMINI_KEY"
+# models = ["gemini-2.5-pro"]
+
+[models.byo]
+# Whether users may register their own provider key. OHD Cloud: true.
+# A HIPAA-bound clinic sets this false to keep inference on its BAA-covered
+# provider account.
+allow_user_keys = true
+
+[relay]
+default_relay = "https://relay.ohd.dev"
+allow_custom_relay = true

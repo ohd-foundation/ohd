@@ -76,6 +76,7 @@ fun HomeScreen(
     onOpenCord: () -> Unit,
     onOpenNotifications: () -> Unit,
     onOpenSettings: () -> Unit,
+    onOpenShares: () -> Unit,
     onOpenHistory: () -> Unit,
     onLogMedication: () -> Unit,
     onLogFood: () -> Unit,
@@ -130,6 +131,7 @@ fun HomeScreen(
     ) {
         HomeHeader(
             onOpenCord = onOpenCord,
+            onOpenShares = onOpenShares,
             onOpenNotifications = onOpenNotifications,
             onOpenSettings = onOpenSettings,
         )
@@ -264,10 +266,11 @@ private val DEFAULT_FAVOURITES: List<HomeFavourite> = listOf(
     HomeFavourite(label = "Blood pressure", kind = "blood_pressure", iconKey = "heart_pulse"),
 )
 
-/** OHD logo + sparkles + bell + settings strip (Pencil `l3AI7` extended). */
+/** OHD logo + sparkles + shares + bell + settings strip (Pencil `l3AI7` extended). */
 @Composable
 private fun HomeHeader(
     onOpenCord: () -> Unit,
+    onOpenShares: () -> Unit,
     onOpenNotifications: () -> Unit,
     onOpenSettings: () -> Unit,
 ) {
@@ -294,6 +297,14 @@ private fun HomeHeader(
             modifier = Modifier
                 .size(22.dp)
                 .clickable { onOpenCord() },
+        )
+        Icon(
+            imageVector = OhdIcons.Shield,
+            contentDescription = "Shares",
+            tint = OhdColors.Muted,
+            modifier = Modifier
+                .size(22.dp)
+                .clickable { onOpenShares() },
         )
         Icon(
             imageVector = OhdIcons.Bell,

@@ -10,6 +10,8 @@
 - **OHD Care** — the canonical professional-side application. Reference, real, lightweight EHR-shaped consumer of OHDC. Multi-patient via grant tokens. Designed for OHD-data-centric clinical workflows; not a competitor to enterprise EHRs.
 - **OHD Emergency** — the canonical emergency-services-side application. Reference, real, lightweight EHR-shaped consumer for paramedics, ambulance crews, ER triage, mobile-care services. Break-glass discovery via BLE; case-bound grants issued through certified-authority cert chain.
 - **OHD Relay** — the bridging service. Forwards opaque packets between OHDC consumers and storage instances that can't accept inbound connections (phones, home servers behind NAT). Has optional **emergency-authority mode** (signs emergency-access requests with a certified authority cert). Sees ciphertext only.
+- **CORD** — the OHD conversational agent. A deployable web service (`cord.ohd.dev` is OHD Cloud's instance; clinics/ambulances self-host) that lets a user or authorized clinician talk to a health-data store in natural language. Runs the agent loop server-side; reaches storage as a relay consumer holding a scoped **share** credential. Also exists as an on-device agent inside OHD Connect. Spec: [`../../cord/SPEC.md`](../../cord/SPEC.md).
+- **Share** — the user-facing unit of data sharing in OHD Connect: a grant plus an optional remote-access binding (relay rendezvous + connection artifact). Managed on a first-class Shares tab; emergency break-glass is one pre-configured share. See [`../../cord/spec/data-link.md`](../../cord/spec/data-link.md).
 
 ## Protocol and auth
 
@@ -107,7 +109,7 @@ See [`deployment-modes.md`](deployment-modes.md) for tradeoffs and decision crit
 ## Things that are NOT terms (deliberate omissions)
 
 - **OHDP / OHD Push** — earlier draft naming for "the write-only subset of OHDC." No longer used; superseded by **device token** as a kind of grant under the unified OHDC protocol.
-- **CORD / OHD Cord** — earlier draft naming for "the read-only protocol / app." Renamed to **OHD Care** at the app level; the protocol is just OHDC.
+- **CORD (read-only protocol/app sense)** — earlier draft naming for "the read-only protocol / app." Renamed to **OHD Care** at the app level; the protocol is just OHDC. The name **CORD** is now reclaimed for the conversational agent (below) — it is a real term again, just not for the read-only app.
 - **OHD Core** — earlier name for OHD Storage. The component file `components/storage.md` was renamed from `ohd-core.md`. "Core" is now the role of OHD Storage, not a separate component name.
 - **OHD TURN** — earlier draft naming for the bridge. Renamed to **OHD Relay** to avoid collision with WebRTC's TURN protocol.
 

@@ -229,6 +229,10 @@ CREATE TABLE IF NOT EXISTS grants (
   created_at_ms              INTEGER NOT NULL,
   expires_at_ms              INTEGER,
   revoked_at_ms              INTEGER,
+  -- Non-destructive suspension. Distinct from `revoked_at_ms`: a suspended
+  -- grant keeps all its rules but resolves to "deny all" until resumed
+  -- (set back to NULL). Backs the Connect app's per-share quick toggle.
+  suspended_at_ms            INTEGER,
   purpose                    TEXT,
   default_action             TEXT NOT NULL DEFAULT 'deny',
   aggregation_only           INTEGER NOT NULL DEFAULT 0,

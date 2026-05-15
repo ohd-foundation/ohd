@@ -171,10 +171,21 @@ grows a `skills/` module parallel to `tools/`, exposed through MCP
 lab-report summarisation, medication-interaction check, food/gastro
 correlation, ECG-strip classification.
 
-### CORD chat polish
+### CORD as a web service — `cord.ohd.dev`
+CORD is being promoted from an on-device-only agent into a deployable web
+service (web app + Rust backend), reachable to a user's phone storage through
+OHD Relay via a scoped **share**. Full spec: [`../cord/SPEC.md`](../cord/SPEC.md)
+and [`../cord/spec/data-link.md`](../cord/spec/data-link.md). Five-phase
+roadmap in `cord/SPEC.md` "Implementation roadmap". The crucial unbuilt piece
+is the relay data plane (phase 4): a per-share rendezvous, a phone-side
+share-scoped MCP responder, and CORD's relay MCP client.
+
+### CORD chat polish (on-device agent)
 SSE streaming (synchronous JSON ships today), retries on 5xx, OpenAI /
 Gemini providers (stubbed), chat-history persistence (in-memory only).
 Tool catalog is now full via `ohd-mcp-core` — no longer the 3-tool subset.
+The web service (`cord-agent`) is streaming-first from the start; the
+on-device agent should converge onto the same provider abstraction.
 
 ---
 

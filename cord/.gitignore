@@ -1,0 +1,6 @@
+/target
+/crates/*/target
+cord.toml
+*.db
+*.db-journal
+*.db-wal

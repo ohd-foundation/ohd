@@ -93,6 +93,32 @@ services:
     networks:
       - ohd-net
 
+  # OHD CORD — conversational agent web service. Profiled: it only starts
+  # with `docker compose --profile cord up`, because it needs a real
+  # cord.toml (mounted below) plus the OHD_CORD_* secrets before it can
+  # bind. See cord/SPEC.md.
+  ohd-cord:
+    build:
+      context: ../../
+      dockerfile: cord/deploy/Dockerfile
+    image: ohd-cord:dev
+    container_name: ohd-cord
+    restart: unless-stopped
+    profiles: ["cord"]
+    expose:
+      - "8446"
+    volumes:
+      - cord_data:/var/lib/ohd-cord
+      - ./cord.toml:/etc/ohd-cord/cord.toml:ro
+    environment:
+      RUST_LOG: ${RUST_LOG:-info}
+      OHD_CORD_SESSION_SECRET: ${OHD_CORD_SESSION_SECRET:-}
+      OHD_CORD_DATA_KEY: ${OHD_CORD_DATA_KEY:-}
+      OHD_CORD_ANTHROPIC_KEY: ${OHD_CORD_ANTHROPIC_KEY:-}
+      OHD_CORD_OIDC_OHD_SECRET: ${OHD_CORD_OIDC_OHD_SECRET:-}
+    networks:
+      - ohd-net
+
   caddy:
     image: caddy:2-alpine
     container_name: ohd-caddy
@@ -124,6 +150,8 @@ volumes:
     name: ohd_saas_data
   mcp_data:
     name: ohd_mcp_data
+  cord_data:
+    name: ohd_cord_data
   caddy_data:
   caddy_config:
 

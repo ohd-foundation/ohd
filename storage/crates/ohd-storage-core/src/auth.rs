@@ -209,10 +209,12 @@ pub fn resolve_token(conn: &Connection, bearer: &str) -> Result<ResolvedToken> {
         Option<i64>,
         i64,
         Option<Vec<u8>>,
+        Option<i64>,
     )> = conn
         .query_row(
             "SELECT ulid_random, grantee_label, created_at_ms, expires_at_ms,
-                    revoked_at_ms, is_template, delegate_for_user_ulid
+                    revoked_at_ms, is_template, delegate_for_user_ulid,
+                    suspended_at_ms
                FROM grants WHERE id = ?1",
             params![gid],
             |r| {
@@ -224,11 +226,12 @@ pub fn resolve_token(conn: &Connection, bearer: &str) -> Result<ResolvedToken> {
                     r.get(4)?,
                     r.get(5)?,
                     r.get(6)?,
+                    r.get(7)?,
                 ))
             },
         )
         .optional()?;
-    let (rand_tail, label, _created, g_expires, g_revoked, is_template, delegate_for_blob) =
+    let (rand_tail, label, _created, g_expires, g_revoked, is_template, delegate_for_blob, g_suspended) =
         grant.ok_or(Error::Unauthenticated)?;
     if is_template != 0 {
         // Templates are not bearer-presentable per spec.
@@ -236,6 +239,14 @@ pub fn resolve_token(conn: &Connection, bearer: &str) -> Result<ResolvedToken> {
     }
     if let Some(rev) = g_revoked {
         if rev <= now {
+            return Err(Error::TokenRevoked);
+        }
+    }
+    // A suspended grant keeps its rules but resolves to "deny all" — reject
+    // the token outright until the user resumes the share (see
+    // `grants::set_grant_suspended`).
+    if let Some(susp) = g_suspended {
+        if susp <= now {
             return Err(Error::TokenRevoked);
         }
     }

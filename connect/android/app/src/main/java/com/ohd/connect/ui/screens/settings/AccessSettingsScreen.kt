@@ -74,8 +74,8 @@ fun AccessSettingsScreen(
             }
             item {
                 AccessRow(
-                    primary = "Grants",
-                    secondary = "Tokens issued to clinicians, devices, agents",
+                    primary = "Shares",
+                    secondary = "Who can see your data — clinicians, family, agents",
                     onClick = onOpenGrants,
                 )
                 OhdDivider()
