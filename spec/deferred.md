@@ -180,6 +180,14 @@ roadmap in `cord/SPEC.md` "Implementation roadmap". The crucial unbuilt piece
 is the relay data plane (phase 4): a per-share rendezvous, a phone-side
 share-scoped MCP responder, and CORD's relay MCP client.
 
+### OHD Identity — the `ohd-idp` OpenID Connect provider
+OHD has no OpenID Provider an app can be a relying party of, so CORD ships
+with placeholder OIDC config. `ohd-idp` (a new `idp/` component, deployed at
+`accounts.ohd.dev`) is a brokering OIDC OP — federates to upstream providers
+or an OHD recovery code, mints OHD `id_token`s with `sub = profile_ulid`,
+backed by the SaaS account store. CORD and OHD Connect become relying
+parties of it. Full spec + four-phase roadmap: [`../idp/SPEC.md`](../idp/SPEC.md).
+
 ### CORD chat polish (on-device agent)
 SSE streaming (synchronous JSON ships today), retries on 5xx, OpenAI /
 Gemini providers (stubbed), chat-history persistence (in-memory only).

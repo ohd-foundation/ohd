@@ -12,6 +12,7 @@
 - **OHD Relay** — the bridging service. Forwards opaque packets between OHDC consumers and storage instances that can't accept inbound connections (phones, home servers behind NAT). Has optional **emergency-authority mode** (signs emergency-access requests with a certified authority cert). Sees ciphertext only.
 - **CORD** — the OHD conversational agent. A deployable web service (`cord.ohd.dev` is OHD Cloud's instance; clinics/ambulances self-host) that lets a user or authorized clinician talk to a health-data store in natural language. Runs the agent loop server-side; reaches storage as a relay consumer holding a scoped **share** credential. Also exists as an on-device agent inside OHD Connect. Spec: [`../../cord/SPEC.md`](../../cord/SPEC.md).
 - **Share** — the user-facing unit of data sharing in OHD Connect: a grant plus an optional remote-access binding (relay rendezvous + connection artifact). Managed on a first-class Shares tab; emergency break-glass is one pre-configured share. See [`../../cord/spec/data-link.md`](../../cord/spec/data-link.md).
+- **OHD Identity** — the OHD OpenID Connect provider: the `ohd-idp` service at `accounts.ohd.dev`. A brokering IdP — it federates authentication to upstream providers (Google etc.) or an OHD recovery code, resolves the user to a `profile_ulid`, and mints OHD `id_token`s. CORD and OHD Connect authenticate against it as relying parties. Spec: [`../../idp/SPEC.md`](../../idp/SPEC.md).
 
 ## Protocol and auth
 
