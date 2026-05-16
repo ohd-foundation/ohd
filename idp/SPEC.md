@@ -29,13 +29,23 @@ identity.
 
 ## What OHD Identity is
 
-A **brokering** OpenID Provider. It does not store passwords. It
-authenticates a user by federating to an upstream identity provider
-(Google, Microsoft, Apple, …) or by an OHD **recovery code**, resolves
-that to a stable OHD `profile_ulid` through the SaaS account store, and
-mints an OHD-issued `id_token`. This continues the model OHD already uses
-(`connect/spec/auth.md`: storage's AS "redirects to that provider's
-`/authorize`") — OHD never holds a credential it could leak.
+A **first-party** OpenID Provider. `accounts.ohd.dev` is itself an OIDC
+provider an OHD user holds an account with — they sign in with an **email
+and password**. The IdP resolves that account to a stable OHD
+`profile_ulid` through the SaaS account store and mints an OHD-issued
+`id_token`. So `accounts.ohd.dev` can be "the OIDC provider" for an OHD
+deployment with no external dependency — the simple, self-contained path.
+
+It is **also** designed to broker: a later additive feature lets the IdP
+federate to an upstream OIDC provider (Google, Microsoft, …) so a user
+can sign in with an existing account instead. Federation needs
+provider-side setup (registering an OAuth client), so it is deferred; the
+email/password path ships first and is always available.
+
+Passwords are held only as **argon2id hashes**, alongside the
+recovery-code hashes already in the SaaS store — OHD never holds a
+plaintext or reversible credential. The recovery code remains the
+account-recovery path: a forgotten password is reset through it.
 
 The OHD identity an `id_token` carries is the `profile_ulid` — the same
 ULID the SaaS already mints. So an app that trusts `accounts.ohd.dev`
@@ -45,17 +55,20 @@ gets a stable, cross-app user identity for free.
 
 In scope:
 
-1. **`ohd-idp`** — a Rust/axum service: the OIDC OP endpoints, the login
-   UI, RS256 signing-key management, the RP-client registry.
-2. **Upstream federation** — `ohd-idp` is itself an OIDC RP of one or more
-   configured upstream providers; it verifies their `id_token`s (reusing
-   the relay's verifier pattern).
-3. **Recovery-code auth** — the no-upstream path: sign in with an OHD
-   recovery code, validated against the SaaS store.
+1. **`ohd-idp`** — a Rust/axum service: the OIDC OP endpoints, the login +
+   sign-up UI, RS256 signing-key management, the RP-client registry.
+2. **Email/password auth** — the first-party path: an OHD account is an
+   email + an argon2id-hashed password, held in the SaaS account store.
+   Self-service sign-up and sign-in. The primary, always-available method.
+3. **Recovery-code auth** — sign in with an OHD recovery code, and the
+   password-reset path, both validated against the SaaS store.
 4. **SSO sessions** — a bounded browser session at the IdP so a second RP
    login does not re-prompt.
 5. **RP onboarding** — config-driven client registry (CORD, Connect, …);
    optionally RFC 7591 dynamic registration later.
+6. **Upstream federation (later phase)** — `ohd-idp` becoming an OIDC RP
+   of a configured upstream provider; deferred because it needs
+   provider-side OAuth-client setup. Reuses the relay's verifier pattern.
 
 Out of scope:
 
@@ -154,17 +167,21 @@ rotation_overlap_days = 7
 sso_ttl_hours = 12          # browser SSO session at the IdP
 code_ttl_secs = 120         # OHD authorization-code lifetime
 
-# Upstream identity providers the IdP federates to. ohd-idp is an OIDC RP
-# of each. At least one, or recovery-code-only.
-[[upstream]]
-id = "google"
-issuer = "https://accounts.google.com"
-client_id = "..."
-client_secret_env = "OHD_IDP_UPSTREAM_GOOGLE_SECRET"
-scopes = ["openid", "email", "profile"]
+[signup]
+open = true                 # allow self-service email/password sign-up
 
 [recovery]
 enabled = true              # allow "sign in with a recovery code"
+
+# Upstream identity providers the IdP federates to — OPTIONAL, later phase.
+# ohd-idp is an OIDC RP of each. With none configured the IdP runs purely
+# on its own email/password + recovery-code auth, which is the default.
+# [[upstream]]
+# id = "google"
+# issuer = "https://accounts.google.com"
+# client_id = "..."
+# client_secret_env = "OHD_IDP_UPSTREAM_GOOGLE_SECRET"
+# scopes = ["openid", "email", "profile"]
 
 # Relying parties. Static registry for v1.
 [[client]]
@@ -202,17 +219,20 @@ Standard OpenID Connect, Authorization Code + PKCE. All RP-facing.
 2. `ohd-idp` validates the client + redirect URI against the registry.
    - **SSO hit:** a valid IdP session cookie → skip straight to step 6.
    - **SSO miss:** render `/login`.
-3. The user picks an upstream provider (or "recovery code").
-4. **Upstream:** the IdP — itself an RP — redirects to the upstream
-   provider's `/authorize`; the provider redirects back to
-   `/upstream/callback`; the IdP exchanges + **verifies** the upstream
-   `id_token` (issuer allowlist, JWKS, signature, `exp`, `aud`, `nonce`).
+3. The user signs in with their **OHD email + password** — or picks
+   "recovery code", or (once configured) an upstream provider. The
+   `/login` page links to **sign-up** (`/signup`) when `signup.open`.
+4. **Email/password:** the IdP looks the email up in the SaaS account
+   store and verifies the password against its argon2id hash.
    **Recovery code:** the user enters it; the IdP checks it against the
-   SaaS store.
-5. The IdP resolves the authenticated identity to a `profile_ulid` via the
-   SaaS store — `(upstream_iss, upstream_sub)` lookup, minting a new
-   profile on first sight; recovery code resolves directly. It sets the
-   SSO session cookie.
+   SaaS store. **Upstream (later):** the IdP — itself an RP — redirects to
+   the upstream provider's `/authorize`, then exchanges + **verifies** the
+   returned `id_token` at `/upstream/callback` (issuer allowlist, JWKS,
+   signature, `exp`, `aud`, `nonce`).
+5. The authenticated account already maps to a `profile_ulid` —
+   email/password and recovery-code accounts resolve directly; an upstream
+   identity resolves via `(upstream_iss, upstream_sub)`, minting a new
+   profile on first sight. The IdP sets the SSO session cookie.
 6. The IdP issues a one-time OHD **authorization code** bound to
    `(client_id, profile_ulid, redirect_uri, nonce, code_challenge)` and
    redirects the browser to the RP's `redirect_uri?code=…&state=…`.
@@ -246,10 +266,14 @@ already handle a `kid` miss by refetching the JWKS — no RP change needed.
 
 ## Security
 
-- **No passwords.** The IdP federates; the only OHD-held credential is the
-  recovery-code *hash*, which already lives in the SaaS store.
-- **Upstream `id_token`s are verified**, never trusted on presentation —
-  issuer allowlist, JWKS signature, `exp` / `aud` / `nonce`.
+- **Passwords are stored only as argon2id hashes** in the SaaS account
+  store — never plaintext, never reversible. Login compares against the
+  hash; the hash never leaves the store.
+- **Recovery codes** are likewise stored hashed; a recovery code both
+  signs in and authorises a password reset.
+- **Upstream `id_token`s** (when federation is later configured) are
+  verified, never trusted on presentation — issuer allowlist, JWKS
+  signature, `exp` / `aud` / `nonce`.
 - **PKCE mandatory** for every RP, public or confidential.
 - **Authorization codes** are single-use, short-lived (`code_ttl_secs`),
   and bound to the client + redirect URI + PKCE challenge.
@@ -277,15 +301,16 @@ Phased, each shippable independently — the way CORD was built.
 `/.well-known/openid-configuration`, the RP-client registry, `/healthz`.
 Docker image + compose service + Caddy `accounts.ohd.dev` route.
 
-**Phase 2 — federated login end to end.** `/authorize` → login UI →
-upstream OIDC RP flow → `/upstream/callback` verification → profile
-resolution via the SaaS store → OHD authorization code → `/token` →
-`id_token`. After this, CORD logs in through `accounts.ohd.dev` for real
-(pointed at it by config) — replacing CORD's placeholder OIDC.
+**Phase 2 — email/password login end to end.** `/authorize` → login +
+sign-up UI → email/password verified against the SaaS account store → OHD
+authorization code → `/token` → `id_token` → `/userinfo`. After this,
+CORD logs in through `accounts.ohd.dev` for real (pointed at it by
+config) — replacing CORD's placeholder OIDC. Upstream federation is a
+later additive phase, not part of this build.
 
-**Phase 3 — recovery-code auth + SSO.** The recovery-code login path; the
-bounded SSO session so a second RP login is promptless; RP-Initiated
-Logout.
+**Phase 3 — recovery-code auth + SSO.** The recovery-code login +
+password-reset path; the bounded SSO session so a second RP login is
+promptless; RP-Initiated Logout.
 
 **Phase 4 — Connect as a relying party.** Migrate OHD Connect (web, then
 Android) to authenticate against `accounts.ohd.dev` in cloud mode, keeping
