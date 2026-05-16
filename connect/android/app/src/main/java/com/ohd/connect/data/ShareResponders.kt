@@ -43,6 +43,44 @@ object ShareResponders {
     const val DEFAULT_RELAY_ORIGIN = "https://relay.ohd.dev"
     const val DEFAULT_RELAY_TUNNEL_URL = "relay.ohd.dev:9001"
 
+    /** Default raw-QUIC tunnel port — the relay's `--quic-tunnel-listen`. */
+    const val DEFAULT_RELAY_TUNNEL_PORT = 9001
+
+    /**
+     * Derive the relay's HTTPS registration origin from a user-entered
+     * relay host. A bare host (`relay.example.com`) becomes
+     * `https://relay.example.com`; a value the user already prefixed with a
+     * scheme is taken as-is. Supports the "custom relay" path in
+     * `cord/spec/data-link.md` §"Activating remote access".
+     */
+    fun relayOriginForHost(host: String): String {
+        val h = host.trim().removeSuffix("/")
+        return if (h.startsWith("http://") || h.startsWith("https://")) h
+        else "https://$h"
+    }
+
+    /**
+     * Derive the relay's raw-QUIC tunnel `host:port` from a relay host.
+     * The host portion is the registration host with any scheme / path
+     * stripped; the port defaults to [DEFAULT_RELAY_TUNNEL_PORT] unless the
+     * user already supplied one.
+     */
+    fun relayTunnelUrlForHost(host: String): String {
+        val bare = hostForRelayOrigin(host)
+        return if (bare.contains(':')) bare else "$bare:$DEFAULT_RELAY_TUNNEL_PORT"
+    }
+
+    /**
+     * The bare relay host (no scheme, no path, no trailing slash) for a
+     * relay origin or host string — what travels in the `relay=` parameter
+     * of the `ohd://share/...` link.
+     */
+    fun hostForRelayOrigin(origin: String): String =
+        origin.trim()
+            .removePrefix("https://")
+            .removePrefix("http://")
+            .substringBefore('/')
+
     /** Live handles, keyed by grant ULID. */
     private val running = mutableMapOf<String, ShareResponderHandle>()
 
@@ -167,6 +205,49 @@ object ShareResponders {
             runCatching { startResponder(ulid, binding, identityKey, allowInsecureDev = false) }
                 .onFailure { Log.w(TAG, "resume responder failed for $ulid", it) }
         }
+    }
+
+    /**
+     * Handle a relay push-wake (`WAKE_REQUEST`, `relay-protocol.md` §frame
+     * `0x09`) — invoked from [com.ohd.connect.data.RelayWakeService] when an
+     * FCM data-only message with `category = "tunnel_wake"` arrives.
+     *
+     * The relay sends this when a consumer (CORD) attaches at a rendezvous
+     * whose phone-side tunnel is currently down — typically because the
+     * process was killed or the device dozed. We must re-establish the
+     * share responders so the relay's bounded wait sees a live tunnel and
+     * can complete the consumer's attach.
+     *
+     * Because the wake can land on a cold process, storage may not be open.
+     * We open it with the persisted stub key (the same path `MainActivity`
+     * uses on cold start) before resuming. Best-effort: a failure to open
+     * storage is logged, not thrown — the relay falls the attach back
+     * cleanly on its own timeout.
+     *
+     * Safe to call from a background thread; does no UI work.
+     */
+    fun wake(ctx: Context) {
+        StorageRepository.init(ctx)
+        if (!StorageRepository.isOpen()) {
+            val opened = when {
+                StorageRepository.isInitialised() ->
+                    StorageRepository.open("00".repeat(32))
+                else -> Result.failure(IllegalStateException("storage not initialised"))
+            }
+            opened.onFailure {
+                Log.w(TAG, "push-wake: could not open storage; cannot resume responders", it)
+                return
+            }
+        }
+        val grantUlids = StorageRepository.listGrants(includeRevoked = false)
+            .getOrDefault(emptyList())
+            .map { it.ulid }
+        if (grantUlids.isEmpty()) {
+            Log.i(TAG, "push-wake: no grants to resume")
+            return
+        }
+        Log.i(TAG, "push-wake: resuming responders for ${grantUlids.size} share(s)")
+        resumeAll(ctx, grantUlids)
     }
 
     /** Stop every running responder — called on storage close / sign-out. */

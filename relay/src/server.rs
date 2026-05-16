@@ -174,7 +174,14 @@ pub async fn run_serve(opts: ServeOptions) -> anyhow::Result<()> {
         "starting relay"
     );
 
-    let relay = RelayState::open(&opts.db_path).await?;
+    let relay =
+        RelayState::open_with_metering(&opts.db_path, config.metering.to_policy()).await?;
+    info!(
+        target: "ohd_relay::server",
+        rate_window_secs = config.metering.rate_window_secs,
+        rate_max_sessions = config.metering.rate_max_sessions,
+        "per-rendezvous metering + rate limiting active"
+    );
     let push = build_push_dispatcher(&config)?;
     let public_host = config.public_host.clone().unwrap_or_else(|| bind.clone());
 
@@ -779,6 +786,9 @@ async fn handle_deregister(
         .deregister(&req.rendezvous_id)
         .await
         .map_err(ApiError::internal)?;
+    // Drop the metering row so the in-memory table doesn't accumulate
+    // dead rendezvous.
+    state.relay.metering.forget(&req.rendezvous_id);
     Ok(Json(HeartbeatResponse { ok: removed }))
 }
 
@@ -1003,6 +1013,25 @@ async fn handle_attach_ws(
         .map_err(ApiError::internal)?
         .ok_or_else(|| ApiError::not_found("rendezvous_id"))?;
 
+    // Per-rendezvous new-session rate limit (`spec/relay-protocol.md`
+    // "Bandwidth metering and rate limiting"). Checked BEFORE the WS
+    // upgrade so an over-limit consumer gets a clean HTTP 429 rather than
+    // an upgraded-then-closed socket. Already-open sessions and the
+    // storage tunnel are untouched.
+    if !state
+        .relay
+        .metering
+        .check_and_record_attach(&rendezvous_id, std::time::Instant::now())
+        .is_allowed()
+    {
+        warn!(
+            target: "ohd_relay::attach",
+            %rendezvous_id,
+            "consumer attach rejected: per-rendezvous rate limit exceeded"
+        );
+        return Err(ApiError::rate_limited());
+    }
+
     Ok(ws.on_upgrade(move |socket| run_consumer_attach(state, rendezvous_id, row, socket)))
 }
 
@@ -1012,18 +1041,28 @@ async fn run_consumer_attach(
     row: RegistrationRow,
     socket: WebSocket,
 ) {
-    // Look up the tunnel; if absent, attempt push-wake.
+    // Look up the tunnel; if absent, push-wake the phone and wait a
+    // bounded interval for its tunnel to come up (`spec/relay-protocol.md`
+    // §frame `0x09 WAKE_REQUEST`).
     use futures_util::SinkExt as _SinkExt;
     let endpoint = match wait_for_tunnel(&state, &rendezvous_id, &row).await {
-        Some(e) => e,
-        None => {
-            warn!(target: "ohd_relay::attach", %rendezvous_id, "no tunnel after wake; closing");
-            // Send a CLOSE-style error and return.
+        WakeOutcome::TunnelUp(e) => e,
+        WakeOutcome::NoTunnel(reason) => {
+            warn!(
+                target: "ohd_relay::attach",
+                %rendezvous_id,
+                reason,
+                "consumer attach failed: storage tunnel unavailable"
+            );
+            // Fail the attach cleanly: a session-zero CLOSE carrying a
+            // machine-readable reason so the consumer surfaces a precise
+            // "storage offline" message rather than a bare socket drop.
             let mut ws = socket;
-            let frame = TunnelFrame::close(0, Bytes::from_static(b"STORAGE_OFFLINE"));
+            let frame = TunnelFrame::close(0, Bytes::copy_from_slice(reason.as_bytes()));
             if let Ok(b) = frame.encode() {
                 let _ = ws.send(Message::Binary(b.to_vec())).await;
             }
+            let _ = ws.close().await;
             return;
         }
     };
@@ -1056,9 +1095,12 @@ async fn run_consumer_attach(
     use futures_util::StreamExt;
     let (mut ws_tx, mut ws_rx) = socket.split();
 
-    // Pump storage → consumer.
+    // Pump storage → consumer. Meter each `DATA` payload as `bytes_down`.
+    let metering_down = state.relay.metering.clone();
+    let rid_down = rendezvous_id.clone();
     let writer = tokio::spawn(async move {
         while let Some(payload) = storage_to_consumer_rx.recv().await {
+            metering_down.record_down(&rid_down, payload.len() as u64);
             let frame = TunnelFrame::data(session_id, payload);
             let bytes = match frame.encode() {
                 Ok(b) => b,
@@ -1074,6 +1116,8 @@ async fn run_consumer_attach(
     // Pump consumer → storage. The consumer sends raw `TunnelFrame`s on the
     // WS — typically just `DATA` and `CLOSE` for its session id.
     let outbound_tx = endpoint.outbound_tx.clone();
+    let metering_up = state.relay.metering.clone();
+    let rid_up = rendezvous_id.clone();
     let reader = tokio::spawn(async move {
         while let Some(msg) = ws_rx.next().await {
             let msg = match msg {
@@ -1095,6 +1139,9 @@ async fn run_consumer_attach(
                 session_id,
                 ..frame
             };
+            if matches!(stamped.frame_type, FrameType::Data) {
+                metering_up.record_up(&rid_up, stamped.payload.len() as u64);
+            }
             if matches!(stamped.frame_type, FrameType::Close) {
                 let _ = outbound_tx.send(stamped).await;
                 break;
@@ -1118,19 +1165,89 @@ async fn run_consumer_attach(
     debug!(target: "ohd_relay::attach", %rendezvous_id, session_id, "consumer detached");
 }
 
+/// Result of attempting to reach a storage tunnel for a consumer attach,
+/// push-waking the phone if the tunnel is down.
+enum WakeOutcome {
+    /// A live tunnel is available — proceed with the attach.
+    TunnelUp(TunnelEndpoint),
+    /// No tunnel could be established. The `&'static str` is the
+    /// machine-readable reason forwarded to the consumer in the failing
+    /// `CLOSE` frame.
+    NoTunnel(&'static str),
+}
+
+/// Look up the storage tunnel for `rendezvous_id`. If it's down, send a
+/// push-wake (`WAKE_REQUEST`, delivered out-of-band as an FCM/APNs push —
+/// not a tunnel frame) and poll up to [`WAKE_DEADLINE`] for the phone to
+/// re-establish its tunnel.
+///
+/// Failure modes are distinguished so the consumer gets a precise status:
+/// - `NO_PUSH_TOKEN` — the storage never registered a push token; the
+///   relay has no way to wake it.
+/// - `PUSH_FAILED` — the push provider rejected / errored the wake.
+/// - `STORAGE_OFFLINE` — wake sent (or skipped) but the tunnel did not
+///   come up within the deadline.
 async fn wait_for_tunnel(
     state: &AppState,
     rendezvous_id: &str,
     row: &RegistrationRow,
-) -> Option<TunnelEndpoint> {
+) -> WakeOutcome {
     if let Some(t) = state.relay.sessions.lookup(rendezvous_id).await {
-        return Some(t);
+        return WakeOutcome::TunnelUp(t);
     }
-    // Push-wake.
-    if let Some(token) = &row.push_token {
-        let _ = state.push.wake(rendezvous_id, token).await;
+
+    // No live tunnel: push-wake the phone so it re-establishes one.
+    match &row.push_token {
+        Some(token) => {
+            info!(
+                target: "ohd_relay::attach",
+                %rendezvous_id,
+                push = token.platform(),
+                "no live tunnel; sending push-wake"
+            );
+            if let Err(e) = state.push.wake(rendezvous_id, token).await {
+                warn!(
+                    target: "ohd_relay::attach",
+                    %rendezvous_id,
+                    error = %e,
+                    "push-wake failed"
+                );
+                // A wake we couldn't deliver still gets a brief poll —
+                // the phone may have a tunnel coming up for another
+                // reason — but the dominant failure reason is the push.
+                if poll_for_tunnel(state, rendezvous_id).await.is_none() {
+                    return WakeOutcome::NoTunnel("PUSH_FAILED");
+                }
+            }
+        }
+        None => {
+            warn!(
+                target: "ohd_relay::attach",
+                %rendezvous_id,
+                "no live tunnel and no push token; cannot wake storage"
+            );
+            return WakeOutcome::NoTunnel("NO_PUSH_TOKEN");
+        }
     }
-    // Poll up to WAKE_DEADLINE.
+
+    match poll_for_tunnel(state, rendezvous_id).await {
+        Some(t) => {
+            info!(
+                target: "ohd_relay::attach",
+                %rendezvous_id,
+                "storage tunnel came up after push-wake"
+            );
+            WakeOutcome::TunnelUp(t)
+        }
+        None => WakeOutcome::NoTunnel("STORAGE_OFFLINE"),
+    }
+}
+
+/// Poll the session table up to [`WAKE_DEADLINE`] for a tunnel to appear.
+async fn poll_for_tunnel(
+    state: &AppState,
+    rendezvous_id: &str,
+) -> Option<TunnelEndpoint> {
     let deadline = tokio::time::Instant::now() + WAKE_DEADLINE;
     while tokio::time::Instant::now() < deadline {
         if let Some(t) = state.relay.sessions.lookup(rendezvous_id).await {
@@ -1187,6 +1304,17 @@ impl ApiError {
     pub fn with_code(mut self, code: &'static str) -> Self {
         self.code = Some(code);
         self
+    }
+
+    /// The rendezvous exceeded its per-rendezvous new-session allowance.
+    /// Returned to a consumer attach as HTTP `429`; per the relay
+    /// protocol's `OPEN_NACK` `RATE_LIMITED` reason code.
+    pub fn rate_limited() -> Self {
+        Self {
+            status: StatusCode::TOO_MANY_REQUESTS,
+            message: "too many sessions for this rendezvous; retry later".into(),
+            code: Some("RATE_LIMITED"),
+        }
     }
 
     /// Storage didn't present an `id_token` but the relay requires one.

@@ -40,6 +40,13 @@
 //! ]
 //! jwks_cache_ttl_secs = 3600
 //! require_oidc        = false
+//!
+//! [metering]
+//! # Per-rendezvous new-session rate limiting. Defaults: 30 attaches per
+//! # 60s window. `rate_max_sessions = 0` disables throttling (pure
+//! # metering). Over-limit consumer attaches are rejected with HTTP 429.
+//! rate_window_secs   = 60
+//! rate_max_sessions  = 30
 //! ```
 //!
 //! Missing sections are no-ops: a relay without `[push.fcm]` simply
@@ -62,6 +69,58 @@ pub struct RelayConfig {
     pub authority: AuthorityConfig,
     #[serde(default)]
     pub auth: AuthConfig,
+    #[serde(default)]
+    pub metering: MeteringConfig,
+}
+
+// ---------------------------------------------------------------------------
+// [metering] — per-rendezvous byte counters + new-session rate limiting
+// ---------------------------------------------------------------------------
+
+/// `[metering]` — bandwidth metering + rate-limit policy. Per
+/// `spec/relay-protocol.md` "Bandwidth metering and rate limiting".
+///
+/// Defaults are tuned so a normal consumer (CORD reconnecting per chat
+/// turn, a clinician opening a session) never trips the limiter; an
+/// abusive client that hammers the attach endpoint is throttled with HTTP
+/// `429`. Set `rate_max_sessions = 0` to disable throttling and keep pure
+/// metering.
+#[derive(Debug, Clone, Deserialize)]
+pub struct MeteringConfig {
+    /// Sliding-window length in seconds for the new-session counter.
+    #[serde(default = "default_rate_window_secs")]
+    pub rate_window_secs: u64,
+    /// Maximum consumer attaches per rendezvous within the window. `0`
+    /// disables the limit.
+    #[serde(default = "default_rate_max_sessions")]
+    pub rate_max_sessions: u32,
+}
+
+impl Default for MeteringConfig {
+    fn default() -> Self {
+        Self {
+            rate_window_secs: default_rate_window_secs(),
+            rate_max_sessions: default_rate_max_sessions(),
+        }
+    }
+}
+
+fn default_rate_window_secs() -> u64 {
+    crate::metering::DEFAULT_RATE_WINDOW.as_secs()
+}
+
+fn default_rate_max_sessions() -> u32 {
+    crate::metering::DEFAULT_RATE_MAX_SESSIONS
+}
+
+impl MeteringConfig {
+    /// Project this config block onto the runtime [`crate::metering::MeteringPolicy`].
+    pub fn to_policy(&self) -> crate::metering::MeteringPolicy {
+        crate::metering::MeteringPolicy {
+            rate_window: std::time::Duration::from_secs(self.rate_window_secs),
+            rate_max_sessions: self.rate_max_sessions,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -356,6 +415,33 @@ mod tests {
         // serde default kicks in when the field is absent under the block.
         assert_eq!(cfg.auth.registration.jwks_cache_ttl_secs, 3600);
         assert!(!cfg.auth.registration.require_oidc);
+    }
+
+    #[test]
+    fn metering_defaults_when_absent() {
+        let cfg = RelayConfig::default();
+        assert_eq!(cfg.metering.rate_window_secs, 60);
+        assert_eq!(cfg.metering.rate_max_sessions, 30);
+    }
+
+    #[test]
+    fn metering_section_parses() {
+        let mut f = NamedTempFile::new().unwrap();
+        writeln!(
+            f,
+            r#"
+            [metering]
+            rate_window_secs = 120
+            rate_max_sessions = 5
+            "#
+        )
+        .unwrap();
+        let cfg = RelayConfig::load(f.path()).unwrap();
+        assert_eq!(cfg.metering.rate_window_secs, 120);
+        assert_eq!(cfg.metering.rate_max_sessions, 5);
+        let policy = cfg.metering.to_policy();
+        assert_eq!(policy.rate_window.as_secs(), 120);
+        assert_eq!(policy.rate_max_sessions, 5);
     }
 
     #[test]

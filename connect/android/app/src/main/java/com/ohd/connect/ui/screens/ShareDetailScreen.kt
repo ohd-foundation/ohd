@@ -437,6 +437,11 @@ private fun ActivateRemoteAccessCard(
         mutableStateOf(ShareResponders.binding(ctx, shareId))
     }
     var busy by remember { mutableStateOf(false) }
+    // Relay host the user can override — defaults to OHD's relay. A clinic
+    // running its own relay puts its host here; CORD accepts any relay host
+    // from the share link (`cord/spec/data-link.md` §"Activating remote
+    // access" step 1).
+    var relayHost by remember { mutableStateOf(ShareLink.DEFAULT_RELAY_HOST) }
 
     DetailCard {
         Text("Remote access", style = MaterialTheme.typography.titleMedium)
@@ -452,9 +457,28 @@ private fun ActivateRemoteAccessCard(
 
         val b = binding
         if (b == null) {
+            OutlinedTextField(
+                value = relayHost,
+                onValueChange = { relayHost = it.trim() },
+                singleLine = true,
+                label = { Text("Relay host") },
+                supportingText = {
+                    Text(
+                        "Default is OHD Relay. Enter a custom host if your " +
+                            "clinic runs its own.",
+                    )
+                },
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(Modifier.height(8.dp))
             OutlinedButton(
                 onClick = {
                     if (busy) return@OutlinedButton
+                    val host = relayHost.trim()
+                    if (host.isEmpty()) {
+                        onToast("Enter a relay host.")
+                        return@OutlinedButton
+                    }
                     busy = true
                     scope.launch {
                         val result = withContext(Dispatchers.IO) {
@@ -462,6 +486,8 @@ private fun ActivateRemoteAccessCard(
                                 ctx = ctx,
                                 grantUlid = shareId,
                                 shareLabel = shareLabel,
+                                relayOrigin = ShareResponders.relayOriginForHost(host),
+                                relayTunnelUrl = ShareResponders.relayTunnelUrlForHost(host),
                             )
                         }
                         busy = false
@@ -481,12 +507,14 @@ private fun ActivateRemoteAccessCard(
             ) { Text(if (busy) "Activating…" else "Activate remote access") }
         } else {
             // The real share link — rendezvous + grant token + SPKI pin.
+            // The relay host travels in the link so CORD knows which relay
+            // to reach; it's the host the user activated against.
             val link = remember(b, grantToken) {
                 ShareLink(
                     rendezvousId = b.rendezvousId,
                     token = grantToken,
                     pinSpki = b.spkiPin,
-                    relayHost = ShareLink.DEFAULT_RELAY_HOST,
+                    relayHost = ShareResponders.hostForRelayOrigin(b.relayOrigin),
                 )
             }
             val statusLine = if (ShareResponders.isActive(shareId)) {

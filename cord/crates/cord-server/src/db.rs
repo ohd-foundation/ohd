@@ -359,6 +359,17 @@ impl Db {
         Ok(())
     }
 
+    /// Set a chat's title only if it has none yet — used to auto-derive a
+    /// title from the first user message. A no-op once a title is set.
+    pub fn set_chat_title_if_unset(&self, chat_id: &str, title: &str) -> ApiResult<()> {
+        let conn = self.pool.get()?;
+        conn.execute(
+            "UPDATE chats SET title = ?1 WHERE id = ?2 AND title IS NULL",
+            params![title, chat_id],
+        )?;
+        Ok(())
+    }
+
     pub fn insert_message(&self, chat_id: &str, role: &str, content: &str) -> ApiResult<ChatMessage> {
         let conn = self.pool.get()?;
         let id = new_ulid();

@@ -60,9 +60,12 @@ impl Agent {
         };
 
         for round in 0..MAX_ROUNDS {
+            // The provider streams assistant `Text` deltas onto `tx` as
+            // they arrive; the returned `RoundOutput` is the same content
+            // assembled, which the loop below acts on for tool use.
             let out = match self
                 .provider
-                .round(&self.model, SYSTEM_PROMPT, &messages, &tools)
+                .round(&self.model, SYSTEM_PROMPT, &messages, &tools, &tx)
                 .await
             {
                 Ok(o) => o,
@@ -71,14 +74,6 @@ impl Agent {
                     return;
                 }
             };
-
-            for block in &out.blocks {
-                if let ContentBlock::Text(t) = block {
-                    if !t.trim().is_empty() {
-                        let _ = tx.send(AgentEvent::Text { delta: t.clone() }).await;
-                    }
-                }
-            }
 
             if out.stop_reason != "tool_use" {
                 let _ = tx.send(AgentEvent::Done).await;

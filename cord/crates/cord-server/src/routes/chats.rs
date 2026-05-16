@@ -85,6 +85,14 @@ pub async fn send_message(
     // (pinned inner-TLS) transport. The agent is transport-agnostic.
     let mcp = build_mcp_client(&app, &source)?;
 
+    // The first user message names the chat: derive a title before the
+    // turn is persisted (so "first message" is unambiguous). A no-op once
+    // a title exists.
+    if chat.title.is_none() {
+        app.db
+            .set_chat_title_if_unset(&chat.id, &derive_title(&body.message))?;
+    }
+
     // Persist the user turn, then load the whole conversation as agent
     // messages (the list now ends with this turn).
     app.db.insert_message(&chat.id, "user", &body.message)?;
@@ -159,4 +167,46 @@ fn resolve_provider(
         }
     };
     Ok((provider, model_name))
+}
+
+/// Derive a chat title from the first user message: collapse whitespace to
+/// single spaces and truncate to a sensible length on a word boundary.
+fn derive_title(message: &str) -> String {
+    const MAX_CHARS: usize = 60;
+    let collapsed = message.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.chars().count() <= MAX_CHARS {
+        return collapsed;
+    }
+    // Truncate at MAX_CHARS chars, then back off to the last word boundary.
+    let mut cut: String = collapsed.chars().take(MAX_CHARS).collect();
+    if let Some(idx) = cut.rfind(' ') {
+        if idx >= MAX_CHARS / 2 {
+            cut.truncate(idx);
+        }
+    }
+    format!("{}…", cut.trim_end())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::derive_title;
+
+    #[test]
+    fn short_message_is_used_verbatim() {
+        assert_eq!(derive_title("How did I sleep?"), "How did I sleep?");
+    }
+
+    #[test]
+    fn whitespace_is_collapsed() {
+        assert_eq!(derive_title("  steps\n  today  "), "steps today");
+    }
+
+    #[test]
+    fn long_message_is_truncated_on_a_word_boundary() {
+        let long = "Please summarize my heart rate variability trends over the last several weeks";
+        let title = derive_title(long);
+        assert!(title.ends_with('…'));
+        assert!(title.chars().count() <= 61);
+        assert!(!title.trim_end_matches('…').ends_with(' '));
+    }
 }

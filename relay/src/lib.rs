@@ -10,6 +10,7 @@ pub mod config;
 pub mod emergency_endpoints;
 pub mod frame;
 pub mod http3;
+pub mod metering;
 pub mod pairing;
 pub mod push;
 pub mod quic_tunnel;

@@ -18,6 +18,7 @@ use std::sync::Arc;
 use rusqlite::{params, Connection};
 use tokio::sync::Mutex;
 
+use crate::metering::{MeteringPolicy, MeteringTable};
 use crate::pairing::PairingTable;
 use crate::session::SessionTable;
 
@@ -32,16 +33,30 @@ pub struct RelayState {
     pub registrations: Arc<RegistrationTable>,
     pub sessions: Arc<SessionTable>,
     pub pairings: Arc<PairingTable>,
+    /// Per-rendezvous byte counters + new-session rate limiter. In-memory
+    /// telemetry; never sees plaintext (counts `DATA`-frame ciphertext
+    /// lengths only). See `crate::metering`.
+    pub metering: Arc<MeteringTable>,
 }
 
 impl RelayState {
     /// Open (or create) the relay state with the given on-disk SQLite path.
     pub async fn open(db_path: impl AsRef<Path>) -> anyhow::Result<Self> {
+        Self::open_with_metering(db_path, MeteringPolicy::default()).await
+    }
+
+    /// Open the relay state with an explicit metering policy (the
+    /// `[metering]` block from `relay.toml`).
+    pub async fn open_with_metering(
+        db_path: impl AsRef<Path>,
+        metering: MeteringPolicy,
+    ) -> anyhow::Result<Self> {
         let registrations = RegistrationTable::open(db_path).await?;
         Ok(Self {
             registrations: Arc::new(registrations),
             sessions: Arc::new(SessionTable::new()),
             pairings: Arc::new(PairingTable::new()),
+            metering: Arc::new(MeteringTable::new(metering)),
         })
     }
 
@@ -52,6 +67,7 @@ impl RelayState {
             registrations: Arc::new(registrations),
             sessions: Arc::new(SessionTable::new()),
             pairings: Arc::new(PairingTable::new()),
+            metering: Arc::new(MeteringTable::with_defaults()),
         })
     }
 }

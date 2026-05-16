@@ -177,12 +177,27 @@
         </activity-alias>
 
         <!--
-            FCM service, full-screen emergency dialog activity, and
-            barcode-scanning camera permissions land in the implementation
-            phase. See:
+            FCM receiver for the relay's silent push-wake (relay-protocol.md
+            §frame 0x09 WAKE_REQUEST). On a data-only message with
+            `category = "tunnel_wake"`, `RelayWakeService` resumes the share
+            responders so the relay can complete a consumer's attach. The
+            `MESSAGING_EVENT` intent-filter is how FCM dispatches both
+            messages and token refreshes; `exported="false"` because only
+            the Play Services FCM client binds it.
+        -->
+        <service
+            android:name=".data.RelayWakeService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.google.firebase.MESSAGING_EVENT" />
+            </intent-filter>
+        </service>
+
+        <!--
+            Full-screen emergency dialog activity and the loud-notification
+            channels land in the implementation phase. See:
               - ../spec/notifications.md
               - ../spec/screens-emergency.md
-              - ../spec/barcode-scanning.md
         -->
     </application>
 </manifest>

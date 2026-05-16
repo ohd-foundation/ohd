@@ -160,6 +160,25 @@ org_country = "CZ"
 # require_oidc        = false
 
 # -----------------------------------------------------------------------------
+# Bandwidth metering + rate limiting  (`[metering]`)
+# -----------------------------------------------------------------------------
+#
+# The relay keeps per-rendezvous (per-user-storage) byte counters and a
+# per-rendezvous new-session rate limit. An over-limit consumer attach is
+# rejected with HTTP 429 before the tunnel session is opened; already-open
+# sessions and the storage tunnel are untouched.
+#
+# Counters are in-memory operational telemetry — never plaintext (the
+# relay counts DATA-frame ciphertext lengths only). A restart resets them.
+#
+# Defaults (used when this block is absent): 30 attaches per 60s window.
+# Set `rate_max_sessions = 0` to disable throttling and keep pure metering.
+
+# [metering]
+# rate_window_secs  = 60
+# rate_max_sessions = 30
+
+# -----------------------------------------------------------------------------
 # Raw QUIC tunnel mode  (`[tunnel.quic]`)
 # -----------------------------------------------------------------------------
 #

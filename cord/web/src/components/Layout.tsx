@@ -78,8 +78,8 @@ export default function Layout() {
                 "chat-row" + (activeChatId === c.id ? " active" : "")
               }
             >
-              <NavLink to={`/chats/${c.id}`}>
-                {c.title || "Untitled conversation"}
+              <NavLink to={`/chats/${c.id}`} title={chatLabel(c)}>
+                {chatLabel(c)}
               </NavLink>
               <button
                 className="ghost small del"
@@ -107,6 +107,16 @@ export default function Layout() {
       </main>
     </div>
   );
+}
+
+// A chat's sidebar label: its auto-derived title, or — while the title is
+// still null (no message sent yet) — the date it was created.
+function chatLabel(c: Chat): string {
+  if (c.title && c.title.trim() !== "") return c.title;
+  const d = new Date(c.created_at);
+  return Number.isNaN(d.getTime())
+    ? "New conversation"
+    : `New conversation · ${d.toLocaleDateString()}`;
 }
 
 function ErrorLine({ text }: { text: string }) {

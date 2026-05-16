@@ -214,3 +214,153 @@ async fn unknown_rendezvous_returns_not_found_on_attach() {
     let result = tokio_tungstenite::connect_async(&url).await;
     assert!(result.is_err(), "expected failure on unknown rendezvous_id");
 }
+
+/// Spawn a relay whose per-rendezvous new-session rate limit is set to
+/// `max` attaches per (long) window, so the limiter is exercised
+/// deterministically within one test.
+async fn spawn_relay_with_rate_limit(max: u32) -> SocketAddr {
+    use ohd_relay::metering::{MeteringPolicy, MeteringTable};
+    use std::time::Duration as StdDuration;
+
+    let mut relay = RelayState::in_memory().await.expect("in-memory state");
+    relay.metering = Arc::new(MeteringTable::new(MeteringPolicy {
+        rate_window: StdDuration::from_secs(3600),
+        rate_max_sessions: max,
+    }));
+    let emergency = ohd_relay::emergency_endpoints::EmergencyStateTable::new(
+        relay.registrations.conn_for_emergency(),
+    );
+    let app_state = AppState {
+        relay,
+        push: Arc::new(PushDispatcher::new()),
+        public_host: "127.0.0.1:0".to_string(),
+        registration_auth: ohd_relay::server::RegistrationAuthState::permissive(),
+        #[cfg(feature = "authority")]
+        authority: None,
+        emergency,
+        storage_tunnel: None,
+    };
+    let app = build_router(app_state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    addr
+}
+
+#[tokio::test]
+async fn consumer_attach_over_rate_limit_returns_429() {
+    // Allowance of 2 attaches; the 3rd must be rejected with HTTP 429.
+    let addr = spawn_relay_with_rate_limit(2).await;
+    let registered = register(addr).await;
+    let rid = registered.rendezvous_id;
+
+    // Keep the storage tunnel up so attaches don't fail for other reasons.
+    let storage_url = format!("ws://{}/v1/tunnel/{}", addr, rid);
+    let (_storage_ws, _) = tokio_tungstenite::connect_async(&storage_url)
+        .await
+        .expect("storage ws");
+
+    // First two attaches: WS upgrade succeeds (HTTP 101).
+    for i in 0..2 {
+        let url = format!("ws://{}/v1/attach/{}", addr, rid);
+        let res = tokio_tungstenite::connect_async(&url).await;
+        assert!(res.is_ok(), "attach {i} should succeed under the limit");
+        // Drop the socket; the relay frees the session.
+        drop(res.unwrap().0);
+    }
+
+    // Third attach: the WS upgrade is refused. tungstenite surfaces the
+    // non-101 response as an `Http` error carrying the 429 status.
+    let url = format!("ws://{}/v1/attach/{}", addr, rid);
+    let res = tokio_tungstenite::connect_async(&url).await;
+    match res {
+        Err(tokio_tungstenite::tungstenite::Error::Http(resp)) => {
+            assert_eq!(
+                resp.status(),
+                reqwest::StatusCode::TOO_MANY_REQUESTS,
+                "over-limit attach must be HTTP 429"
+            );
+        }
+        other => panic!("expected an HTTP 429 error, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn metering_counts_data_bytes_per_rendezvous() {
+    // Drive a real roundtrip and confirm the metering table accounts the
+    // DATA-frame payload bytes in both directions.
+    let relay = RelayState::in_memory().await.unwrap();
+    let metering = relay.metering.clone();
+    let emergency = ohd_relay::emergency_endpoints::EmergencyStateTable::new(
+        relay.registrations.conn_for_emergency(),
+    );
+    let app_state = AppState {
+        relay,
+        push: Arc::new(PushDispatcher::new()),
+        public_host: "127.0.0.1:0".to_string(),
+        registration_auth: ohd_relay::server::RegistrationAuthState::permissive(),
+        #[cfg(feature = "authority")]
+        authority: None,
+        emergency,
+        storage_tunnel: None,
+    };
+    let app = build_router(app_state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    let registered = register(addr).await;
+    let rid = registered.rendezvous_id;
+
+    let storage_url = format!("ws://{}/v1/tunnel/{}", addr, rid);
+    let (mut storage_ws, _) = tokio_tungstenite::connect_async(&storage_url)
+        .await
+        .unwrap();
+    let consumer_url = format!("ws://{}/v1/attach/{}", addr, rid);
+    let (mut consumer_ws, _) = tokio_tungstenite::connect_async(&consumer_url)
+        .await
+        .unwrap();
+
+    // Storage sees OPEN.
+    let msg = tokio::time::timeout(Duration::from_secs(2), storage_ws.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let session_id = match msg {
+        TMessage::Binary(b) => TunnelFrame::decode(&b).unwrap().session_id,
+        other => panic!("expected OPEN, got {other:?}"),
+    };
+
+    // Consumer → storage: 1000 bytes.
+    let up = TunnelFrame::data(0, Bytes::from(vec![1u8; 1000]))
+        .encode()
+        .unwrap();
+    consumer_ws.send(TMessage::Binary(up.to_vec())).await.unwrap();
+    let _ = tokio::time::timeout(Duration::from_secs(2), storage_ws.next())
+        .await
+        .unwrap();
+
+    // Storage → consumer: 2500 bytes.
+    let down = TunnelFrame::data(session_id, Bytes::from(vec![2u8; 2500]))
+        .encode()
+        .unwrap();
+    storage_ws.send(TMessage::Binary(down.to_vec())).await.unwrap();
+    let _ = tokio::time::timeout(Duration::from_secs(2), consumer_ws.next())
+        .await
+        .unwrap();
+
+    // Give the pump tasks a beat to record.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let snap = metering.snapshot(&rid).expect("metering row exists");
+    assert_eq!(snap.bytes_up, 1000, "consumer→storage bytes");
+    assert_eq!(snap.bytes_down, 2500, "storage→consumer bytes");
+    assert_eq!(snap.sessions_total, 1);
+}

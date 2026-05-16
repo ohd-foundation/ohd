@@ -236,8 +236,21 @@ dependencies {
     // `HealthConnectScheduler`.
     implementation("androidx.work:work-runtime-ktx:2.9.1")
 
-    // ML Kit barcode scanning, CameraX, Cronet dependencies will land
-    // alongside their corresponding features.
+    // Firebase Cloud Messaging — receives the relay's silent push-wake
+    // (`relay-protocol.md` §frame 0x09 WAKE_REQUEST). `RelayWakeService`
+    // extends `FirebaseMessagingService` and, on a data-only message with
+    // `category = "tunnel_wake"`, resumes the share responders so the
+    // relay can complete a consumer's attach.
+    //
+    // NOTE: token acquisition / `Notify.RegisterDevice` (threading the FCM
+    // token into the relay registration) is a separate, not-yet-built
+    // piece and needs a `google-services.json` + the `com.google.gms`
+    // Gradle plugin for a live Firebase project. The receiver side here
+    // compiles and is wired regardless; see `connect/spec/notifications.md`.
+    implementation("com.google.firebase:firebase-messaging:24.0.3")
+
+    // CameraX, Cronet dependencies will land alongside their corresponding
+    // features.
 }
 
 // =============================================================================
