@@ -308,8 +308,8 @@ row + quick enable/disable toggle + detail screen; emergency modeled as a
 pre-configured share. Share-link generation (`ohd://share/...`, QR, NFC).
 Connect work; see `spec/data-link.md`.
 
-**Phase 4 — relay data plane (the crucial part).** Split into independently
-shippable sub-tasks, each carrying its own tests:
+**Phase 4 — relay data plane (the crucial part). [done]** Split into
+independently shippable sub-tasks, each carrying its own tests:
 
 - **4a — `ShareScope` in `ohd-mcp-core`.** Grant-scope enforcement on tool
   dispatch: intersect query filters, redact out-of-scope channels, hide
