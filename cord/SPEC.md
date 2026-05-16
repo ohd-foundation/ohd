@@ -332,8 +332,9 @@ independently shippable sub-tasks, each carrying its own tests:
 config + DNS + secrets, bring up the `ohd-cord` compose profile. Independent
 of Phase 4 — CORD is usable in direct-source mode from Phase 2.
 
-**Phase 5 — hardening.** Custom-relay config, push-wake of a sleeping phone,
-per-share metering / rate limits, chat-history polish, token-level streaming.
+**Phase 5 — hardening. [done]** Custom-relay config, push-wake of a sleeping
+phone, per-share metering / rate limits, chat-history polish, token-level
+streaming.
 
 ## Cross-references
 
