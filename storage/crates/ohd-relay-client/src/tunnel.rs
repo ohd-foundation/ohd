@@ -76,7 +76,18 @@ pub const STREAM_TAG_SESSION_OPEN: u8 = 0x01;
 pub const CONTROL_TAG_HEARTBEAT: u8 = 0x02;
 
 /// How often we pulse heartbeats outbound.
-pub const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(60);
+///
+/// Shortened from 60 s to 20 s. This also drives the watchdog window below
+/// (`HEARTBEAT_INTERVAL * MAX_MISSED_HEARTBEATS`), so a genuinely dead tunnel
+/// is detected — and reconnect kicks in — in ~120 s instead of ~6 min.
+///
+/// NOTE: this does NOT fully resolve the observed tunnel-stability bug. A
+/// packet capture showed phone→relay traffic stops ~18 s after the handshake
+/// (neither quinn's 15 s transport keep-alive nor this heartbeat reaches the
+/// relay after that point), so the relay idle-times-out the QUIC connection
+/// at ~120 s. Root cause is still under investigation — see the tunnel
+/// notes; a two-ended packet capture is the next diagnostic.
+pub const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(20);
 
 /// Maximum consecutive missed heartbeats before tearing down the connection.
 pub const MAX_MISSED_HEARTBEATS: u32 = 3;
