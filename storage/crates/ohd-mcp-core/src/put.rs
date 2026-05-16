@@ -101,6 +101,10 @@ pub fn commit(
         channels,
         source: Some(SOURCE_TAG.to_string()),
         notes,
+        // Events logged through an MCP write tool are entry-level rows the
+        // UI surfaces by default. `EventInput`'s `Default` gives
+        // `top_level = false`, which would hide them from `query_events`.
+        top_level: true,
         ..Default::default()
     };
     let envelope_key = storage.envelope_key().cloned();

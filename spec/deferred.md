@@ -10,14 +10,6 @@ Grouped by area. No priority ordering implied within a group.
 
 ## Storage core & schema
 
-### Bug: MCP write tools mark events non-top-level
-`ohd_mcp_core::put::commit` builds `EventInput { ..Default::default() }`;
-`bool::default()` is `false`, so the `#[serde(default = "default_true")]` on
-`top_level` never applies. Every event written through an MCP write tool
-(`log_food`, `log_symptom`, …) lands `top_level = 0` and is invisible to the
-default `query_events`. Fix: set `top_level: true` explicitly in `commit`.
-Surfaced by the Phase 4f relay integration test.
-
 ### ECG parent event — `measurement.ecg` session
 Samsung ECG imports today as N `measurement.ecg_second` events (one per
 second of waveform, 500 samples each) joined by a `correlation_id`, but with
