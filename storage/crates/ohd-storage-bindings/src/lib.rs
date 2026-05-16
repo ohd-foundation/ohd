@@ -70,6 +70,10 @@ mod pyo3_module;
 // responder. Adds `#[uniffi::export]` items to the binding surface.
 mod remote_access;
 
+// Routes Rust panics to Android logcat — the default handler writes to
+// stderr, which Android discards.
+mod android_panic;
+
 // =============================================================================
 // uniffi setup
 // =============================================================================

@@ -61,8 +61,6 @@ tokio = { version = "1", features = ["rt", "net", "io-util", "sync", "time", "ma
 # into the Android cross-compile cache.
 quinn = "0.11"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
-# OS trust-store fallback for the regular WebPKI path. Builds for Android.
-rustls-platform-verifier = "0.6"
 
 # Registration HTTP client (`POST /v1/register|heartbeat|deregister`).
 # rustls-tls keeps OpenSSL out of the build.

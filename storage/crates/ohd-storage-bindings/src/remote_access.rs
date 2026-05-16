@@ -53,6 +53,7 @@ use crate::{core, OhdError, OhdStorage, Result};
 /// and deliberately.
 #[uniffi::export]
 pub fn generate_storage_identity_key() -> Result<String> {
+    crate::android_panic::install();
     let kp = rcgen::KeyPair::generate_for(&rcgen::PKCS_ED25519).map_err(|e| {
         OhdError::Internal {
             code: "INTERNAL".into(),
@@ -165,6 +166,7 @@ impl OhdStorage {
         identity_key_hex: String,
         share_label: Option<String>,
     ) -> Result<RemoteShareDto> {
+        crate::android_panic::install();
         // Validate the grant exists before paying for a network round trip.
         let _ = self.grant_id_for(&grant_ulid)?;
         let identity_key = crate::hex_decode(&identity_key_hex)?;
@@ -211,6 +213,7 @@ impl OhdStorage {
         identity_key_hex: String,
         allow_insecure_dev: bool,
     ) -> Result<Arc<ShareResponderHandle>> {
+        crate::android_panic::install();
         let grant_id = self.grant_id_for(&grant_ulid)?;
         let identity_key = crate::hex_decode(&identity_key_hex)?;
 

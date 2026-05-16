@@ -64,6 +64,9 @@ rcgen = { version = "0.13", default-features = false, features = ["pem", "ring"]
 hex = "0.4"
 # Structured logging for the background responder task.
 tracing = "0.1"
+# The panic hook logs through the `log` facade; on Android `android_logger`
+# (below) is the backend, routing panics to logcat.
+log = "0.4"
 # uniffi 0.28 is the stable target as of 2026-Q1: ships proc-macro bindings
 # (`#[uniffi::export]`), Kotlin + Swift + Python codegen, and an in-tree
 # `uniffi_bindgen_main()` entrypoint. Newer (0.29+) is API-compatible for our
@@ -77,6 +80,13 @@ thiserror.workspace = true
 # `extension-module` feature is enabled via the cargo `extension-module`
 # feature alias above (maturin's default profile turns it on for us).
 pyo3 = { version = "0.28", features = ["abi3-py311"], optional = true }
+
+# Routes the `log` facade to Android logcat (the panic hook). Android-only —
+# liblog is a platform library; on the host build the `log` macros are inert
+# no-ops with no logger installed. Keeps `#![forbid(unsafe_code)]` intact:
+# the FFI lives inside android_logger, not this crate.
+[target.'cfg(target_os = "android")'.dependencies]
+android_logger = "0.14"
 
 [build-dependencies]
 # `build` feature enables the proc-macro scaffolding hook used by build.rs.

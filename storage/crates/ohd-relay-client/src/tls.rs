@@ -4,12 +4,15 @@
 //! module docs in [`crate::tunnel`]):
 //!
 //! - **Pinned**: verify the leaf cert's SHA-256 matches an operator pin.
-//! - **Webpki + native trust**: verify against the OS trust store via
-//!   [`rustls_platform_verifier`].
-//! - **Insecure** (dev only): accept any cert.
+//! - **Unverified** (no pin): accept the relay's cert without checking it.
+//!   The relay is an untrusted forwarder (`relay-protocol.md` "Trust
+//!   model") — it sees only ciphertext, and the inner TLS, cert-pinned end
+//!   to end to the storage identity, is the real security boundary. The
+//!   relay's QUIC cert is operator-supplied, not CA-signed, so OS-trust-
+//!   store verification would be both wrong and (on Android) unavailable.
+//! - **Insecure** (dev): same accept-any behaviour, selected explicitly.
 //!
-//! This module is portable — `rustls` (ring) + `rustls-platform-verifier`
-//! both cross-compile for the Android targets.
+//! This module is portable — `rustls` (ring) cross-compiles for Android.
 
 use std::sync::Arc;
 
@@ -171,12 +174,18 @@ pub(crate) fn build_client_tls_config(
             .with_custom_certificate_verifier(Arc::new(SpkiPinVerifier::new(pin)?))
             .with_no_client_auth()
     } else {
-        let provider = Arc::new(rustls::crypto::ring::default_provider());
-        let verifier = rustls_platform_verifier::Verifier::new(provider)
-            .map_err(|e| anyhow::anyhow!("rustls-platform-verifier init: {e}"))?;
+        // No pin configured: accept the relay's cert unverified. The relay
+        // is an untrusted forwarder (`relay-protocol.md` "Trust model") —
+        // it carries only ciphertext, and the inner TLS, cert-pinned end to
+        // end to the storage identity, is the real security boundary. The
+        // relay's QUIC cert is operator-supplied and not CA-signed, so
+        // OS-trust-store verification is both wrong here and unavailable on
+        // Android (rustls-platform-verifier needs a JVM Context this crate
+        // cannot obtain — it panics uninitialised). Pass an explicit
+        // `expected_relay_pubkey_pin` to verify the outer hop.
         rustls::ClientConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
             .dangerous()
-            .with_custom_certificate_verifier(Arc::new(verifier))
+            .with_custom_certificate_verifier(Arc::new(InsecureCertVerifier::new()))
             .with_no_client_auth()
     };
     tls.alpn_protocols = vec![alpn.to_vec()];
