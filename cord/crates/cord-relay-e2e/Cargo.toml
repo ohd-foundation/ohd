@@ -1,0 +1,51 @@
+[package]
+name = "cord-relay-e2e"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "OHD CORD Phase 4f — end-to-end integration tests for the relay data plane: CORD's relay MCP client → OHD Relay → phone-side share responder → scoped tool dispatch against a real ohd-storage-core storage."
+publish = false
+
+# This crate has no library / binary surface — it exists only to host the
+# cross-workspace integration test in `tests/`. The test needs to depend
+# simultaneously on CORD's relay MCP client (`cord-agent`), the OHD Relay
+# binary's library (`ohd-relay`), the phone-side share responder
+# (`ohd-relay-client` with the `responder` feature), and the storage +
+# tool-catalog crates. No single existing crate can path-dep all of those,
+# so Phase 4f gets its own integration-test crate — exactly the "create one
+# if needed" the task allows.
+[lib]
+name = "cord_relay_e2e"
+path = "src/lib.rs"
+
+[dependencies]
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time"] }
+serde_json = "1"
+# The relay HTTP surface is an axum `Router`; we serve it on a TCP listener.
+axum = { version = "0.7", features = ["ws", "macros"] }
+
+# CORD's relay MCP client — the consumer side of the data plane.
+cord-agent = { path = "../cord-agent" }
+
+# The OHD Relay binary's library crate — we spin a real relay instance
+# (axum router for register + WS attach, raw QUIC tunnel listener for the
+# storage responder) on ephemeral ports.
+ohd-relay = { path = "../../../relay" }
+
+# The phone-side share responder + the storage / tool-catalog crates it
+# scopes against. `responder` pulls the inner-TLS server + scoped MCP.
+ohd-relay-client = { path = "../../../storage/crates/ohd-relay-client", features = ["responder"] }
+ohd-storage-core = { path = "../../../storage/crates/ohd-storage-core" }
+ohd-mcp-core = { path = "../../../storage/crates/ohd-mcp-core" }
+
+# Inner-TLS / cert-pin primitives shared by both ends.
+ohd-h3-helpers = { path = "../../../storage/crates/ohd-h3-helpers" }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+rcgen = { version = "0.13", default-features = false, features = ["pem", "ring"] }
+# The relay's raw QUIC tunnel listener is a `quinn::Endpoint` we bind on an
+# ephemeral UDP port; pinned to the `ring` provider to match the relay.
+quinn = "0.11"
+tempfile = "3"

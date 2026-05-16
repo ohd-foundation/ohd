@@ -2,39 +2,60 @@
 //!
 //! This is the storage / consumer side of the binary tunnel framing
 //! documented in `relay/spec/relay-protocol.md` "Frame format" and at the
-//! top of `relay/src/quic_tunnel.rs`. It was extracted verbatim from
+//! top of `relay/src/quic_tunnel.rs`. It was extracted from
 //! `ohd-storage-server`'s inline `relay_client` module so the Android
 //! uniffi binding and CORD can speak the same wire without depending on
 //! the server binary crate.
 //!
 //! # Wire shape
 //!
+//! Per `relay/spec/relay-protocol.md` "Frame format" — big-endian, fixed
+//! 12-byte header:
+//!
 //! ```text
-//!   [u32 BE MAGIC = 0x4F484400 (b"OHD\0")]
-//!   [u8  frame_type]
-//!   [u8  flags = 0]
-//!   [u8  reserved = 0]
-//!   [u32 BE session_id]
-//!   [u16 BE payload_len]
-//!   [payload_len bytes payload]
-//! = 13 bytes header + payload.
+//! 0       1       2       3       4
+//! +-------+-------+-------+-------+
+//! | MAGIC | TYPE  | FLAGS | RSVD  |   MAGIC = 0x4F ('O')
+//! +-------+-------+-------+-------+
+//! | SESSION_ID (4 bytes, BE u32)  |   0 = control / unbound
+//! +-------+-------+-------+-------+
+//! | PAYLOAD_LEN (4 bytes, BE u32) |   value capped at 65535
+//! +-------+-------+-------+-------+
+//! | PAYLOAD (PAYLOAD_LEN bytes)   |
+//! +-------+-------+-------+-------+
 //! ```
 //!
+//! # Wire-ABI contract
+//!
+//! This codec is the *consumer / storage* half of the relay's wire ABI.
+//! The relay does **not** forward frames blindly — it decodes and
+//! re-encodes every OPEN / OPEN_ACK / DATA / CLOSE envelope with its own
+//! `ohd_relay::frame::TunnelFrame` codec (`relay/src/quic_tunnel.rs`
+//! `session_reader_loop`, `relay/src/server.rs` `run_consumer_attach`).
+//! So this module is **byte-for-byte identical** to that codec: same
+//! magic, same 12-byte header, same u32 `payload_len`, same frame-type
+//! discriminants. If the relay changes the wire format, this module needs
+//! the matching edit — they are one protocol with two implementations.
+//!
 //! We embed the codec here (rather than depending on `ohd-relay::frame`)
-//! because this crate intentionally has no path-dep on the relay crate —
-//! the frame format is part of the protocol's on-wire ABI. If the relay
-//! changes it, this module needs the matching edit.
+//! because this crate intentionally has no path-dep on the relay crate.
 
 use bytes::Bytes;
 
-/// Magic prefix at the head of every frame: ASCII `OHD\0`.
-pub const FRAME_MAGIC: [u8; 4] = [b'O', b'H', b'D', 0x00];
+/// Magic byte at the head of every frame: ASCII `'O'` for OHD. One byte —
+/// matching the relay's `ohd_relay::frame::MAGIC`.
+pub const FRAME_MAGIC: u8 = 0x4F;
 
 /// Fixed header size in bytes (MAGIC + TYPE + FLAGS + RSVD + SESSION_ID +
-/// PAYLOAD_LEN).
-pub const FRAME_HEADER_LEN: usize = 4 + 1 + 1 + 1 + 4 + 2;
+/// PAYLOAD_LEN = 1 + 1 + 1 + 1 + 4 + 4).
+pub const FRAME_HEADER_LEN: usize = 1 + 1 + 1 + 1 + 4 + 4;
 
-/// Maximum permitted payload length per frame (the wire's u16 field).
+/// Maximum permitted payload length per frame.
+///
+/// Per the wire spec the on-wire `payload_len` is a 32-bit field, but the
+/// value is capped at `u16::MAX` — payloads larger split into multiple
+/// DATA frames. We enforce the cap on both encode and decode, matching
+/// `ohd_relay::frame::MAX_PAYLOAD_LEN`.
 pub const MAX_PAYLOAD_LEN: usize = u16::MAX as usize;
 
 // ---------------------------------------------------------------------------
@@ -42,31 +63,38 @@ pub const MAX_PAYLOAD_LEN: usize = u16::MAX as usize;
 // ---------------------------------------------------------------------------
 
 /// Tunnel frame type byte.
+///
+/// The discriminants match `relay/spec/relay-protocol.md` "Frame types" and
+/// `ohd_relay::frame::FrameType` exactly — the relay parses these bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(u8)]
 pub enum FrameType {
     Hello = 0x01,
-    Ping = 0x02,
-    Pong = 0x03,
-    Open = 0x04,
-    OpenAck = 0x05,
-    OpenNack = 0x06,
-    Data = 0x07,
-    Close = 0x08,
+    Open = 0x02,
+    OpenAck = 0x03,
+    OpenNack = 0x04,
+    Data = 0x05,
+    Close = 0x06,
+    Ping = 0x07,
+    Pong = 0x08,
     WindowUpdate = 0x0A,
 }
 
 impl FrameType {
     /// Parse a type byte. Unknown bytes yield [`FrameError::Other`].
+    ///
+    /// `0x09` (`WAKE_REQUEST`) is intentionally rejected: per the spec it
+    /// is a push notification, not a tunnel frame.
     pub fn from_u8(b: u8) -> Result<Self, FrameError> {
         Ok(match b {
             0x01 => FrameType::Hello,
-            0x02 => FrameType::Ping,
-            0x03 => FrameType::Pong,
-            0x04 => FrameType::Open,
-            0x05 => FrameType::OpenAck,
-            0x06 => FrameType::OpenNack,
-            0x07 => FrameType::Data,
-            0x08 => FrameType::Close,
+            0x02 => FrameType::Open,
+            0x03 => FrameType::OpenAck,
+            0x04 => FrameType::OpenNack,
+            0x05 => FrameType::Data,
+            0x06 => FrameType::Close,
+            0x07 => FrameType::Ping,
+            0x08 => FrameType::Pong,
             0x0A => FrameType::WindowUpdate,
             other => {
                 return Err(FrameError::Other(format!(
@@ -113,12 +141,12 @@ impl std::error::Error for FrameError {}
 pub fn encode_frame(frame_type: FrameType, session_id: u32, payload: &[u8]) -> Vec<u8> {
     debug_assert!(payload.len() <= MAX_PAYLOAD_LEN);
     let mut buf = Vec::with_capacity(FRAME_HEADER_LEN + payload.len());
-    buf.extend_from_slice(&FRAME_MAGIC);
+    buf.push(FRAME_MAGIC);
     buf.push(frame_type as u8);
     buf.push(0); // flags
     buf.push(0); // reserved
     buf.extend_from_slice(&session_id.to_be_bytes());
-    buf.extend_from_slice(&(payload.len() as u16).to_be_bytes());
+    buf.extend_from_slice(&(payload.len() as u32).to_be_bytes());
     buf.extend_from_slice(payload);
     buf
 }
@@ -132,21 +160,26 @@ pub fn decode_one_frame(buf: &[u8]) -> Result<(Frame, usize), FrameError> {
     if buf.len() < FRAME_HEADER_LEN {
         return Err(FrameError::Truncated);
     }
-    if buf[0..4] != FRAME_MAGIC {
-        return Err(FrameError::Other(format!("bad magic: {:02x?}", &buf[0..4])));
+    if buf[0] != FRAME_MAGIC {
+        return Err(FrameError::Other(format!("bad magic: 0x{:02x}", buf[0])));
     }
-    let frame_type = FrameType::from_u8(buf[4])?;
-    if buf[5] != 0 {
-        return Err(FrameError::Other(format!("non-zero flags: 0x{:02x}", buf[5])));
+    let frame_type = FrameType::from_u8(buf[1])?;
+    if buf[2] != 0 {
+        return Err(FrameError::Other(format!("non-zero flags: 0x{:02x}", buf[2])));
     }
-    if buf[6] != 0 {
+    if buf[3] != 0 {
         return Err(FrameError::Other(format!(
             "non-zero reserved: 0x{:02x}",
-            buf[6]
+            buf[3]
         )));
     }
-    let session_id = u32::from_be_bytes([buf[7], buf[8], buf[9], buf[10]]);
-    let payload_len = u16::from_be_bytes([buf[11], buf[12]]) as usize;
+    let session_id = u32::from_be_bytes([buf[4], buf[5], buf[6], buf[7]]);
+    let payload_len = u32::from_be_bytes([buf[8], buf[9], buf[10], buf[11]]) as usize;
+    if payload_len > MAX_PAYLOAD_LEN {
+        return Err(FrameError::Other(format!(
+            "payload too large: {payload_len} bytes (max {MAX_PAYLOAD_LEN})"
+        )));
+    }
     let total = FRAME_HEADER_LEN + payload_len;
     if buf.len() < total {
         return Err(FrameError::Truncated);
@@ -179,6 +212,13 @@ mod tests {
         assert_eq!(frame.frame_type, FrameType::Data);
         assert_eq!(frame.session_id, 42);
         assert_eq!(&frame.payload[..], payload);
+    }
+
+    #[test]
+    fn frame_header_len_matches_relay() {
+        // The relay's `ohd_relay::frame::HEADER_LEN` is 12. The two codecs
+        // are one protocol; if this drifts the tunnel breaks.
+        assert_eq!(FRAME_HEADER_LEN, 12);
     }
 
     #[test]
@@ -256,7 +296,7 @@ mod tests {
     #[test]
     fn frame_decode_unknown_type() {
         let mut bytes = encode_frame(FrameType::Data, 1, b"x");
-        bytes[4] = 0xEE;
+        bytes[1] = 0xEE;
         match decode_one_frame(&bytes) {
             Err(FrameError::Other(_)) => {}
             other => panic!("expected Other, got {other:?}"),
@@ -266,7 +306,7 @@ mod tests {
     #[test]
     fn frame_decode_nonzero_reserved() {
         let mut bytes = encode_frame(FrameType::Data, 1, b"x");
-        bytes[6] = 0xAA;
+        bytes[3] = 0xAA;
         match decode_one_frame(&bytes) {
             Err(FrameError::Other(_)) => {}
             other => panic!("expected Other, got {other:?}"),

@@ -36,7 +36,13 @@ tower = "0.5"
 tower-http = { version = "0.5", features = ["trace"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-rusqlite = { version = "0.31", features = ["bundled"] }
+# Pinned to 0.32 to match `ohd-storage-core` — when the relay and the
+# storage stack are linked into one dependency graph (the Phase 4f relay
+# data-plane integration test in `cord/crates/cord-relay-e2e`), Cargo
+# forbids two crates that both `links = "sqlite3"`. One rusqlite version
+# across the graph keeps that resolvable. The relay uses only the basic
+# `Connection` / `params` / `Row` surface, unchanged across 0.31→0.32.
+rusqlite = { version = "0.32", features = ["bundled"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 rand = "0.8"

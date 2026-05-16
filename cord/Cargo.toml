@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/cord-server", "crates/cord-agent"]
+members = ["crates/cord-server", "crates/cord-agent", "crates/cord-relay-e2e"]
 
 [workspace.package]
 version = "0.1.0"
