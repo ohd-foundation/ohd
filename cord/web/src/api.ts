@@ -27,7 +27,10 @@ export interface AuthProvider {
   issuer: string;
 }
 
-export interface Source {
+// A connected data store. The backend calls this a "source" on the wire
+// (URLs `/v1/sources*`, JSON fields unchanged); the UI labels it a
+// "Connection". `Connection` is the name used throughout the UI code.
+export interface Connection {
   id: string;
   label: string;
   kind: string;
@@ -38,6 +41,9 @@ export interface Source {
   last_ok_at: string | null;
   [k: string]: unknown;
 }
+
+// Wire-compatible alias kept for clarity at the API boundary.
+export type Source = Connection;
 
 export interface SystemProvider {
   id: string;
@@ -152,29 +158,31 @@ export const api = {
     return request("GET", "/v1/me");
   },
 
-  // ---- Sources -------------------------------------------------------------
+  // ---- Connections ---------------------------------------------------------
+  // The wire still calls these "sources" (`/v1/sources*`, `{sources:[...]}`,
+  // `source_id`); the UI labels them "Connections". URLs/JSON are unchanged.
 
-  sources(): Promise<{ sources: Source[] }> {
+  connections(): Promise<{ sources: Connection[] }> {
     return request("GET", "/v1/sources");
   },
 
-  connectSource(
+  addConnection(
     body:
       | { label?: string; link: string }
       | { label?: string; endpoint: string; token: string; pin?: string },
-  ): Promise<{ source: Source }> {
+  ): Promise<{ source: Connection }> {
     return request("POST", "/v1/sources/connect", body);
   },
 
-  source(id: string): Promise<{ source: Source }> {
+  connection(id: string): Promise<{ source: Connection }> {
     return request("GET", `/v1/sources/${encodeURIComponent(id)}`);
   },
 
-  refreshSource(id: string): Promise<{ source: Source }> {
+  refreshConnection(id: string): Promise<{ source: Connection }> {
     return request("POST", `/v1/sources/${encodeURIComponent(id)}/refresh`);
   },
 
-  deleteSource(id: string): Promise<{ ok: boolean }> {
+  deleteConnection(id: string): Promise<{ ok: boolean }> {
     return request("DELETE", `/v1/sources/${encodeURIComponent(id)}`);
   },
 

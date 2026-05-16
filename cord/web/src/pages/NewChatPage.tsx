@@ -1,35 +1,31 @@
 import { useEffect, useMemo, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
-import {
-  api,
-  ApiError,
-  type ModelsInfo,
-  type Source,
-} from "../api";
+import { Link, useNavigate, useParams } from "react-router-dom";
+import { api, ApiError, type ModelsInfo } from "../api";
 import { ErrorBanner, Spinner } from "../components/common";
+import { useData } from "../data";
 
-// Landing pane: pick a source + model and start a conversation.
+// Start a conversation scoped to one Connection. The Connection is fixed by
+// the route (/connections/:connId/new-conversation); only the model is
+// chosen here.
 export default function NewChatPage() {
+  const { connId } = useParams();
   const navigate = useNavigate();
-  const [sources, setSources] = useState<Source[] | null>(null);
+  const { connections, reload, connectionById } = useData();
+
   const [models, setModels] = useState<ModelsInfo | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
 
-  const [sourceId, setSourceId] = useState("");
   const [model, setModel] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
 
   useEffect(() => {
-    Promise.all([api.sources(), api.models()])
-      .then(([s, m]) => {
-        setSources(s.sources);
-        setModels(m);
-        if (s.sources.length > 0) setSourceId(s.sources[0].id);
-      })
+    api
+      .models()
+      .then(setModels)
       .catch((e) =>
         setLoadError(
-          e instanceof ApiError ? e.message : "Failed to load setup data",
+          e instanceof ApiError ? e.message : "Failed to load models",
         ),
       );
   }, []);
@@ -53,17 +49,35 @@ export default function NewChatPage() {
     return out;
   }, [models]);
 
+  if (!connections || (!models && !loadError)) return <Spinner />;
+
+  const conn = connId ? connectionById(connId) : undefined;
+  if (!conn) {
+    return (
+      <div className="page">
+        <div className="page-head">
+          <div>
+            <h1>Connection not found</h1>
+            <p>Pick a connection to start a conversation.</p>
+          </div>
+        </div>
+        <Link to="/">Back to home</Link>
+      </div>
+    );
+  }
+
   const onCreate = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!sourceId) return;
     setSubmitting(true);
     setFormError(null);
     try {
+      // `source_id` is the wire field — unchanged by the UI relabel.
       const body: { source_id: string; model?: string } = {
-        source_id: sourceId,
+        source_id: conn.id,
       };
       if (model) body.model = model;
       const { chat } = await api.createChat(body);
+      await reload();
       navigate(`/chats/${chat.id}`);
     } catch (e) {
       setFormError(
@@ -73,79 +87,59 @@ export default function NewChatPage() {
     }
   };
 
-  if (!sources && !loadError) return <Spinner />;
-
   return (
     <div className="page">
       <div className="page-head">
         <div>
           <h1>New conversation</h1>
-          <p>Pick a data source and a model to begin.</p>
+          <p>
+            With connection <strong>{conn.label}</strong>. Pick a model to
+            begin.
+          </p>
         </div>
       </div>
 
       {loadError && <ErrorBanner message={loadError} />}
 
-      {sources && sources.length === 0 && (
-        <div className="banner info">
-          You have no connected data sources yet.{" "}
-          <Link to="/sources">Connect a source</Link> to start a conversation.
-        </div>
-      )}
-
-      {sources && sources.length > 0 && (
-        <form className="card newchat-form" onSubmit={onCreate}>
-          <div style={{ padding: 24 }}>
-            <div className="field">
-              <label htmlFor="src">Data source</label>
-              <select
-                id="src"
-                value={sourceId}
-                onChange={(e) => setSourceId(e.target.value)}
-              >
-                {sources.map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.label} — {s.status}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div className="field">
-              <label htmlFor="model">Model</label>
-              <select
-                id="model"
-                value={model}
-                onChange={(e) => setModel(e.target.value)}
-              >
-                <option value="">
-                  Deployment default
-                  {models?.default_provider
-                    ? ` (${models.default_provider})`
-                    : ""}
+      <form className="card newchat-form" onSubmit={onCreate}>
+        <div style={{ padding: 24 }}>
+          <div className="field">
+            <label htmlFor="model">Model</label>
+            <select
+              id="model"
+              value={model}
+              onChange={(e) => setModel(e.target.value)}
+            >
+              <option value="">
+                Deployment default
+                {models?.default_provider
+                  ? ` (${models.default_provider})`
+                  : ""}
+              </option>
+              {modelChoices.map((c) => (
+                <option key={c.value} value={c.value}>
+                  {c.label}
                 </option>
-                {modelChoices.map((c) => (
-                  <option key={c.value} value={c.value}>
-                    {c.label}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            {formError && <ErrorBanner message={formError} />}
-
-            <div style={{ marginTop: 16 }}>
-              <button
-                type="submit"
-                className="primary"
-                disabled={submitting || !sourceId}
-              >
-                {submitting ? "Starting…" : "Start conversation"}
-              </button>
-            </div>
+              ))}
+            </select>
           </div>
-        </form>
-      )}
+
+          {formError && <ErrorBanner message={formError} />}
+
+          <div className="row" style={{ marginTop: 16 }}>
+            <button type="submit" className="primary" disabled={submitting}>
+              {submitting ? "Starting…" : "Start conversation"}
+            </button>
+            <button
+              type="button"
+              className="ghost"
+              onClick={() => navigate(`/connections/${conn.id}`)}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      </form>
     </div>
   );
 }

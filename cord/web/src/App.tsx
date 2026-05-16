@@ -3,9 +3,11 @@ import { AuthProvider, useAuth } from "./auth";
 import { Spinner } from "./components/common";
 import Layout from "./components/Layout";
 import LoginPage from "./pages/LoginPage";
+import HomePage from "./pages/HomePage";
+import ConnectionPage from "./pages/ConnectionPage";
 import NewChatPage from "./pages/NewChatPage";
 import ChatPage from "./pages/ChatPage";
-import SourcesPage from "./pages/SourcesPage";
+import ConnectionsPage from "./pages/ConnectionsPage";
 import ModelsPage from "./pages/ModelsPage";
 
 // Gates the app shell on an authenticated session.
@@ -29,9 +31,14 @@ export default function App() {
       <Routes>
         <Route path="/login" element={<LoginGate />} />
         <Route element={<RequireAuth />}>
-          <Route path="/" element={<NewChatPage />} />
+          <Route path="/" element={<HomePage />} />
+          <Route path="/connections/new" element={<ConnectionsPage />} />
+          <Route path="/connections/:connId" element={<ConnectionPage />} />
+          <Route
+            path="/connections/:connId/new-conversation"
+            element={<NewChatPage />}
+          />
           <Route path="/chats/:chatId" element={<ChatPage />} />
-          <Route path="/sources" element={<SourcesPage />} />
           <Route path="/models" element={<ModelsPage />} />
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />

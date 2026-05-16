@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useParams } from "react-router-dom";
+import { Link, useParams } from "react-router-dom";
 import {
   api,
   ApiError,
@@ -8,6 +8,7 @@ import {
   type ChatMessage,
 } from "../api";
 import { ErrorBanner, InfoBanner, Spinner } from "../components/common";
+import { useData } from "../data";
 
 // A message that may still be streaming (no persisted id yet).
 interface LocalMessage extends Omit<ChatMessage, "id"> {
@@ -17,6 +18,7 @@ interface LocalMessage extends Omit<ChatMessage, "id"> {
 
 export default function ChatPage() {
   const { chatId } = useParams();
+  const { connectionById } = useData();
   const [detail, setDetail] = useState<ChatDetail | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
 
@@ -154,11 +156,21 @@ export default function ChatPage() {
   }
   if (!detail) return <Spinner />;
 
+  const conn = connectionById(detail.chat.source_id);
+
   return (
     <div className="chat-view">
       <div className="chat-header">
-        <span className="title">
-          {detail.chat.title || "Untitled conversation"}
+        <span>
+          <span className="title">
+            {detail.chat.title || "Untitled conversation"}
+          </span>
+          <span className="faint" style={{ fontSize: 12.5, marginLeft: 8 }}>
+            ·{" "}
+            <Link to={`/connections/${detail.chat.source_id}`}>
+              {conn?.label || "connection"}
+            </Link>
+          </span>
         </span>
         <span className="faint" style={{ fontSize: 12.5 }}>
           {detail.chat.model || "default model"}
@@ -169,8 +181,8 @@ export default function ChatPage() {
         <div className="messages">
           {messages.length === 0 && (
             <p className="faint" style={{ textAlign: "center" }}>
-              Send a message to begin. The agent reads the connected data
-              source on your behalf.
+              Send a message to begin. The agent reads this connection on
+              your behalf.
             </p>
           )}
           {messages.map((m) => (
