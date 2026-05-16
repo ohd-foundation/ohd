@@ -50,13 +50,24 @@ impl ModelProvider for AnthropicProvider {
             "tools": tools.iter().map(tool_json).collect::<Vec<_>>(),
             "messages": messages.iter().map(message_json).collect::<Vec<_>>(),
         });
-        let resp = self
+        // Auth depends on the credential kind:
+        //  - `sk-ant-api…` — a standard API key, sent via `x-api-key`.
+        //  - `sk-ant-oat…` — a Claude Code OAuth token, sent as
+        //    `Authorization: Bearer` with the oauth beta flag (matches the
+        //    on-device CORD client; subscription-scoped, not for shared use).
+        let mut req = self
             .http
             .post(API_URL)
-            .header("x-api-key", &self.api_key)
             .header("anthropic-version", API_VERSION)
             .header("content-type", "application/json")
-            .header("accept", "text/event-stream")
+            .header("accept", "text/event-stream");
+        req = if self.api_key.starts_with("sk-ant-oat") {
+            req.header("authorization", format!("Bearer {}", self.api_key))
+                .header("anthropic-beta", "oauth-2025-04-20")
+        } else {
+            req.header("x-api-key", &self.api_key)
+        };
+        let resp = req
             .json(&body)
             .send()
             .await

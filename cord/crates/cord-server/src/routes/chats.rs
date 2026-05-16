@@ -137,27 +137,44 @@ pub async fn send_message(
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
 }
 
-/// Resolve a chat's `model` (a configured provider id) to a live
-/// [`ModelProvider`] + the concrete model name to call. Phase 2 wires
-/// Anthropic; other provider kinds are an honest 501.
+/// Resolve a chat's `model` field to a live [`ModelProvider`] + the
+/// concrete model name to call. The field may be either a configured
+/// provider id (→ that provider's default/first model) or a concrete
+/// model name listed under some provider (the SPA's model picker sends
+/// the model name). Phase 2 wires Anthropic; other kinds are a 501.
 fn resolve_provider(
     app: &AppState,
-    provider_id: &str,
+    requested: &str,
 ) -> ApiResult<(Arc<dyn ModelProvider>, String)> {
-    let cfg = app.config.model_provider(provider_id).ok_or_else(|| {
-        ApiError::BadRequest(format!("unknown model provider `{provider_id}`"))
-    })?;
+    let (cfg, model_name) = match app.config.model_provider(requested) {
+        // A provider id → its default (first-listed) model.
+        Some(p) => {
+            let model = p
+                .models
+                .first()
+                .cloned()
+                .unwrap_or_else(|| "claude-sonnet-4-6".to_string());
+            (p, model)
+        }
+        // Not a provider id — try it as a model name under some provider.
+        None => {
+            let p = app
+                .config
+                .model_providers
+                .iter()
+                .find(|p| p.models.iter().any(|m| m == requested))
+                .ok_or_else(|| {
+                    ApiError::BadRequest(format!("unknown model `{requested}`"))
+                })?;
+            (p, requested.to_string())
+        }
+    };
     if cfg.api_key.is_empty() {
         return Err(ApiError::BadRequest(format!(
             "model provider `{}` has no API key configured",
             cfg.id
         )));
     }
-    let model_name = cfg
-        .models
-        .first()
-        .cloned()
-        .unwrap_or_else(|| "claude-sonnet-4-6".to_string());
     let provider: Arc<dyn ModelProvider> = match cfg.kind.as_str() {
         "anthropic" => Arc::new(AnthropicProvider::new(cfg.api_key.clone())),
         other => {
