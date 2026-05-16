@@ -132,11 +132,30 @@ pub fn connect_service(storage: Arc<Storage>) -> connectrpc::ConnectRpcService {
 /// `fallback_service`, so the OAuth routes simply shadow specific paths
 /// while everything else (including the `/ohdc.v0.*` Connect-RPC paths) hits
 /// the Connect-RPC fallback.
+// `serve` is the no-providers convenience entry; the binary calls
+// `serve_with_providers` directly. Integration tests still use `serve`, so it
+// stays `pub` — `#[allow(dead_code)]` silences the binary-crate's view.
+#[allow(dead_code)]
 pub async fn serve(
     storage: Arc<Storage>,
     addr: SocketAddr,
     cors: bool,
     oauth_issuer: Option<String>,
+) -> anyhow::Result<()> {
+    serve_with_providers(storage, addr, cors, oauth_issuer, Arc::new(Vec::new())).await
+}
+
+/// Like [`serve`] but with a configured OIDC-RP provider catalog. When the
+/// catalog is non-empty (and `oauth_issuer` is set), the storage AS login
+/// page offers "Sign in with <provider>" — the OIDC-RP login flow per
+/// `connect/spec/auth.md`. An empty catalog keeps the on-device fast path
+/// (paste a self-session token) as the only login option.
+pub async fn serve_with_providers(
+    storage: Arc<Storage>,
+    addr: SocketAddr,
+    cors: bool,
+    oauth_issuer: Option<String>,
+    providers: Arc<Vec<crate::oauth::OidcProvider>>,
 ) -> anyhow::Result<()> {
     // Idempotently ensure OAuth state tables + signing key are present when
     // the issuer is set. Cheap on the warm path (CREATE TABLE IF NOT EXISTS
@@ -177,6 +196,7 @@ pub async fn serve(
             let state = crate::oauth::OauthState {
                 storage: Arc::clone(&storage),
                 issuer: issuer.clone(),
+                providers: Arc::clone(&providers),
             };
             app = app.merge(crate::oauth::router(state));
         }

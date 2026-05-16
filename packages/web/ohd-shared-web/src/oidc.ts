@@ -92,6 +92,15 @@ export interface OidcOptions {
   onSessionSaved?: (session: OidcSession) => void;
   /** Called by `clearSession` so the legacy mirror can be wiped too. */
   onSessionCleared?: () => void;
+  /**
+   * Extra query parameters appended to the AS `/authorize` request. OHD
+   * Storage's AS reads `provider=<key>` to deep-link straight to a
+   * configured upstream OIDC provider (e.g. `ohd_account`) — skipping its
+   * provider-picker page. Standard OAuth params (`response_type`,
+   * `client_id`, `redirect_uri`, `scope`, `code_challenge`, `state`) are set
+   * by the engine and take precedence.
+   */
+  extraAuthorizeParams?: Record<string, string>;
 }
 
 // ---------------------------------------------------------------------------
@@ -219,6 +228,14 @@ export async function beginLogin(opts: OidcOptions): Promise<never> {
   }
 
   const url = new URL(as.authorization_endpoint);
+  // Caller-supplied extras first (e.g. `provider=ohd_account`); the
+  // standard OAuth params below overwrite any collision so the flow stays
+  // well-formed.
+  if (opts.extraAuthorizeParams) {
+    for (const [key, value] of Object.entries(opts.extraAuthorizeParams)) {
+      url.searchParams.set(key, value);
+    }
+  }
   url.searchParams.set("response_type", "code");
   url.searchParams.set("client_id", opts.clientId);
   url.searchParams.set("redirect_uri", opts.redirectUri);

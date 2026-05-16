@@ -1,26 +1,38 @@
 import { useState } from "react";
-import { beginLogin, defaultOidcConfig, type OidcConfig } from "../ohdc/oidc";
+import {
+  beginLogin,
+  defaultOidcConfig,
+  OHD_ACCOUNT_PROVIDER,
+  type OidcConfig,
+} from "../ohdc/oidc";
 
 /**
  * Self-session sign-in page. Starts the OAuth 2.0 Authorization Code +
  * PKCE flow against the user's OHD Storage instance. Storage takes
- * over the upstream OIDC step (Google / Apple / etc.) per
+ * over the upstream OIDC step (Google / Apple / OHD Account / etc.) per
  * `spec/docs/design/auth.md` "Role split"; the SPA never sees the
  * upstream id_token.
+ *
+ * Two entry points:
+ *  - **Sign in with OHD** deep-links the storage AS straight to OHD's
+ *    first-party identity provider (`accounts.ohd.dev`) — the no-big-tech
+ *    path. This is the primary action for OHD Cloud users.
+ *  - **Other sign-in options** lands on the storage AS's own login page,
+ *    which lists whatever providers the operator enabled.
  */
 export function LoginPage() {
   const [config, setConfig] = useState<OidcConfig>(() => defaultOidcConfig());
   const [error, setError] = useState<string | null>(null);
-  const [pending, setPending] = useState(false);
+  const [pending, setPending] = useState<null | "ohd" | "other">(null);
   const isConfigured = !!config.storageUrl && !!config.clientId;
 
-  const handleSignIn = async () => {
+  const handleSignIn = async (providerHint?: string) => {
     setError(null);
-    setPending(true);
+    setPending(providerHint ? "ohd" : "other");
     try {
-      await beginLogin(config);
+      await beginLogin(config, providerHint);
     } catch (err) {
-      setPending(false);
+      setPending(null);
       setError(err instanceof Error ? err.message : String(err));
     }
   };
@@ -31,7 +43,7 @@ export function LoginPage() {
       <p className="muted">
         OHD Connect signs you in via your OHD Storage instance, which
         delegates to whichever identity provider you (or your operator)
-        configured — Google, Apple, Microsoft, GitHub, OHD Account, or
+        configured — OHD Account, Google, Apple, Microsoft, GitHub, or
         a custom OIDC issuer. We use OAuth 2.0 Authorization Code +
         PKCE; no passwords are sent to this app.
       </p>
@@ -70,10 +82,18 @@ export function LoginPage() {
         <button
           type="button"
           className="btn btn-primary"
-          disabled={!isConfigured || pending}
-          onClick={handleSignIn}
+          disabled={!isConfigured || pending !== null}
+          onClick={() => handleSignIn(OHD_ACCOUNT_PROVIDER)}
         >
-          {pending ? "Redirecting…" : "Sign in"}
+          {pending === "ohd" ? "Redirecting…" : "Sign in with OHD"}
+        </button>
+        <button
+          type="button"
+          className="btn"
+          disabled={!isConfigured || pending !== null}
+          onClick={() => handleSignIn()}
+        >
+          {pending === "other" ? "Redirecting…" : "Other sign-in options"}
         </button>
         {error && (
           <p className="error" style={{ color: "var(--danger, #b00020)" }}>
@@ -81,12 +101,13 @@ export function LoginPage() {
           </p>
         )}
         <p className="muted" style={{ fontSize: 12 }}>
-          Set <code>VITE_OIDC_STORAGE_URL</code>,{" "}
+          <b>Sign in with OHD</b> uses OHD's own identity provider
+          (<code>accounts.ohd.dev</code>) — no big-tech account needed.{" "}
+          <b>Other sign-in options</b> shows your storage operator's full
+          provider list. Set <code>VITE_OIDC_STORAGE_URL</code>,{" "}
           <code>VITE_OIDC_CLIENT_ID</code>,{" "}
           <code>VITE_OIDC_REDIRECT_URI</code>, and{" "}
           <code>VITE_OIDC_SCOPE</code> at build time to skip this form.
-          The paste-token UX on Settings → Storage continues to work as
-          a fast path while storage's OAuth surface stabilises.
         </p>
       </div>
     </div>

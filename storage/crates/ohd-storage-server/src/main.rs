@@ -160,6 +160,19 @@ enum Command {
         /// deployments delegate to external IdPs.
         #[arg(long, value_name = "URL")]
         oauth_issuer: Option<String>,
+        /// Configure an upstream OIDC provider the storage AS delegates login
+        /// to (the OIDC-RP side). Repeatable. Server/cloud deployments pass
+        /// `--oauth-provider ohd_account` so remote users can "Sign in with
+        /// OHD" via `accounts.ohd.dev`. On-device / self-hosted storage omits
+        /// this — the paste-a-self-session-token login UX still works.
+        ///
+        /// Forms: `ohd_account` (built-in), `ohd_account=https://accounts.example`
+        /// (built-in shape, custom issuer), or `KEY=ISSUER` for any compliant
+        /// OIDC provider. Per-provider `client_id` / `client_secret` come from
+        /// `OHD_OAUTH_PROVIDER_<KEY>_CLIENT_ID` / `_CLIENT_SECRET` env vars so
+        /// secrets stay out of argv. Only meaningful with `--oauth-issuer`.
+        #[arg(long = "oauth-provider", value_name = "SPEC")]
+        oauth_providers: Vec<String>,
     },
     /// Issue a grant token bound to a freshly-created grant row. The grant
     /// is owned by the file's `_meta.user_ulid`. Demos / tactical use only;
@@ -291,6 +304,7 @@ fn main() -> anyhow::Result<()> {
             relay_cert_pin,
             relay_allow_insecure,
             oauth_issuer,
+            oauth_providers,
         } => {
             let addr = match port {
                 Some(p) => SocketAddr::new(listen.ip(), p),
@@ -305,6 +319,31 @@ fn main() -> anyhow::Result<()> {
             if oauth_issuer.is_some() {
                 tracing::info!(issuer = ?oauth_issuer, "OAuth/OIDC IdP endpoints enabled");
             }
+            // Parse the configured OIDC-RP provider catalog (the upstream
+            // providers — `ohd_account` etc. — the AS delegates login to).
+            let mut parsed_providers = Vec::new();
+            for spec in &oauth_providers {
+                match oauth::OidcProvider::parse_spec(spec) {
+                    Ok(p) => {
+                        tracing::info!(
+                            key = %p.key,
+                            issuer = %p.issuer,
+                            "OIDC-RP login provider configured"
+                        );
+                        parsed_providers.push(p);
+                    }
+                    Err(e) => {
+                        return Err(anyhow::anyhow!("invalid --oauth-provider {spec:?}: {e}"));
+                    }
+                }
+            }
+            if !parsed_providers.is_empty() && oauth_issuer.is_none() {
+                return Err(anyhow::anyhow!(
+                    "--oauth-provider requires --oauth-issuer (the AS must be enabled \
+                     for OIDC-RP login to be reachable)"
+                ));
+            }
+            let providers = Arc::new(parsed_providers);
             tracing::info!(addr=%addr, h3=?http3_listen, path=%storage.path().display(), cors=!no_cors, oauth=?oauth_issuer, "serving OHDC");
             let runtime = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
@@ -316,8 +355,16 @@ fn main() -> anyhow::Result<()> {
                 // bodies are identical regardless of transport.
                 let h2_storage = Arc::clone(&storage);
                 let oauth_issuer_for_h2 = oauth_issuer.clone();
+                let providers_for_h2 = Arc::clone(&providers);
                 let h2_task = tokio::spawn(async move {
-                    server::serve(h2_storage, addr, !no_cors, oauth_issuer_for_h2).await
+                    server::serve_with_providers(
+                        h2_storage,
+                        addr,
+                        !no_cors,
+                        oauth_issuer_for_h2,
+                        providers_for_h2,
+                    )
+                    .await
                 });
                 let h3_task = if let Some(h3_addr) = http3_listen {
                     let h3_storage = Arc::clone(&storage);

@@ -78,7 +78,24 @@ export function defaultOidcConfig(): OidcConfig {
 // Connect-flavoured options for the shared engine
 // ---------------------------------------------------------------------------
 
-export function toSharedOptions(config: OidcConfig): OidcOptions {
+/**
+ * Catalog key for OHD's first-party OIDC provider (the `ohd-idp` service at
+ * `accounts.ohd.dev`). Passing this to {@link beginLogin} deep-links the
+ * storage AS straight to "Sign in with OHD".
+ */
+export const OHD_ACCOUNT_PROVIDER = "ohd_account";
+
+/**
+ * Build the shared-engine options.
+ *
+ * `providerHint` (optional) is forwarded to the storage AS as
+ * `?provider=<key>` so the AS skips its provider-picker page and delegates
+ * straight to that upstream OIDC provider.
+ */
+export function toSharedOptions(
+  config: OidcConfig,
+  providerHint?: string
+): OidcOptions {
   return {
     issuer: config.storageUrl,
     clientId: config.clientId,
@@ -88,6 +105,7 @@ export function toSharedOptions(config: OidcConfig): OidcOptions {
     sessionStorageBackend: "session",
     storageNamespace: "ohd-connect",
     idTokenClaims: "skip",
+    extraAuthorizeParams: providerHint ? { provider: providerHint } : undefined,
     onSessionSaved: (s) => {
       // Mirror the access token under the legacy storage key so existing
       // call sites in `client.ts` continue to read it.
@@ -113,14 +131,17 @@ function toSelf(s: OidcSession): SelfSession {
 // Public surface — same names + shapes as before
 // ---------------------------------------------------------------------------
 
-export async function beginLogin(config: OidcConfig): Promise<never> {
+export async function beginLogin(
+  config: OidcConfig,
+  providerHint?: string
+): Promise<never> {
   if (!config.storageUrl) {
     throw new Error(
       "OIDC storage URL not configured. Set VITE_OIDC_STORAGE_URL or " +
         "fill in the Sign-in form."
     );
   }
-  return await beginLoginShared(toSharedOptions(config));
+  return await beginLoginShared(toSharedOptions(config, providerHint));
 }
 
 export async function completeLogin(params: CallbackParams): Promise<SelfSession> {

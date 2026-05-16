@@ -93,4 +93,30 @@ CREATE TABLE IF NOT EXISTS oauth_refresh_tokens (
 );
 CREATE INDEX IF NOT EXISTS idx_oauth_refresh_tokens_lookup
     ON oauth_refresh_tokens(refresh_token_hash);
+
+-- Pending OIDC-RP login flows. When a user picks an upstream provider on the
+-- storage AS login page, the AS stashes the in-progress downstream
+-- authorization request here, keyed by the random `oidc_state` it sends to
+-- the provider. The `/oauth/oidc-callback` handler looks the row up by the
+-- `state` the provider echoes back, completes the upstream exchange, and then
+-- resumes the downstream authorization-code issuance.
+CREATE TABLE IF NOT EXISTS oauth_pending_logins (
+    id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+    oidc_state            TEXT NOT NULL UNIQUE,   -- state sent to the upstream provider
+    oidc_nonce            TEXT NOT NULL,          -- nonce sent to the upstream provider
+    pkce_verifier         TEXT NOT NULL,          -- our PKCE verifier toward the provider
+    provider_key          TEXT NOT NULL,          -- catalog key (e.g. 'ohd_account')
+    -- The downstream (OHD-client-facing) authorization request we must resume:
+    client_id             TEXT NOT NULL,
+    redirect_uri          TEXT NOT NULL,
+    scope                 TEXT NOT NULL,
+    client_state          TEXT NOT NULL,          -- the OHD client's own `state`
+    code_challenge        TEXT NOT NULL,          -- the OHD client's PKCE challenge
+    code_challenge_method TEXT NOT NULL,
+    issued_at_ms          INTEGER NOT NULL,
+    expires_at_ms         INTEGER NOT NULL,
+    used_at_ms            INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_oauth_pending_logins_state
+    ON oauth_pending_logins(oidc_state);
 "#;

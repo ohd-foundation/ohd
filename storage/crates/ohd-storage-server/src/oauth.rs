@@ -66,12 +66,17 @@ use sha2::{Digest, Sha256};
 //      directory rule is computed from the *test file's* directory, so the
 //      default search would look at `tests/oauth/schema.rs` and miss.
 //      Spelling out the path makes both invocations point at the same files.
+#[path = "oauth/providers.rs"]
+pub mod providers;
 #[path = "oauth/schema.rs"]
 pub mod schema;
 #[path = "oauth/signing.rs"]
 pub mod signing;
 
+pub use providers::OidcProvider;
 pub use schema::bootstrap;
+
+use ohd_storage_core::identities as ohd_identities;
 
 /// Default authorization-code TTL (seconds). One minute.
 const AUTH_CODE_TTL_S: i64 = 60;
@@ -83,6 +88,9 @@ const REFRESH_TOKEN_TTL_S: i64 = 30 * 86_400;
 const DEVICE_CODE_TTL_S: i64 = 600;
 /// Default device-code poll interval (seconds).
 const DEVICE_CODE_POLL_INTERVAL_S: i64 = 5;
+/// TTL for an in-progress OIDC-RP login (`oauth_pending_logins`). Ten minutes
+/// — covers the user's round-trip through the upstream provider's login page.
+const PENDING_LOGIN_TTL_S: i64 = 600;
 
 /// Live config + handle bundle owned by the axum sub-router.
 #[derive(Clone)]
@@ -91,6 +99,17 @@ pub struct OauthState {
     /// Issuer URL. Configurable via `--oauth-issuer`. Used as `iss` in
     /// id_tokens and as the discovery doc base URL.
     pub issuer: String,
+    /// Upstream OIDC providers the AS can delegate login to (the RP side).
+    /// Empty => no provider login; only the paste-a-self-session-token UX is
+    /// offered (on-device / self-hosted mode). Server/cloud storage configures
+    /// at least `ohd_account`. See [`providers`].
+    pub providers: Arc<Vec<OidcProvider>>,
+}
+
+impl OauthState {
+    fn provider(&self, key: &str) -> Option<&OidcProvider> {
+        self.providers.iter().find(|p| p.key == key)
+    }
 }
 
 /// Build the axum Router that serves the OIDC + OAuth endpoints. Mount at
@@ -108,6 +127,12 @@ pub fn router(state: OauthState) -> Router {
         )
         .route("/oauth/jwks.json", get(jwks_handler))
         .route("/oauth/authorize", get(authorize_get).post(authorize_post))
+        // OIDC-RP callback: where a configured upstream provider
+        // (`accounts.ohd.dev` etc.) redirects the user back after they
+        // authenticate. Storage verifies the provider's id_token here,
+        // resolves/creates the storage user, then resumes its own AS code
+        // issuance back to the OHD client.
+        .route("/oauth/oidc-callback", get(oidc_callback_handler))
         .route("/oauth/token", post(token_handler))
         .route("/oauth/device", post(device_authorize_handler))
         .route(
@@ -199,6 +224,10 @@ struct AuthorizeQuery {
     state: Option<String>,
     code_challenge: Option<String>,
     code_challenge_method: Option<String>,
+    /// Optional catalog key of a provider to use directly. When supplied (and
+    /// valid) the AS skips its provider-picker page and 302s straight to that
+    /// upstream provider — lets an OHD client deep-link "Sign in with OHD".
+    provider: Option<String>,
 }
 
 async fn authorize_get(
@@ -208,7 +237,12 @@ async fn authorize_get(
     if let Err(resp) = validate_authorize_params(&state, &q) {
         return resp;
     }
-    let html = render_authorize_form(&q);
+    // Provider deep-link: a client can pass `?provider=ohd_account` to skip
+    // the picker and go straight to "Sign in with OHD".
+    if let Some(provider_key) = q.provider.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        return begin_oidc_login(&state, &q, provider_key).await;
+    }
+    let html = render_authorize_form(&state, &q);
     (StatusCode::OK, Html(html)).into_response()
 }
 
@@ -221,8 +255,11 @@ struct AuthorizePost {
     state: Option<String>,
     code_challenge: Option<String>,
     code_challenge_method: Option<String>,
-    /// User-pasted self-session token (the v0 login UX).
+    /// User-pasted self-session token (the on-device / fast-path login UX).
     self_session_token: Option<String>,
+    /// Catalog key of a configured upstream OIDC provider the user picked
+    /// (e.g. `ohd_account`). When present the AS runs the OIDC-RP flow.
+    provider: Option<String>,
 }
 
 async fn authorize_post(State(state): State<OauthState>, Form(f): Form<AuthorizePost>) -> Response {
@@ -234,17 +271,25 @@ async fn authorize_post(State(state): State<OauthState>, Form(f): Form<Authorize
         state: f.state,
         code_challenge: f.code_challenge,
         code_challenge_method: f.code_challenge_method,
+        provider: f.provider.clone(),
     };
     if let Err(resp) = validate_authorize_params(&state, &q) {
         return resp;
     }
+
+    // Branch 1: the user picked an upstream OIDC provider ("Sign in with OHD").
+    if let Some(provider_key) = f.provider.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        return begin_oidc_login(&state, &q, provider_key).await;
+    }
+
+    // Branch 2: the on-device fast path — a pasted self-session token.
     let bearer = match f.self_session_token.as_deref().map(str::trim) {
         Some(s) if !s.is_empty() => s.to_string(),
         _ => {
             return oauth_error_response(
                 StatusCode::BAD_REQUEST,
                 "access_denied",
-                "missing self-session token",
+                "pick a sign-in provider or paste a self-session token",
             );
         }
     };
@@ -268,7 +313,32 @@ async fn authorize_post(State(state): State<OauthState>, Form(f): Form<Authorize
             );
         }
     };
-    // PKCE-style code: 32 bytes of CSPRNG, b64url no-pad encoded.
+    issue_downstream_code(
+        &state,
+        q.client_id.as_deref().unwrap_or(""),
+        resolved.user_ulid,
+        q.redirect_uri.as_deref().unwrap_or(""),
+        q.scope.as_deref().unwrap_or(""),
+        q.code_challenge.as_deref().unwrap_or(""),
+        q.code_challenge_method.as_deref().unwrap_or(""),
+        q.state.as_deref().unwrap_or(""),
+    )
+}
+
+/// Mint an OHD authorization code bound to `user_ulid` and 302 the browser
+/// back to the OHD client's `redirect_uri`. Shared by the self-session path
+/// and the OIDC-callback path — both end the same way.
+#[allow(clippy::too_many_arguments)]
+fn issue_downstream_code(
+    state: &OauthState,
+    client_id: &str,
+    user_ulid: [u8; 16],
+    redirect_uri: &str,
+    scope: &str,
+    code_challenge: &str,
+    code_challenge_method: &str,
+    client_state: &str,
+) -> Response {
     let code = mint_random_token();
     let code_hash = sha256_hex(&code);
     let now = ohd_storage_core::format::now_ms();
@@ -280,12 +350,12 @@ async fn authorize_post(State(state): State<OauthState>, Form(f): Form<Authorize
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL)",
             params![
                 code_hash,
-                q.client_id.as_deref().unwrap_or(""),
-                resolved.user_ulid.to_vec(),
-                q.redirect_uri.as_deref().unwrap_or(""),
-                q.scope.as_deref().unwrap_or(""),
-                q.code_challenge.as_deref().unwrap_or(""),
-                q.code_challenge_method.as_deref().unwrap_or(""),
+                client_id,
+                user_ulid.to_vec(),
+                redirect_uri,
+                scope,
+                code_challenge,
+                code_challenge_method,
                 now,
                 now + AUTH_CODE_TTL_S * 1000,
             ],
@@ -299,19 +369,511 @@ async fn authorize_post(State(state): State<OauthState>, Form(f): Form<Authorize
             &e.to_string(),
         );
     }
-    let redirect_uri = q.redirect_uri.as_deref().unwrap_or("");
     let url = if redirect_uri.contains('?') {
-        format!(
-            "{redirect_uri}&code={code}&state={st}",
-            st = q.state.as_deref().unwrap_or("")
-        )
+        format!("{redirect_uri}&code={code}&state={client_state}")
     } else {
-        format!(
-            "{redirect_uri}?code={code}&state={st}",
-            st = q.state.as_deref().unwrap_or("")
-        )
+        format!("{redirect_uri}?code={code}&state={client_state}")
     };
     Redirect::to(&url).into_response()
+}
+
+// ============================================================================
+// OIDC-RP login — delegate "who are you?" to a configured upstream provider
+// ============================================================================
+
+/// Begin an OIDC-RP login: persist the in-progress downstream request, then
+/// 302 the user to the chosen provider's `authorization_endpoint`.
+async fn begin_oidc_login(state: &OauthState, q: &AuthorizeQuery, provider_key: &str) -> Response {
+    let Some(provider) = state.provider(provider_key) else {
+        return oauth_error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            &format!("provider {provider_key:?} is not configured on this storage instance"),
+        );
+    };
+    // Discover the provider's authorization + token endpoints.
+    let disc = match discover_provider(provider).await {
+        Ok(d) => d,
+        Err(e) => {
+            return oauth_error_response(
+                StatusCode::BAD_GATEWAY,
+                "temporarily_unavailable",
+                &format!("provider discovery failed: {e}"),
+            )
+        }
+    };
+    // Our (RP-side) PKCE pair + state + nonce toward the upstream provider.
+    let oidc_state = mint_random_token();
+    let oidc_nonce = mint_random_token();
+    let pkce_verifier = mint_random_token();
+    let pkce_challenge = pkce_s256(&pkce_verifier);
+    let now = ohd_storage_core::format::now_ms();
+    let store_res = state.storage.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO oauth_pending_logins
+                (oidc_state, oidc_nonce, pkce_verifier, provider_key,
+                 client_id, redirect_uri, scope, client_state,
+                 code_challenge, code_challenge_method, issued_at_ms, expires_at_ms, used_at_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, NULL)",
+            params![
+                oidc_state,
+                oidc_nonce,
+                pkce_verifier,
+                provider.key,
+                q.client_id.as_deref().unwrap_or(""),
+                q.redirect_uri.as_deref().unwrap_or(""),
+                q.scope.as_deref().unwrap_or(""),
+                q.state.as_deref().unwrap_or(""),
+                q.code_challenge.as_deref().unwrap_or(""),
+                q.code_challenge_method.as_deref().unwrap_or(""),
+                now,
+                now + PENDING_LOGIN_TTL_S * 1000,
+            ],
+        )
+        .map_err(ohd_storage_core::Error::from)
+    });
+    if let Err(e) = store_res {
+        return oauth_error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "server_error",
+            &e.to_string(),
+        );
+    }
+    // Our RP redirect_uri — where the provider sends the user back.
+    let our_callback = format!(
+        "{}/oauth/oidc-callback",
+        state.issuer.trim_end_matches('/')
+    );
+    let mut url = url_with_query(
+        &disc.authorization_endpoint,
+        &[
+            ("response_type", "code"),
+            ("client_id", &provider.client_id),
+            ("redirect_uri", &our_callback),
+            ("scope", &provider.scopes),
+            ("state", &oidc_state),
+            ("nonce", &oidc_nonce),
+            ("code_challenge", &pkce_challenge),
+            ("code_challenge_method", "S256"),
+        ],
+    );
+    // Defensive: some providers reject an empty scope.
+    if provider.scopes.is_empty() {
+        url = url_with_query(
+            &disc.authorization_endpoint,
+            &[
+                ("response_type", "code"),
+                ("client_id", &provider.client_id),
+                ("redirect_uri", &our_callback),
+                ("scope", "openid"),
+                ("state", &oidc_state),
+                ("nonce", &oidc_nonce),
+                ("code_challenge", &pkce_challenge),
+                ("code_challenge_method", "S256"),
+            ],
+        );
+    }
+    Redirect::to(&url).into_response()
+}
+
+#[derive(Deserialize)]
+struct OidcCallbackQuery {
+    code: Option<String>,
+    state: Option<String>,
+    error: Option<String>,
+    error_description: Option<String>,
+}
+
+/// OIDC-RP callback. The provider redirected the user here with `?code&state`.
+/// We: look up the pending login by `state`, exchange the code at the
+/// provider's token endpoint, verify the returned id_token, resolve (or
+/// create) the storage user keyed on the id_token `sub`, then resume the
+/// downstream AS code issuance back to the OHD client.
+async fn oidc_callback_handler(
+    State(state): State<OauthState>,
+    Query(cb): Query<OidcCallbackQuery>,
+) -> Response {
+    if let Some(err) = cb.error.as_deref() {
+        return oauth_error_response(
+            StatusCode::BAD_REQUEST,
+            "access_denied",
+            &format!(
+                "upstream provider returned error {err:?}: {}",
+                cb.error_description.as_deref().unwrap_or("")
+            ),
+        );
+    }
+    let oidc_state = match cb.state.as_deref().filter(|s| !s.is_empty()) {
+        Some(s) => s.to_string(),
+        None => {
+            return oauth_error_response(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "callback missing state",
+            )
+        }
+    };
+    let provider_code = match cb.code.as_deref().filter(|s| !s.is_empty()) {
+        Some(c) => c.to_string(),
+        None => {
+            return oauth_error_response(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "callback missing code",
+            )
+        }
+    };
+
+    // Load + consume the pending login (single-use; CSRF-bound by `state`).
+    type PendingRow = (
+        i64,
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        i64,
+        Option<i64>,
+    );
+    let row: Result<Option<PendingRow>, _> = state.storage.with_conn(|conn| {
+        conn.query_row(
+            "SELECT id, oidc_nonce, pkce_verifier, provider_key, client_id,
+                    redirect_uri, scope, client_state, code_challenge,
+                    expires_at_ms, used_at_ms
+               FROM oauth_pending_logins WHERE oidc_state = ?1",
+            params![oidc_state],
+            |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                    r.get(6)?,
+                    r.get(7)?,
+                    r.get(8)?,
+                    r.get(9)?,
+                    r.get(10)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(ohd_storage_core::Error::from)
+    });
+    let row = match row {
+        Ok(Some(r)) => r,
+        Ok(None) => {
+            return oauth_error_response(
+                StatusCode::BAD_REQUEST,
+                "invalid_grant",
+                "unknown or stale login state",
+            )
+        }
+        Err(e) => {
+            return oauth_error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "server_error",
+                &e.to_string(),
+            )
+        }
+    };
+    let (
+        pending_id,
+        _oidc_nonce,
+        pkce_verifier,
+        provider_key,
+        client_id,
+        redirect_uri,
+        scope,
+        client_state,
+        code_challenge,
+        expires_at_ms,
+        used_at_ms,
+    ) = row;
+    let now = ohd_storage_core::format::now_ms();
+    if used_at_ms.is_some() {
+        return oauth_error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_grant",
+            "login state already used",
+        );
+    }
+    if expires_at_ms <= now {
+        return oauth_error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_grant",
+            "login state expired",
+        );
+    }
+    let mark = state.storage.with_conn(|conn| {
+        conn.execute(
+            "UPDATE oauth_pending_logins SET used_at_ms = ?1 WHERE id = ?2",
+            params![now, pending_id],
+        )
+        .map_err(ohd_storage_core::Error::from)
+    });
+    if let Err(e) = mark {
+        return oauth_error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "server_error",
+            &e.to_string(),
+        );
+    }
+
+    let Some(provider) = state.provider(&provider_key) else {
+        return oauth_error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "server_error",
+            "provider for this login is no longer configured",
+        );
+    };
+    let disc = match discover_provider(provider).await {
+        Ok(d) => d,
+        Err(e) => {
+            return oauth_error_response(
+                StatusCode::BAD_GATEWAY,
+                "temporarily_unavailable",
+                &format!("provider discovery failed: {e}"),
+            )
+        }
+    };
+    let our_callback = format!(
+        "{}/oauth/oidc-callback",
+        state.issuer.trim_end_matches('/')
+    );
+    // Exchange the upstream authorization code for the upstream id_token.
+    let id_token = match exchange_provider_code(
+        provider,
+        &disc.token_endpoint,
+        &provider_code,
+        &our_callback,
+        &pkce_verifier,
+    )
+    .await
+    {
+        Ok(t) => t,
+        Err(e) => {
+            return oauth_error_response(
+                StatusCode::BAD_GATEWAY,
+                "temporarily_unavailable",
+                &format!("upstream token exchange failed: {e}"),
+            )
+        }
+    };
+
+    // Verify the upstream id_token (signature against the provider's JWKS,
+    // issuer, audience, expiry) — reuses the core RP verifier. The
+    // `HttpJwksResolver` builds a blocking reqwest client (which owns its own
+    // tokio runtime); constructing/dropping that inside an async task panics,
+    // so the whole verify runs on a blocking thread.
+    let cfg = ohd_identities::IssuerVerification::new(
+        provider.issuer.clone(),
+        vec![provider.client_id.clone()],
+    );
+    let id_token_for_verify = id_token.clone();
+    let verify_res = tokio::task::spawn_blocking(move || {
+        let jwks = crate::jwks::HttpJwksResolver::new();
+        ohd_identities::verify_id_token(&id_token_for_verify, &cfg, &jwks)
+    })
+    .await;
+    let verified = match verify_res {
+        Ok(Ok(v)) => v,
+        Ok(Err(e)) => {
+            return oauth_error_response(
+                StatusCode::BAD_REQUEST,
+                "access_denied",
+                &format!("id_token verification failed: {e}"),
+            )
+        }
+        Err(e) => {
+            return oauth_error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "server_error",
+                &format!("verify task: {e}"),
+            )
+        }
+    };
+
+    // Resolve (or create) the storage user from the verified `(iss, sub)`.
+    let user_ulid = match resolve_or_create_user(&state, provider, &verified) {
+        Ok(u) => u,
+        Err(e) => {
+            return oauth_error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "server_error",
+                &format!("resolve user: {e}"),
+            )
+        }
+    };
+
+    // Resume the downstream AS authorization-code issuance.
+    issue_downstream_code(
+        &state,
+        &client_id,
+        user_ulid,
+        &redirect_uri,
+        &scope,
+        &code_challenge,
+        "S256",
+        &client_state,
+    )
+}
+
+/// Resolve a verified upstream identity to a storage `user_ulid`.
+///
+/// - If `(provider, sub)` is already in `_oidc_identities`, return its user.
+/// - Otherwise mint a fresh storage user. The `sub` of an `ohd_account`
+///   id_token *is* the user's stable OHD `profile_ulid`; if it parses as a
+///   ULID we adopt it verbatim so the storage identity matches the OHD
+///   identity. For other providers (or an unparseable `sub`) we mint a fresh
+///   random ULID. Either way we record the `(provider, sub)` binding via
+///   [`ohd_identities::bootstrap_first_identity`].
+fn resolve_or_create_user(
+    state: &OauthState,
+    provider: &OidcProvider,
+    verified: &ohd_identities::VerifiedIdToken,
+) -> ohd_storage_core::Result<[u8; 16]> {
+    // The provider string we key identities under is the issuer URL — the
+    // same shape the linking flow (`complete_identity_link`) uses, so a
+    // login and a later link converge on one row.
+    let provider_str = verified.issuer.as_str();
+    if let Some(existing) = state
+        .storage
+        .with_conn(|conn| ohd_identities::find_user_by_identity(conn, provider_str, &verified.subject))?
+    {
+        let _ = state.storage.with_conn(|conn| {
+            ohd_identities::touch_last_login(conn, provider_str, &verified.subject)
+        });
+        return Ok(existing);
+    }
+    // New user. Adopt the `sub` as the user_ulid when it is itself a ULID
+    // (the `ohd_account` / profile_ulid case); else mint fresh.
+    let user_ulid = if provider.key == "ohd_account" {
+        ohd_storage_core::ulid::parse_crockford(&verified.subject)
+            .unwrap_or_else(|_| ohd_storage_core::ulid::mint(ohd_storage_core::format::now_ms()))
+    } else {
+        ohd_storage_core::ulid::mint(ohd_storage_core::format::now_ms())
+    };
+    state.storage.with_conn(|conn| {
+        ohd_identities::bootstrap_first_identity(
+            conn,
+            user_ulid,
+            provider_str,
+            &verified.subject,
+            verified.email.as_deref(),
+            Some(&provider.display_name),
+        )
+    })?;
+    Ok(user_ulid)
+}
+
+// ---- Upstream provider HTTP -------------------------------------------------
+
+/// Minimal OIDC discovery doc — the RP side only needs these two endpoints.
+#[derive(Deserialize)]
+struct ProviderDiscovery {
+    authorization_endpoint: String,
+    token_endpoint: String,
+}
+
+/// Fetch + cache-free discovery for an upstream provider. JWKS is fetched
+/// separately by [`crate::jwks::HttpJwksResolver`] during id_token verify.
+async fn discover_provider(provider: &OidcProvider) -> Result<ProviderDiscovery, String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| format!("build http client: {e}"))?;
+    let url = provider.discovery_url();
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("GET {url}: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("GET {url}: HTTP {}", resp.status()));
+    }
+    resp.json::<ProviderDiscovery>()
+        .await
+        .map_err(|e| format!("parse discovery {url}: {e}"))
+}
+
+#[derive(Deserialize)]
+struct ProviderTokenResponse {
+    id_token: Option<String>,
+}
+
+/// Exchange an upstream authorization code for the upstream id_token.
+async fn exchange_provider_code(
+    provider: &OidcProvider,
+    token_endpoint: &str,
+    code: &str,
+    redirect_uri: &str,
+    pkce_verifier: &str,
+) -> Result<String, String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| format!("build http client: {e}"))?;
+    let mut form: Vec<(&str, &str)> = vec![
+        ("grant_type", "authorization_code"),
+        ("code", code),
+        ("redirect_uri", redirect_uri),
+        ("client_id", &provider.client_id),
+        ("code_verifier", pkce_verifier),
+    ];
+    if let Some(secret) = provider.client_secret.as_deref() {
+        form.push(("client_secret", secret));
+    }
+    let resp = client
+        .post(token_endpoint)
+        .form(&form)
+        .send()
+        .await
+        .map_err(|e| format!("POST {token_endpoint}: {e}"))?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(format!("POST {token_endpoint}: HTTP {status}: {body}"));
+    }
+    let tr: ProviderTokenResponse = resp
+        .json()
+        .await
+        .map_err(|e| format!("parse token response: {e}"))?;
+    tr.id_token
+        .ok_or_else(|| "upstream token response carried no id_token".to_string())
+}
+
+/// Build `base?k1=v1&k2=v2…` with each value percent-encoded.
+fn url_with_query(base: &str, params: &[(&str, &str)]) -> String {
+    let mut out = String::from(base);
+    let sep = if base.contains('?') { '&' } else { '?' };
+    let mut first = true;
+    for (k, v) in params {
+        out.push(if first { sep } else { '&' });
+        first = false;
+        out.push_str(k);
+        out.push('=');
+        out.push_str(&percent_encode(v));
+    }
+    out
+}
+
+/// Percent-encode a query-string value (RFC 3986 unreserved set kept literal).
+fn percent_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
 }
 
 fn validate_authorize_params(state: &OauthState, q: &AuthorizeQuery) -> Result<(), Response> {
@@ -363,33 +925,70 @@ fn validate_authorize_params(state: &OauthState, q: &AuthorizeQuery) -> Result<(
     Ok(())
 }
 
-fn render_authorize_form(q: &AuthorizeQuery) -> String {
+fn render_authorize_form(state: &OauthState, q: &AuthorizeQuery) -> String {
     let escaped_state = html_escape(q.state.as_deref().unwrap_or(""));
     let escaped_client = html_escape(q.client_id.as_deref().unwrap_or(""));
     let escaped_redirect = html_escape(q.redirect_uri.as_deref().unwrap_or(""));
     let escaped_scope = html_escape(q.scope.as_deref().unwrap_or("openid"));
     let escaped_cc = html_escape(q.code_challenge.as_deref().unwrap_or(""));
     let escaped_ccm = html_escape(q.code_challenge_method.as_deref().unwrap_or("S256"));
-    format!(
-        r#"<!doctype html><meta charset="utf-8"><title>OHD Storage — Sign in</title>
-<style>body{{font-family:system-ui;max-width:48ch;margin:4em auto;padding:0 1em}}
-input,textarea{{width:100%;font:inherit;padding:.5em;margin:.25em 0;box-sizing:border-box}}
-button{{font:inherit;padding:.6em 1em}}
-small{{color:#555}}</style>
-<h1>Sign in to OHD Storage</h1>
-<p>Paste your self-session token (<code>ohds_…</code>) to authorize <b>{escaped_client}</b>.</p>
-<form method="post" action="/oauth/authorize">
-<input type="hidden" name="response_type" value="code">
+    // Hidden fields carrying the downstream authorization request — repeated
+    // in every form on the page so whichever the user submits round-trips it.
+    let hidden = format!(
+        r#"<input type="hidden" name="response_type" value="code">
 <input type="hidden" name="client_id" value="{escaped_client}">
 <input type="hidden" name="redirect_uri" value="{escaped_redirect}">
 <input type="hidden" name="scope" value="{escaped_scope}">
 <input type="hidden" name="state" value="{escaped_state}">
 <input type="hidden" name="code_challenge" value="{escaped_cc}">
-<input type="hidden" name="code_challenge_method" value="{escaped_ccm}">
-<label>Self-session token <small>(from <code>ohd-storage-server issue-self-token</code>)</small><br>
-<textarea name="self_session_token" rows="3" required autofocus></textarea></label>
-<button type="submit">Authorize</button>
+<input type="hidden" name="code_challenge_method" value="{escaped_ccm}">"#
+    );
+
+    // One form per configured upstream provider.
+    let mut provider_forms = String::new();
+    for p in state.providers.iter() {
+        let key = html_escape(&p.key);
+        let name = html_escape(&p.display_name);
+        provider_forms.push_str(&format!(
+            r#"<form method="post" action="/oauth/authorize">
+{hidden}
+<input type="hidden" name="provider" value="{key}">
+<button type="submit">Sign in with {name}</button>
 </form>"#
+        ));
+    }
+
+    // The self-session paste form is always available (on-device fast path).
+    let paste_form = format!(
+        r#"<details{open}><summary>Advanced: paste a self-session token</summary>
+<form method="post" action="/oauth/authorize">
+{hidden}
+<label>Self-session token <small>(from <code>ohd-storage-server issue-self-token</code>)</small><br>
+<textarea name="self_session_token" rows="3"></textarea></label>
+<button type="submit">Authorize</button>
+</form></details>"#,
+        // When no providers are configured the paste box is the only option,
+        // so default it open.
+        open = if state.providers.is_empty() { " open" } else { "" }
+    );
+
+    let intro = if state.providers.is_empty() {
+        format!("<p>Paste your self-session token (<code>ohds_…</code>) to authorize <b>{escaped_client}</b>.</p>")
+    } else {
+        format!("<p>Choose how to sign in to authorize <b>{escaped_client}</b>.</p>")
+    };
+
+    format!(
+        r#"<!doctype html><meta charset="utf-8"><title>OHD Storage — Sign in</title>
+<style>body{{font-family:system-ui;max-width:48ch;margin:4em auto;padding:0 1em}}
+input,textarea{{width:100%;font:inherit;padding:.5em;margin:.25em 0;box-sizing:border-box}}
+button{{font:inherit;padding:.6em 1em;width:100%;margin:.25em 0}}
+form{{margin:0 0 .5em}}
+small{{color:#555}}</style>
+<h1>Sign in to OHD Storage</h1>
+{intro}
+{provider_forms}
+{paste_form}"#
     )
 }
 
