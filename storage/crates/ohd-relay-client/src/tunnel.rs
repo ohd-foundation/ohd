@@ -75,22 +75,24 @@ pub const STREAM_TAG_SESSION_OPEN: u8 = 0x01;
 /// First-byte marker for control-channel heartbeats.
 pub const CONTROL_TAG_HEARTBEAT: u8 = 0x02;
 
-/// How often we pulse heartbeats outbound.
+/// How often we pulse heartbeats outbound — also drives the staleness
+/// watchdog below.
 ///
-/// Shortened from 60 s to 20 s. This also drives the watchdog window below
-/// (`HEARTBEAT_INTERVAL * MAX_MISSED_HEARTBEATS`), so a genuinely dead tunnel
-/// is detected — and reconnect kicks in — in ~120 s instead of ~6 min.
-///
-/// NOTE: this does NOT fully resolve the observed tunnel-stability bug. A
-/// packet capture showed phone→relay traffic stops ~18 s after the handshake
-/// (neither quinn's 15 s transport keep-alive nor this heartbeat reaches the
-/// relay after that point), so the relay idle-times-out the QUIC connection
-/// at ~120 s. Root cause is still under investigation — see the tunnel
-/// notes; a two-ended packet capture is the next diagnostic.
-pub const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(20);
+/// Set aggressively low (5 s). Observed behaviour: the relay-bound tunnel
+/// carries consumer traffic fine while a CORD call is in flight, but the
+/// phone→relay path goes quiet ~18 s after the handshake when idle, so the
+/// relay idle-times-out the QUIC connection ~120 s later and the phone — which
+/// still receives relay→phone packets — never notices. A 5 s heartbeat both
+/// gives the relay frequent traffic to keep its idle timer fed AND lets the
+/// echo-watchdog detect a one-way-dead tunnel in ~20 s, so the reconnect loop
+/// redials before the user's next call instead of minutes later.
+pub const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
 
-/// Maximum consecutive missed heartbeats before tearing down the connection.
-pub const MAX_MISSED_HEARTBEATS: u32 = 3;
+/// Consecutive missed heartbeat echoes before the watchdog tears the
+/// connection down (→ reconnect). With a 5 s [`HEARTBEAT_INTERVAL`] this
+/// trips ~20 s after the relay stops echoing — fast enough that a stale
+/// tunnel self-heals between CORD calls.
+pub const MAX_MISSED_HEARTBEATS: u32 = 2;
 
 /// Initial reconnect delay; doubles per failure up to [`RECONNECT_DELAY_CAP`].
 pub const RECONNECT_DELAY_INITIAL: Duration = Duration::from_secs(1);
