@@ -33,6 +33,13 @@ pub mod tunnel;
 #[cfg(feature = "tunnel-service")]
 pub mod service;
 
+/// The phone-side share responder — registers a per-share rendezvous,
+/// maintains the relay tunnel, terminates the inner TLS server side with
+/// the storage identity cert, and speaks share-scoped MCP. Behind the
+/// `responder` feature (`ohd-h3-helpers` + `ohd-mcp-core` deps).
+#[cfg(feature = "responder")]
+pub mod responder;
+
 // -- Re-exports for the common surface --
 
 pub use frame::{decode_one_frame, encode_frame, Frame, FrameError, FrameType};
@@ -51,3 +58,7 @@ pub use tunnel::{
 /// pre-extraction `serve_relay_tunnel(opts, service, shutdown)` shape.
 #[cfg(feature = "tunnel-service")]
 pub use service::{serve_relay_tunnel, ConnectRpcSessionHandler};
+
+/// The share responder surface — the phone-side scoped-MCP endpoint.
+#[cfg(feature = "responder")]
+pub use responder::{register_share_rendezvous, ShareRendezvous, ShareResponder};

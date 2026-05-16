@@ -463,4 +463,43 @@ object Auth {
             isCordApiKeySet(ctx, "gemini")
         return prefs(ctx).getBoolean(KEY_CORD_STUB_RESPONSES, !anyKeySet)
     }
+
+    // =========================================================================
+    // Remote-access share responder (CORD data-link Phase 4d)
+    //
+    // The storage identity key is the long-lived Ed25519 keypair whose SPKI
+    // hash is the cert-pin in every share link — generated once, persisted
+    // here in the Keystore-wrapped prefs, stable across launches.
+    //
+    // Per-share remote-access state (the relay rendezvous + credential) is
+    // persisted under a per-grant key so the responder can be brought back
+    // up on the next launch for every share the user left remote-enabled.
+    // =========================================================================
+    private const val KEY_STORAGE_IDENTITY_KEY = "storage_identity_key_pkcs8_hex"
+    private const val KEY_REMOTE_SHARE_PREFIX = "remote_share_v1_"
+
+    /** The persisted storage identity key (hex PKCS#8 DER), or null if unset. */
+    fun getStorageIdentityKey(ctx: Context): String? =
+        prefs(ctx).getString(KEY_STORAGE_IDENTITY_KEY, null)
+
+    /** Persist the storage identity key. Written once, on first generation. */
+    fun setStorageIdentityKey(ctx: Context, hex: String) {
+        prefs(ctx).edit().putString(KEY_STORAGE_IDENTITY_KEY, hex).apply()
+    }
+
+    /**
+     * Persist a share's remote-access binding so the responder can be
+     * resumed on the next launch. `json` is the serialized
+     * [RemoteShareBinding]; `null`/clear means remote access is off.
+     */
+    fun saveRemoteShare(ctx: Context, grantUlid: String, json: String?) {
+        val k = KEY_REMOTE_SHARE_PREFIX + grantUlid
+        prefs(ctx).edit().apply {
+            if (json == null) remove(k) else putString(k, json)
+        }.apply()
+    }
+
+    /** The persisted remote-access binding JSON for a share, or null. */
+    fun getRemoteShare(ctx: Context, grantUlid: String): String? =
+        prefs(ctx).getString(KEY_REMOTE_SHARE_PREFIX + grantUlid, null)
 }

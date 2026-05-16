@@ -1961,15 +1961,21 @@ dependencies = [
  "http",
  "hyper",
  "hyper-util",
+ "ohd-h3-helpers",
+ "ohd-mcp-core",
+ "ohd-storage-core",
  "quinn",
+ "rcgen",
  "reqwest",
  "rustls",
  "rustls-platform-verifier",
  "serde",
  "serde_json",
  "sha2",
+ "tempfile",
  "thiserror 1.0.69",
  "tokio",
+ "tokio-rustls",
  "tower",
  "tracing",
 ]
@@ -1978,10 +1984,15 @@ dependencies = [
 name = "ohd-storage-bindings"
 version = "0.0.0"
 dependencies = [
+ "hex",
  "ohd-mcp-core",
+ "ohd-relay-client",
  "ohd-storage-core",
  "pyo3",
+ "rcgen",
  "thiserror 1.0.69",
+ "tokio",
+ "tracing",
  "uniffi",
 ]
 

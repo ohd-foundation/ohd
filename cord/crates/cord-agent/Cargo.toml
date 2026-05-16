@@ -12,10 +12,29 @@ name = "cord_agent"
 path = "src/lib.rs"
 
 [dependencies]
-tokio = { version = "1", features = ["rt", "macros", "sync", "time"] }
+tokio = { version = "1", features = ["rt", "macros", "sync", "time", "io-util"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 async-trait = "0.1"
 thiserror = "1"
 tracing = "0.1"
+bytes = "1"
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+
+# Relay data plane (Phase 4e): the tunnel-frame codec and the pinned
+# inner-TLS verifier are shared with the storage server and the Android
+# binding — path deps so CORD speaks the exact same wire.
+ohd-relay-client = { path = "../../../storage/crates/ohd-relay-client" }
+ohd-h3-helpers = { path = "../../../storage/crates/ohd-h3-helpers" }
+
+# Inner TLS 1.3 over the tunnel. Pinned to the `ring` provider to match
+# ohd-relay-client / ohd-h3-helpers (no aws-lc-sys C build).
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+# Consumer-side relay attach is a WebSocket (`wss://<relay>/v1/attach/<rid>`).
+tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
+
+[dev-dependencies]
+# Tests mint a real storage identity cert to derive a well-formed pin.
+rcgen = { version = "0.13", default-features = false, features = ["pem", "ring"] }

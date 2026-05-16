@@ -12,6 +12,6 @@ pub mod types;
 
 pub use agent::Agent;
 pub use anthropic::AnthropicProvider;
-pub use mcp::McpClient;
+pub use mcp::{McpClient, RelayTarget};
 pub use provider::ModelProvider;
 pub use types::{AgentError, AgentEvent, ContentBlock, Message, RoundOutput, ToolDef};

@@ -65,6 +65,11 @@ use ohd_storage_core as core;
 #[cfg(feature = "pyo3")]
 mod pyo3_module;
 
+// Remote-access share responder (CORD data-link Phase 4d) — registers a
+// per-share relay rendezvous and runs the background inner-TLS + scoped-MCP
+// responder. Adds `#[uniffi::export]` items to the binding surface.
+mod remote_access;
+
 // =============================================================================
 // uniffi setup
 // =============================================================================
@@ -1130,7 +1135,10 @@ impl SignerDto {
 /// Swift as `final class OhdStorage`.
 #[derive(uniffi::Object)]
 pub struct OhdStorage {
-    inner: core::Storage,
+    /// `Arc` so the share responder (`remote_access`) can hold its own
+    /// reference and serve relay sessions off the same storage core on a
+    /// background runtime, concurrently with foreground UI calls.
+    inner: Arc<core::Storage>,
 }
 
 #[uniffi::export]
@@ -1657,6 +1665,13 @@ impl OhdStorage {
 }
 
 impl OhdStorage {
+    /// `Arc` to the inner storage core — used by the remote-access share
+    /// responder ([`remote_access`]), which serves relay sessions off the
+    /// same core on a background runtime.
+    pub(crate) fn storage_arc(&self) -> Arc<core::Storage> {
+        Arc::clone(&self.inner)
+    }
+
     fn open_inner(path: String, key_hex: String, create: bool) -> Result<Arc<Self>> {
         let cipher_key = if key_hex.is_empty() {
             vec![]
@@ -1671,7 +1686,7 @@ impl OhdStorage {
             create_user_ulid: None,
         };
         let storage = core::Storage::open(cfg).map_err(OhdError::from)?;
-        Ok(Arc::new(Self { inner: storage }))
+        Ok(Arc::new(Self { inner: Arc::new(storage) }))
     }
 }
 

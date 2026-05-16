@@ -1,14 +1,14 @@
 //! `/v1/chats/*` — conversations. `send_message` runs the `cord-agent`
 //! tool-use loop and streams the result back as Server-Sent Events.
 
-use crate::crypto;
 use crate::errors::{ApiError, ApiResult};
+use crate::routes::sources::build_mcp_client;
 use crate::server::AppState;
 use crate::session::CurrentUser;
 use axum::extract::{Path, State};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::Json;
-use cord_agent::{Agent, AgentEvent, AnthropicProvider, McpClient, Message, ModelProvider};
+use cord_agent::{Agent, AgentEvent, AnthropicProvider, Message, ModelProvider};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::convert::Infallible;
@@ -80,9 +80,10 @@ pub async fn send_message(
 
     let (provider, model_name) = resolve_provider(&app, &chat.model)?;
 
-    let token = crypto::unseal_str(&app.config.data_key, &source.enc_token)
-        .map_err(|e| ApiError::Internal(anyhow::anyhow!("could not unseal source token: {e}")))?;
-    let mcp = McpClient::new(source.endpoint.clone(), Some(token));
+    // Transport is chosen by `source.kind`: a `direct` source gets the
+    // plain-HTTP transport, a `relay` source gets the relay-tunnelled
+    // (pinned inner-TLS) transport. The agent is transport-agnostic.
+    let mcp = build_mcp_client(&app, &source)?;
 
     // Persist the user turn, then load the whole conversation as agent
     // messages (the list now ends with this turn).

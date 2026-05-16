@@ -2,13 +2,14 @@
 //! credential: a sealed grant token plus how to reach the storage.
 
 use crate::crypto;
-use crate::db::NewSource;
+use crate::db::{DataSource, NewSource};
 use crate::errors::{ApiError, ApiResult};
 use crate::server::AppState;
 use crate::session::CurrentUser;
 use crate::share;
 use axum::extract::{Path, State};
 use axum::Json;
+use cord_agent::{McpClient, RelayTarget};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::time::Duration;
@@ -89,8 +90,9 @@ pub async fn delete_one(
     Ok(Json(json!({ "ok": true })))
 }
 
-/// Re-probe reachability. Direct sources get a real HTTP probe; relay
-/// sources report `pending_relay` until the Phase 4 data plane lands.
+/// Re-probe reachability. A `direct` source gets a real HTTP probe; a
+/// `relay` source gets a real relay-tunnel reachability check — open the
+/// tunnel, complete the pinned inner-TLS handshake, run MCP `initialize`.
 pub async fn refresh(
     user: CurrentUser,
     State(app): State<AppState>,
@@ -104,7 +106,23 @@ pub async fn refresh(
             ("unreachable", false)
         }
     } else {
-        ("pending_relay", false)
+        // Relay source: a reachability check is the full tunnel open.
+        // `McpClient::probe` runs relay attach + pinned inner-TLS + MCP
+        // `initialize`. A pin mismatch, an offline phone, or a bad token
+        // all surface here as `unreachable`.
+        match build_mcp_client(&app, &source) {
+            Ok(mcp) => match mcp.probe().await {
+                Ok(()) => ("connected", true),
+                Err(e) => {
+                    tracing::info!(source = %id, error = %e, "relay source unreachable");
+                    ("unreachable", false)
+                }
+            },
+            Err(e) => {
+                tracing::warn!(source = %id, error = %e, "could not build relay client");
+                ("unreachable", false)
+            }
+        }
     };
     app.db.set_source_status(&user.0, &id, status, ok)?;
     Ok(Json(json!({ "source": app.db.get_source(&user.0, &id)? })))
@@ -123,4 +141,43 @@ async fn probe(endpoint: &str) -> bool {
         .await
         .map(|r| r.status().as_u16() < 500)
         .unwrap_or(false)
+}
+
+/// Build a transport-correct [`McpClient`] for a stored data source.
+///
+/// `direct` sources get the plain-HTTP transport against `endpoint`;
+/// `relay` sources get the relay-tunnelled transport built from the
+/// rendezvous id, relay host, unsealed grant token, and cert pin the
+/// share link carried. Used by both the chat data plane and the
+/// reachability check.
+pub(crate) fn build_mcp_client(
+    app: &AppState,
+    source: &DataSource,
+) -> Result<McpClient, ApiError> {
+    let token = crypto::unseal_str(&app.config.data_key, &source.enc_token)
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("could not unseal source token: {e}")))?;
+    if source.kind == "relay" {
+        let rendezvous_id = source.rendezvous_id.clone().ok_or_else(|| {
+            ApiError::Internal(anyhow::anyhow!("relay source is missing its rendezvous id"))
+        })?;
+        let relay_host = source.relay_host.clone().ok_or_else(|| {
+            ApiError::Internal(anyhow::anyhow!("relay source is missing its relay host"))
+        })?;
+        // A relay-bound (phone) storage uses a self-signed identity cert:
+        // the pin is the entire trust anchor. Refuse to dial without it.
+        let pin = source.cert_pin.clone().ok_or_else(|| {
+            ApiError::BadRequest(
+                "relay source has no cert pin — re-connect with a share link that carries `pin`"
+                    .into(),
+            )
+        })?;
+        Ok(McpClient::relay(RelayTarget {
+            relay_host,
+            rendezvous_id,
+            pin,
+            token,
+        }))
+    } else {
+        Ok(McpClient::new(source.endpoint.clone(), Some(token)))
+    }
 }

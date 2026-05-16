@@ -178,6 +178,20 @@ private fun OhdConnectApp() {
             RemindersScheduler.applyPersistedPreference(ctx)
         }
 
+        // Resume every share the user left with remote access enabled
+        // (CORD data link Phase 4d). Each persisted binding re-starts its
+        // background share responder so the relay tunnel comes back up
+        // after an app restart. Runs on IO — the responder dials the relay.
+        LaunchedEffect(Unit) {
+            if (!StorageRepository.isOpen()) return@LaunchedEffect
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                val grantUlids = StorageRepository.listGrants(includeRevoked = false)
+                    .getOrDefault(emptyList())
+                    .map { it.ulid }
+                com.ohd.connect.data.ShareResponders.resumeAll(ctx, grantUlids)
+            }
+        }
+
         // Foreground "near-real-time" sync. While the app is RESUMED (user
         // is actively looking at it), pull from Health Connect every 30 s
         // so newly-recorded events on the watch / scale appear in History

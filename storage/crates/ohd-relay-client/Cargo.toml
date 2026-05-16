@@ -36,6 +36,14 @@ default = []
 # connectrpc + tower. Off by default so the Android uniffi binding (which
 # only needs registration + the frame codec) stays lean.
 tunnel-service = ["dep:connectrpc", "dep:hyper", "dep:hyper-util", "dep:tower"]
+# The phone-side share responder: terminates the inner TLS server side with
+# the storage identity cert and speaks share-scoped MCP over the tunnel.
+# Pulls `ohd-h3-helpers` (the `tls_pin` cert/pin primitives), `ohd-mcp-core`
+# (the scoped catalog + dispatch), `ohd-storage-core` and `tokio-rustls`.
+# Enabled by the Android uniffi binding — which already links `ohd-mcp-core`
+# + `ohd-storage-core`, so this adds no new cross-compile burden — and off by
+# default so a plain `ohd-relay-client` build stays minimal.
+responder = ["dep:ohd-h3-helpers", "dep:ohd-mcp-core", "dep:ohd-storage-core", "dep:tokio-rustls", "dep:rcgen"]
 
 [dependencies]
 anyhow = "1"
@@ -67,5 +75,20 @@ hyper = { version = "1", optional = true }
 hyper-util = { version = "0.1", features = ["tokio", "server", "server-auto", "service"], optional = true }
 tower = { version = "0.5", optional = true }
 
+# `responder`-only: the inner-TLS-server + scoped-MCP responder. tokio-rustls
+# is the async TLS adapter over the tunnel's DATA-frame stream; ohd-h3-helpers
+# carries the `tls_pin` cert-minting + pin primitives; ohd-mcp-core is the
+# share-scoped tool catalog + dispatch. All three cross-compile for Android.
+ohd-h3-helpers = { path = "../ohd-h3-helpers", optional = true }
+ohd-mcp-core = { path = "../ohd-mcp-core", optional = true }
+ohd-storage-core = { path = "../ohd-storage-core", optional = true }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"], optional = true }
+# `responder` derives the storage SPKI (the share-artifact pin) by loading
+# the Ed25519 identity key into rcgen and reading its public-key DER. Pure
+# Rust / ring-backed — cross-compiles for Android.
+rcgen = { version = "0.13", default-features = false, features = ["pem", "ring"], optional = true }
+
 [dev-dependencies]
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "io-util"] }
+# The responder's end-to-end test opens an on-disk storage core.
+tempfile = "3"

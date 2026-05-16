@@ -22,7 +22,9 @@ import uniffi.ohd_storage.ListGrantsFilterDto
 import uniffi.ohd_storage.OhdStorage
 import uniffi.ohd_storage.PendingEventDto
 import uniffi.ohd_storage.PutEventOutcomeDto
+import uniffi.ohd_storage.RemoteShareDto
 import uniffi.ohd_storage.RetroGrantInputDto
+import uniffi.ohd_storage.ShareResponderHandle
 import uniffi.ohd_storage.TrustedAuthorityDto
 import uniffi.ohd_storage.ValueKind
 
@@ -294,6 +296,64 @@ object StorageRepository {
     /** Execute one tool. JSON in, JSON out. Errors come back as `{"error": …}`. */
     fun executeToolJson(name: String, inputJson: String): Result<String> = withStorage {
         executeTool(name, inputJson)
+    }
+
+    // =========================================================================
+    // Remote access — the CORD data-link share responder (Phase 4d).
+    //
+    // Activating remote access on a share registers a per-share relay
+    // rendezvous and runs a background responder that serves a remote
+    // consumer (CORD) share-scoped MCP through the relay tunnel. See
+    // `cord/spec/data-link.md` "Activating remote access".
+    // =========================================================================
+
+    /**
+     * Register a per-share relay rendezvous — the network half of "activate
+     * remote access". Performs the real relay `POST /v1/register`; returns
+     * the rendezvous id, credential, and the SPKI `pin` for the share link.
+     *
+     * @param grantUlid the share's backing grant.
+     * @param relayOrigin the relay HTTP origin (e.g. `https://relay.ohd.dev`).
+     * @param identityKeyHex the storage identity key — see [storageIdentityKey].
+     * @param shareLabel optional friendly label for the relay's listing.
+     */
+    fun registerRemoteShare(
+        grantUlid: String,
+        relayOrigin: String,
+        identityKeyHex: String,
+        shareLabel: String?,
+    ): Result<RemoteShareDto> = withStorage {
+        registerRemoteShare(grantUlid, relayOrigin, identityKeyHex, shareLabel)
+    }
+
+    /**
+     * Start the background share responder for a share. The responder keeps
+     * the relay tunnel open and answers scoped MCP until the returned
+     * [ShareResponderHandle] is stopped or dropped. The caller owns the
+     * handle's lifetime ([ShareResponders] registry holds it).
+     */
+    fun startShareResponder(
+        grantUlid: String,
+        share: RemoteShareDto,
+        relayTunnelUrl: String,
+        identityKeyHex: String,
+        allowInsecureDev: Boolean = false,
+    ): Result<ShareResponderHandle> = withStorage {
+        startShareResponder(grantUlid, share, relayTunnelUrl, identityKeyHex, allowInsecureDev)
+    }
+
+    /**
+     * The storage's long-lived Ed25519 identity key, hex-encoded. Generated
+     * once on first need and persisted in [Auth]'s Keystore-backed
+     * encrypted prefs — its SPKI hash is the cert-pin baked into every
+     * share link, so it must be stable across launches.
+     */
+    fun storageIdentityKey(): String {
+        val ctx = requireNotNull(appContext) { "StorageRepository.init() not called" }
+        Auth.getStorageIdentityKey(ctx)?.let { return it }
+        val fresh = uniffi.ohd_storage.generateStorageIdentityKey()
+        Auth.setStorageIdentityKey(ctx, fresh)
+        return fresh
     }
 
     // =========================================================================

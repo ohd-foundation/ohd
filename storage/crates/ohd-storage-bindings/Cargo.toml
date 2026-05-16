@@ -51,6 +51,19 @@ extension-module = ["pyo3", "pyo3/extension-module"]
 [dependencies]
 ohd-storage-core = { path = "../ohd-storage-core" }
 ohd-mcp-core = { path = "../ohd-mcp-core" }
+# The phone-side share responder (CORD data link Phase 4d). The `responder`
+# feature pulls the inner-TLS server + share-scoped MCP responder; the
+# binding drives it on a background tokio runtime so OHD Connect can serve a
+# remote consumer through the relay. All deps cross-compile for Android.
+ohd-relay-client = { path = "../ohd-relay-client", features = ["responder"] }
+# Background runtime for the responder + the registration HTTP call.
+tokio = { version = "1", features = ["rt-multi-thread", "sync"] }
+# Generates the storage's long-lived Ed25519 identity key (PKCS#8 DER).
+rcgen = { version = "0.13", default-features = false, features = ["pem", "ring"] }
+# Hex encoding for the identity key + user ULID at the FFI boundary.
+hex = "0.4"
+# Structured logging for the background responder task.
+tracing = "0.1"
 # uniffi 0.28 is the stable target as of 2026-Q1: ships proc-macro bindings
 # (`#[uniffi::export]`), Kotlin + Swift + Python codegen, and an in-tree
 # `uniffi_bindgen_main()` entrypoint. Newer (0.29+) is API-compatible for our

@@ -50,12 +50,15 @@ import com.ohd.connect.data.EmergencyConfig
 import com.ohd.connect.data.QrEncoder
 import com.ohd.connect.data.ShareKind
 import com.ohd.connect.data.ShareLink
+import com.ohd.connect.data.ShareResponders
 import com.ohd.connect.data.ShareRow
 import com.ohd.connect.data.StorageRepository
 import com.ohd.connect.data.toCreateInput
 import com.ohd.connect.ui.components.OhdTopBar
 import com.ohd.connect.ui.theme.OhdColors
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * Share detail — the screen behind a [SharesScreen] row.
@@ -187,7 +190,12 @@ fun ShareDetailScreen(
                         }
                     },
                 )
-                ActivateRemoteAccessCard(onToast = onToast)
+                ActivateRemoteAccessCard(
+                    shareId = shareId,
+                    shareLabel = s.label,
+                    grantToken = reissuedToken ?: s.grant?.ulid ?: "",
+                    onToast = onToast,
+                )
             }
 
             AuditCard(isEmergency = isEmergency, audit = audit)
@@ -407,8 +415,29 @@ private fun QrImage(content: String) {
     }
 }
 
+/**
+ * Remote-access activation — the live CORD data-link Phase 4d surface.
+ *
+ * Activating registers a per-share relay rendezvous (real
+ * `POST /v1/register`), starts the background share responder (relay tunnel
+ * + inner-TLS server + share-scoped MCP), and renders the real
+ * `ohd://share/...` link + QR built from the rendezvous + SPKI pin.
+ */
 @Composable
-private fun ActivateRemoteAccessCard(onToast: (String) -> Unit) {
+private fun ActivateRemoteAccessCard(
+    shareId: String,
+    shareLabel: String,
+    grantToken: String,
+    onToast: (String) -> Unit,
+) {
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+
+    var binding by remember(shareId) {
+        mutableStateOf(ShareResponders.binding(ctx, shareId))
+    }
+    var busy by remember { mutableStateOf(false) }
+
     DetailCard {
         Text("Remote access", style = MaterialTheme.typography.titleMedium)
         Spacer(Modifier.height(4.dp))
@@ -420,20 +449,84 @@ private fun ActivateRemoteAccessCard(onToast: (String) -> Unit) {
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Spacer(Modifier.height(8.dp))
-        // The relay-activation backend (registering a rendezvous, the
-        // phone-side responder) is roadmap Phase 4. The action is a clearly
-        // labelled disabled stub — no credentials are faked.
-        OutlinedButton(
-            onClick = { onToast("Remote access activation ships in a later phase.") },
-            enabled = false,
-            modifier = Modifier.fillMaxWidth(),
-        ) { Text("Activate remote access") }
-        Text(
-            "Coming in a later release — the relay data plane is not built yet.",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(top = 4.dp),
-        )
+
+        val b = binding
+        if (b == null) {
+            OutlinedButton(
+                onClick = {
+                    if (busy) return@OutlinedButton
+                    busy = true
+                    scope.launch {
+                        val result = withContext(Dispatchers.IO) {
+                            ShareResponders.activate(
+                                ctx = ctx,
+                                grantUlid = shareId,
+                                shareLabel = shareLabel,
+                            )
+                        }
+                        busy = false
+                        result.fold(
+                            onSuccess = {
+                                binding = it
+                                onToast("Remote access activated.")
+                            },
+                            onFailure = { e ->
+                                onToast("Activation failed: ${e.message}")
+                            },
+                        )
+                    }
+                },
+                enabled = !busy,
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text(if (busy) "Activating…" else "Activate remote access") }
+        } else {
+            // The real share link — rendezvous + grant token + SPKI pin.
+            val link = remember(b, grantToken) {
+                ShareLink(
+                    rendezvousId = b.rendezvousId,
+                    token = grantToken,
+                    pinSpki = b.spkiPin,
+                    relayHost = ShareLink.DEFAULT_RELAY_HOST,
+                )
+            }
+            val statusLine = if (ShareResponders.isActive(shareId)) {
+                "Responder running — the relay tunnel is open."
+            } else {
+                "Responder will start when the app next opens this storage."
+            }
+            Text(
+                statusLine,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(8.dp))
+            OutlinedTextField(
+                value = link.canonicalUrl(),
+                onValueChange = {},
+                readOnly = true,
+                label = { Text("ohd://share link") },
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(Modifier.height(12.dp))
+            QrImage(content = link.canonicalUrl())
+            Spacer(Modifier.height(12.dp))
+            OutlinedButton(
+                onClick = {
+                    if (busy) return@OutlinedButton
+                    busy = true
+                    scope.launch {
+                        withContext(Dispatchers.IO) {
+                            ShareResponders.deactivate(ctx, shareId)
+                        }
+                        busy = false
+                        binding = null
+                        onToast("Remote access disabled.")
+                    }
+                },
+                enabled = !busy,
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text("Disable remote access") }
+        }
     }
 }
 
