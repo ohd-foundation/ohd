@@ -21,6 +21,12 @@ client_id = "cord-web"
 client_secret_env = "OHD_CORD_OIDC_OHD_SECRET"
 scopes = ["openid", "email", "profile"]
 
+# Testing-only alternative: a `dev` provider logs every visitor straight
+# in as one fixed identity, no OIDC. Replace the block above with:
+#   [[auth.provider]]
+#   id = "dev"
+#   kind = "dev"
+
 [models]
 default_provider = "anthropic"
 

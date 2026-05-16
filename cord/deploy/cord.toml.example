@@ -24,6 +24,14 @@ client_id = "cord-web"
 client_secret_env = "OHD_CORD_OIDC_OHD_SECRET"
 scopes = ["openid", "email", "profile"]
 
+# No IdP wired up yet? Use a dev provider instead of the block above: it
+# logs every visitor straight in as one fixed identity ("Dev User") with
+# no OIDC round-trip. For testing only — never leave this on a real
+# deployment.
+# [[auth.provider]]
+# id = "dev"
+# kind = "dev"
+
 [models]
 default_provider = "anthropic"
 

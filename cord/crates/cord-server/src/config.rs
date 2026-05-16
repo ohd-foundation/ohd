@@ -36,6 +36,10 @@ pub struct Config {
 #[derive(Debug, Clone)]
 pub struct OidcProvider {
     pub id: String,
+    /// `"oidc"` (default) or `"dev"`. A `dev` provider logs straight in as
+    /// a single fixed identity with no OIDC round-trip — for deployments
+    /// that have no IdP wired up yet.
+    pub kind: String,
     pub issuer: String,
     pub client_id: String,
     /// Empty for a public (PKCE-only) client.
@@ -110,6 +114,7 @@ fn resolve(file: FileConfig) -> anyhow::Result<Config> {
             };
             OidcProvider {
                 id: p.id,
+                kind: if p.kind.is_empty() { "oidc".into() } else { p.kind },
                 issuer: p.issuer,
                 client_id: p.client_id,
                 client_secret,
@@ -221,7 +226,11 @@ struct FileAuth {
 #[derive(Deserialize)]
 struct FileOidc {
     id: String,
+    #[serde(default)]
+    kind: String,
+    #[serde(default)]
     issuer: String,
+    #[serde(default)]
     client_id: String,
     #[serde(default)]
     client_secret_env: Option<String>,

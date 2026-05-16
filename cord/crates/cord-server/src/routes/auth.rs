@@ -20,7 +20,7 @@ pub async fn providers(State(app): State<AppState>) -> Json<Value> {
         .config
         .providers
         .iter()
-        .map(|p| json!({ "id": p.id, "issuer": p.issuer }))
+        .map(|p| json!({ "id": p.id, "issuer": p.issuer, "kind": p.kind }))
         .collect();
     Json(json!({ "providers": providers }))
 }
@@ -36,6 +36,21 @@ pub async fn start(
     Query(q): Query<StartQuery>,
 ) -> ApiResult<Response> {
     let provider = app.config.provider(&q.provider).ok_or(ApiError::NotFound)?;
+
+    // A `dev` provider has no real IdP behind it — log straight in as one
+    // fixed identity. Active only when the operator configures kind = "dev".
+    if provider.kind == "dev" {
+        let user = app.db.upsert_user("dev", "dev-user", Some("Dev User"))?;
+        let token = session::mint(
+            &user.cord_user_ulid,
+            &app.config.session_secret,
+            app.config.session_ttl_hours,
+        )?;
+        let secure = app.config.public_url.starts_with("https");
+        let cookie = session::cookie_for(&token, app.config.session_ttl_hours, secure);
+        return Ok(redirect_with_cookie(&app.config.public_url, &cookie));
+    }
+
     let redirect_uri = format!("{}/v1/auth/callback", app.config.public_url);
     let (url, state, verifier) = app.oidc.authorize_url(provider, &redirect_uri).await?;
     oidc::insert_pending(&app.pending, &state, &provider.id, &verifier).await;
