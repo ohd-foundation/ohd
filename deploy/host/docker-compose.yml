@@ -119,6 +119,31 @@ services:
     networks:
       - ohd-net
 
+  # OHD Identity — the OpenID Connect provider for accounts.ohd.dev.
+  # Profiled: it only starts with `docker compose --profile idp up`,
+  # because it needs a real idp.toml (mounted below) plus the
+  # OHD_IDP_CLIENT_* RP secrets before it serves a useful login. The
+  # RS256 signing key is generated into the named volume on first start
+  # and reused after, so issued id_tokens keep verifying. See idp/SPEC.md.
+  ohd-idp:
+    build:
+      context: ../../
+      dockerfile: idp/deploy/Dockerfile
+    image: ohd-idp:dev
+    container_name: ohd-idp
+    restart: unless-stopped
+    profiles: ["idp"]
+    expose:
+      - "8447"
+    volumes:
+      - idp_data:/var/lib/ohd-idp
+      - ./idp.toml:/etc/ohd-idp/idp.toml:ro
+    environment:
+      RUST_LOG: ${RUST_LOG:-info}
+      OHD_IDP_CLIENT_CORD_SECRET: ${OHD_IDP_CLIENT_CORD_SECRET:-}
+    networks:
+      - ohd-net
+
   caddy:
     image: caddy:2-alpine
     container_name: ohd-caddy
@@ -152,6 +177,8 @@ volumes:
     name: ohd_mcp_data
   cord_data:
     name: ohd_cord_data
+  idp_data:
+    name: ohd_idp_data
   caddy_data:
   caddy_config:
 

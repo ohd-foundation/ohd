@@ -1,0 +1,53 @@
+# OHD Identity configuration. The default config for `accounts.ohd.dev`.
+# Copy + edit for another deployment. Secrets are referenced by
+# environment-variable NAME, never inlined. Any scalar below can also be
+# overridden directly with an OHD_IDP_* environment variable
+# (e.g. OHD_IDP_ISSUER, OHD_IDP_LISTEN, OHD_IDP_SIGNUP_OPEN).
+
+[server]
+listen = "0.0.0.0:8447"
+issuer = "https://accounts.ohd.dev"     # the OIDC `iss` — must be exact
+data_dir = "/var/lib/ohd-idp"
+
+[store]
+# v1: the shared OHD SaaS SQLite database (ohd-idp + ohd-saas co-deployed,
+# one volume). Not opened in Phase 1 — wired up for email/password login
+# in Phase 2.
+saas_db = "/var/lib/ohd-saas/ohd-saas.db"
+
+[keys]
+# RS256 signing key; generated + persisted on first launch, published at
+# /jwks. Rotation keeps prior public keys in the JWKS for the overlap.
+signing_key_file = "/var/lib/ohd-idp/signing-key.pem"
+rotation_overlap_days = 7
+
+[session]
+sso_ttl_hours = 12          # browser SSO session at the IdP
+code_ttl_secs = 120         # OHD authorization-code lifetime
+
+[signup]
+open = true                 # allow self-service email/password sign-up
+
+[recovery]
+enabled = true              # allow "sign in with a recovery code"
+
+# Upstream identity providers the IdP federates to — OPTIONAL, later phase.
+# ohd-idp is an OIDC RP of each. With none configured the IdP runs purely
+# on its own email/password + recovery-code auth, which is the default.
+# [[upstream]]
+# id = "google"
+# issuer = "https://accounts.google.com"
+# client_id = "..."
+# client_secret_env = "OHD_IDP_UPSTREAM_GOOGLE_SECRET"
+# scopes = ["openid", "email", "profile"]
+
+# Relying parties. Static registry for v1.
+[[client]]
+id = "cord-web"
+redirect_uris = ["https://cord.ohd.dev/v1/auth/callback"]
+client_secret_env = "OHD_IDP_CLIENT_CORD_SECRET"
+
+[[client]]
+id = "connect-web"
+redirect_uris = ["https://connect.ohd.dev/auth/callback"]
+public = true               # PKCE-only, no client secret
