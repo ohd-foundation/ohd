@@ -18,7 +18,10 @@ use thiserror::Error;
 pub mod event_json;
 pub mod grant_json;
 pub mod put;
+pub mod scope;
 pub mod tools;
+
+pub use scope::{ShareScope, ToolKind};
 
 // ---------------------------------------------------------------------------
 // Named string aliases — zero runtime cost, big readability win across the
@@ -56,6 +59,12 @@ pub enum ToolError {
     /// Underlying storage failed.
     #[error("storage error: {0}")]
     Storage(#[from] ohd_storage_core::Error),
+    /// The request is outside what the share's grant permits. Distinct
+    /// from [`Self::InvalidInput`]: the agent must treat this as "not
+    /// permitted", never "no data" or "bad request". Only ever produced
+    /// on the scoped (share-responder) dispatch path.
+    #[error("not permitted: {0}")]
+    NotPermitted(String),
     /// Anything that doesn't fit the above.
     #[error("internal: {0}")]
     Internal(String),
@@ -74,6 +83,9 @@ pub struct Tool {
 }
 
 /// Every tool the catalog ships. Order matters only for stable presentation.
+///
+/// This is the unscoped (owner) catalog. The share responder calls
+/// [`catalog_scoped`] instead, which omits the tools a grant disallows.
 pub fn catalog() -> Vec<Tool> {
     macro_rules! t {
         ($m:path) => {{
@@ -174,4 +186,185 @@ pub fn catalog_json() -> JsonStr {
 
 fn error_json(message: &str) -> JsonStr {
     serde_json::json!({ "error": message }).to_string()
+}
+
+// ---------------------------------------------------------------------------
+// Share-scoped surface — used by the phone-side share responder when serving
+// a remote consumer (CORD, a clinician's device) over the relay tunnel.
+//
+// `scope: None` is exactly the owner path above — every scoped function with
+// `None` delegates to its unscoped counterpart, so the local-CORD path is
+// unchanged. `scope: Some(_)` constrains the catalog + every tool call to
+// what the share's grant permits.
+// ---------------------------------------------------------------------------
+
+/// Catalog filtered to the tools a share's scope permits.
+///
+/// `None` returns the full owner catalog. `Some(scope)` omits operator
+/// tools entirely and omits every write tool unless the grant carries
+/// write rules. Read + utility tools are always listed (a denied scope
+/// still lists them — calls then return [`ToolError::NotPermitted`] — so
+/// the consumer sees a stable catalog rather than an empty one).
+pub fn catalog_scoped(scope: Option<&ShareScope>) -> Vec<Tool> {
+    let all = catalog();
+    match scope {
+        None => all,
+        Some(scope) => all
+            .into_iter()
+            .filter(|t| scope.allows_tool_kind(scope::tool_kind(&t.name)))
+            .collect(),
+    }
+}
+
+/// JSON form of [`catalog_scoped`].
+pub fn catalog_scoped_json(scope: Option<&ShareScope>) -> JsonStr {
+    serde_json::to_string(&catalog_scoped(scope)).unwrap_or_else(|_| "[]".to_string())
+}
+
+/// Execute a tool, enforcing a share scope when one is supplied.
+///
+/// `scope = None` is identical to [`dispatch`]. `scope = Some(_)`:
+///
+/// - rejects operator tools and (for a read-only grant) write tools with
+///   [`ToolError::NotPermitted`];
+/// - rejects a write whose `event_type` the grant does not allow;
+/// - for read tools, rejects an explicitly-named out-of-scope
+///   `event_type`, clamps the requested time window to the grant's
+///   window, and redacts out-of-scope event rows + channels from the
+///   result;
+/// - denies everything when the grant is suspended / revoked / expired.
+pub fn dispatch_scoped(
+    name: &str,
+    input: &Value,
+    storage: &Storage,
+    scope: Option<&ShareScope>,
+) -> ToolResult<Value> {
+    let Some(scope) = scope else {
+        return dispatch(name, input, storage);
+    };
+
+    let kind = scope::tool_kind(name);
+    if !scope.allows_tool_kind(kind) {
+        return Err(ToolError::NotPermitted(match kind {
+            ToolKind::Operator => format!("tool {name} is owner-only and not available to a share"),
+            ToolKind::Write => "this share is read-only; write tools are not permitted".to_string(),
+            _ => format!("tool {name} is not available to this share"),
+        }));
+    }
+    if let Some(reason) = scope.deny_reason() {
+        return Err(ToolError::NotPermitted(reason.to_string()));
+    }
+
+    match kind {
+        ToolKind::Utility => dispatch(name, input, storage),
+        ToolKind::Operator => unreachable!("operator tools rejected above"),
+        ToolKind::Write => {
+            // Resolve the event type the call would write and check it
+            // against the grant's write rules before touching storage.
+            if let Some(et) = write_event_type(name, input) {
+                if !scope.allows_write_type(&et) {
+                    return Err(ToolError::NotPermitted(format!(
+                        "this share does not permit writing {et} events"
+                    )));
+                }
+            }
+            dispatch(name, input, storage)
+        }
+        ToolKind::Read => {
+            // Reject an explicitly-named out-of-scope event type up front
+            // so the agent gets "not permitted", never a misleading empty
+            // result for data it cannot see.
+            for key in ["event_type", "event_type_a", "event_type_b"] {
+                if let Some(et) = input.get(key).and_then(|v| v.as_str()) {
+                    if !scope.allows_read_type(et) {
+                        return Err(ToolError::NotPermitted(format!(
+                            "this share does not permit reading {et} events"
+                        )));
+                    }
+                }
+            }
+            // Clamp the requested time window to the grant's window.
+            let scoped_input = clamp_read_input(input, scope);
+            let mut out = dispatch(name, &scoped_input, storage)?;
+            scope.redact_result(&mut out);
+            Ok(out)
+        }
+    }
+}
+
+/// JSON-string wrapper for [`dispatch_scoped`] — the share responder's
+/// uniffi / MCP entry point. Mirrors [`dispatch_json`].
+pub fn dispatch_scoped_json(
+    name: &str,
+    input_json: &str,
+    storage: &Storage,
+    scope: Option<&ShareScope>,
+) -> JsonStr {
+    let input: Value = match serde_json::from_str(input_json) {
+        Ok(v) => v,
+        Err(e) => return error_json(&format!("invalid JSON input: {e}")),
+    };
+    match dispatch_scoped(name, &input, storage, scope) {
+        Ok(v) => v.to_string(),
+        Err(e) => error_json(&e.to_string()),
+    }
+}
+
+/// Resolve the dotted `event_type` a `log_*` tool would write, so the
+/// share scope can check it against the grant's write rules before
+/// touching storage. `None` when the type cannot be determined from the
+/// input — dispatch then proceeds and the storage layer rejects it.
+fn write_event_type(name: &str, input: &Value) -> Option<String> {
+    match name {
+        "log_food" => Some("food.eaten".to_string()),
+        "log_medication" => Some("medication.taken".to_string()),
+        "log_exercise" => Some("activity.exercise_session".to_string()),
+        "log_mood" => Some("wellness.mood".to_string()),
+        "log_sleep" => Some("activity.sleep".to_string()),
+        // Caller-chosen event type.
+        "log_measurement" | "log_free_event" => input
+            .get("event_type")
+            .and_then(|v| v.as_str())
+            .map(String::from),
+        // log_symptom derives `symptom.<slug>` from the `symptom` field.
+        "log_symptom" => input
+            .get("symptom")
+            .and_then(|v| v.as_str())
+            .map(|s| format!("symptom.{}", tools::log_symptom::slugify(s))),
+        _ => None,
+    }
+}
+
+/// Rewrite a read tool's `from_iso` / `to_iso` so the effective window is
+/// the intersection of the requested window and the grant's window. An
+/// empty intersection collapses the window to a zero-width range so the
+/// query returns no rows (the redaction pass also enforces this).
+fn clamp_read_input(input: &Value, scope: &ShareScope) -> Value {
+    let mut out = input.clone();
+    let Value::Object(map) = &mut out else {
+        return out;
+    };
+    let req_from = map
+        .get("from_iso")
+        .and_then(|v| v.as_str())
+        .and_then(event_json::parse_iso);
+    let req_to = map
+        .get("to_iso")
+        .and_then(|v| v.as_str())
+        .and_then(event_json::parse_iso);
+    let bounds = scope.clamp_window(req_from, req_to);
+    if bounds.empty {
+        // Force an empty window: lower bound after upper bound.
+        let pin = bounds.to_ms.or(bounds.from_ms).unwrap_or(0);
+        map.insert("from_iso".into(), Value::from(event_json::ms_to_iso(pin + 1)));
+        map.insert("to_iso".into(), Value::from(event_json::ms_to_iso(pin)));
+        return out;
+    }
+    if let Some(f) = bounds.from_ms {
+        map.insert("from_iso".into(), Value::from(event_json::ms_to_iso(f)));
+    }
+    if let Some(t) = bounds.to_ms {
+        map.insert("to_iso".into(), Value::from(event_json::ms_to_iso(t)));
+    }
+    out
 }

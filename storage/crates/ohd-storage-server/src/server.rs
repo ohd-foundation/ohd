@@ -480,6 +480,9 @@ fn event_input_pb_to_core(e: pb::EventInput) -> Result<CoreEventInput, ConnectEr
         source: e.source,
         source_id: e.source_id,
         notes: e.notes,
+        // The OHDC wire `Event` has no `top_level` field; writes over the
+        // RPC surface mint top-level events (the schema default).
+        top_level: true,
         sample_blocks,
         source_signature,
     })
@@ -553,6 +556,9 @@ fn event_filter_pb_to_core(f: pb::EventFilter) -> Result<ohd_events::EventFilter
         sensitivity_classes_not_in: vec![],
         channel_predicates,
         case_ulids_in: vec![],
+        // The OHDC wire `EventFilter` has no `top_level` predicate; the
+        // default `All` keeps RPC callers seeing every row.
+        visibility: ohd_events::EventVisibility::All,
     })
 }
 
@@ -2563,6 +2569,9 @@ fn pb_event_to_core(e: pb::Event) -> Result<ohd_events::Event, ConnectError> {
         channels,
         sample_blocks: vec![],
         attachments: vec![],
+        // The OHDC wire `Event` has no `top_level` field; default to a
+        // top-level event (the schema default).
+        top_level: true,
         device_id: e.device_id,
         app_name: e.app_name,
         app_version: e.app_version,

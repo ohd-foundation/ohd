@@ -40,6 +40,11 @@ pub use http;
 pub use quinn;
 pub use rustls;
 
+/// Cert-pinning for the inner TLS 1.3 session that rides the relay
+/// tunnel — storage-side self-signed identity cert, consumer-side
+/// pinned verifier. See [`tls_pin`].
+pub mod tls_pin;
+
 /// Self-signed certificate + key for dev / test use.
 ///
 /// Uses `rcgen` to mint a P-256 cert valid for `localhost` + `127.0.0.1`.

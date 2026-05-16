@@ -84,17 +84,15 @@ rustls.workspace = true
 rustls-pemfile.workspace = true
 rcgen.workspace = true
 
-# Outbound raw QUIC tunnel client (`src/relay_client.rs`). Connects to the
-# relay's `--quic-tunnel-listen` endpoint with ALPN `ohd-tnl1`, demuxes
-# server-initiated bidi streams onto the local Connect-RPC service. The
-# wire shape matches `relay/src/quic_tunnel.rs`; reference client lives at
-# `relay/examples/quic_tunnel_client.rs`.
-#
-# `rustls-platform-verifier` provides the OS-trust-store fallback for the
-# regular WebPKI path; `sha2` powers the SPKI-pin verifier that operators
-# can opt into via the `--relay-cert-pin` flag.
+# Outbound raw QUIC tunnel client + relay registration. Extracted into the
+# reusable `ohd-relay-client` crate (Phase 4b) so the Android uniffi binding
+# and CORD can share it. The server enables the `tunnel-service` feature,
+# which adds the hyper HTTP/2 bridge that demuxes relay sessions onto the
+# local `ConnectRpcService`; the wire shape matches `relay/src/quic_tunnel.rs`.
+ohd-relay-client = { path = "../ohd-relay-client", features = ["tunnel-service"] }
+# `sha2` powers the OAuth IdP path (`src/oauth.rs`); the relay SPKI-pin
+# verifier moved into `ohd-relay-client`.
 sha2.workspace = true
-rustls-platform-verifier = "0.6"
 
 # OAuth/OIDC IdP endpoints (`src/oauth.rs`). Storage can optionally act as its
 # own issuer when `--oauth-issuer URL` is set. Runtime deps:

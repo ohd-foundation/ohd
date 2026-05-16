@@ -1312,6 +1312,7 @@ name = "ohd-h3-helpers"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "base64",
  "bytes",
  "h3",
  "h3-quinn",
@@ -1321,6 +1322,8 @@ dependencies = [
  "rcgen",
  "rustls",
  "rustls-pemfile",
+ "sha2",
+ "time",
 ]
 
 [[package]]

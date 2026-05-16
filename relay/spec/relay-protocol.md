@@ -37,7 +37,20 @@ When a consumer (Care, Connect, MCP) wants to talk to the storage:
 3. The Relay accepts the connection. It does **not** terminate TLS — instead it negotiates the OHDC tunnel framing (next section) and starts forwarding bytes to the registered storage.
 4. **Inside that forwarded byte stream, the consumer and storage do their own TLS 1.3 handshake.** The consumer offers TLS, the storage presents its self-signed cert (signed by identity key), the consumer verifies the cert's SPKI fingerprint against the pin from the grant.
 5. Mismatch → consumer aborts with a clear "this storage isn't who the grant said it would be" error. Likely either: the user changed their identity key (re-issue grants), or someone has intercepted the relay (more concerning).
-6. Match → TLS session established end-to-end through the relay. From here on, OHDC operations flow over this TLS-inside-tunnel session. The relay sees encrypted bytes only.
+6. Match → TLS session established end-to-end through the relay. From here on, OHDC (or MCP — see [`../../cord/spec/data-link.md`](../../cord/spec/data-link.md)) operations flow over this TLS-inside-tunnel session. The relay sees encrypted bytes only.
+
+### Inner-TLS wire shape (the resolved open item)
+
+The earlier revision left "the precise wire shape of this" as an open item. It is now fixed. The inner TLS session is **not** a separate connection or a distinct frame type — it rides the ordinary `DATA` frames of an already-established session. Concretely:
+
+1. **Session is opened first, TLS second.** The consumer attaches, the relay assigns a `SESSION_ID` and sends `OPEN` to the storage, the storage replies `OPEN_ACK` (or `OPEN_NACK`, ending the attempt). Only *after* `OPEN_ACK` does either side emit a TLS byte. The `OPEN` payload carries the consumer's claimed grant-token preview so the storage can `OPEN_NACK` cheaply before paying for a TLS handshake; the token is *not* the cert-pin trust anchor and is re-validated inside the TLS session.
+2. **The TLS handshake rides `DATA` frames.** The consumer is the TLS client, the storage is the TLS server. Every TLS record the consumer's stack produces — `ClientHello`, then post-handshake records — is the payload of a `DATA` frame tagged with the session's `SESSION_ID`; every TLS record the storage produces travels back the same way. A TLS record larger than `MAX_PAYLOAD_LEN` (65535) is split across consecutive `DATA` frames; the receiver concatenates each session's `DATA` payloads into a single byte stream and feeds that to its TLS engine. `DATA` frames carry no record framing of their own — the payload is an opaque slice of the TLS byte stream, and frame boundaries need not align with TLS record boundaries.
+3. **ALPN.** The inner TLS handshake negotiates ALPN `ohd-mcp1` (MCP over the tunnel) or `ohdc1` (OHDC over the tunnel). This ALPN is negotiated end-to-end and is invisible to the relay — distinct from the *outer* ALPNs (`h3`, `ohd-tnl1`) the relay's own listeners advertise.
+4. **The pin is checked during the TLS handshake's certificate-verification step.** The consumer's TLS stack uses a custom certificate verifier (not the WebPKI chain validator): it computes `SHA-256` over the presented leaf cert's `SubjectPublicKeyInfo` and compares, in constant time, against the `pin` from the grant artifact. Equal → the handshake proceeds (TLS 1.3 then proves the storage holds the matching private key). Unequal → the verifier returns a failure, the TLS handshake aborts, and the consumer surfaces `CERT_PIN_MISMATCH`. The verifier does **not** consult system CA roots, cert expiry, or the SAN — the pin is the entire trust anchor. The check is **fail-closed**: any parse failure, any mismatch, any missing cert rejects the connection.
+5. **`OHDC`/`MCP` traffic resumes on the same `DATA` frames.** Once the inner TLS handshake completes, application records (also TLS records, now carrying application data) continue to flow as `DATA`-frame payloads on the same `SESSION_ID`. There is no transition frame; the relay cannot tell handshake bytes from application bytes, and does not need to.
+6. **`CLOSE` ends it.** Either side sends `CLOSE` for the `SESSION_ID`; a TLS `close_notify`, if sent, is just more `DATA`-frame ciphertext and arrives before the `CLOSE`.
+
+The relay's role in all of this is exactly nil beyond byte forwarding: it wraps inbound consumer bytes in `DATA` frames, routes by `SESSION_ID`, and unwraps `DATA` frames onto the storage tunnel (and the reverse). It never holds a TLS key, never parses a TLS record, never inspects a payload. This is what makes a malicious or subpoenaed relay unable to read or forge OHDC/MCP traffic.
 
 ### Why this works
 
@@ -58,8 +71,10 @@ ohd://grant/<token>?storage=<rendezvous_url>&pin=<sha256_spki_base64url>[&case=<
 Where:
 - `<token>` is the `ohdg_…` (or `ohdd_…` for device-bound) credential.
 - `<rendezvous_url>` is the relay's public URL for this storage (or the storage's direct URL if directly reachable).
-- `<sha256_spki_base64url>` is the storage's identity key fingerprint, base64url-encoded.
+- `<sha256_spki_base64url>` is the storage's identity-key fingerprint, base64url-no-pad-encoded.
 - `<case_ulid>` (optional) is set when the grant is case-bound.
+
+The fingerprint is `SHA-256` over the `SubjectPublicKeyInfo` of the storage's self-signed TLS cert — **not** a hash of the whole DER certificate. The SPKI is exactly the DER encoding of the storage's Ed25519 identity public key, so the fingerprint is invariant across cert renewals (a renewed 90-day cert under the same identity key has the same SPKI, hence the same pin). A whole-cert hash would change on every renewal and silently break every outstanding grant; the SPKI hash is what makes "cert renewal is invisible" hold. The pin changes only when the identity key itself rotates.
 
 The QR-coded form encodes the same URL. Connect mobile presents the URL and the QR; the grantee pastes / scans either.
 
@@ -266,7 +281,7 @@ This wire spec doesn't change the trust model in [`../components/relay.md`](../c
 
 The tunnel layer is about ~500 lines of Rust (frame parser/serializer, session table, dispatch loop). The relay binary as a whole is ~2k lines including OAuth-proxy-style metadata endpoints, the registration HTTP handlers, metering, and operational telemetry.
 
-The TLS-through-tunnel piece is mostly client-side: storage embeds a `rustls` server with the self-signed cert; consumer uses `rustls` with a custom verifier that checks the SPKI fingerprint against the pin. The relay never touches TLS — it just forwards DATA frames.
+The TLS-through-tunnel piece is mostly client-side: storage embeds a `rustls` server with the self-signed cert; consumer uses `rustls` with a custom verifier that checks the SPKI fingerprint against the pin. The relay never touches TLS — it just forwards DATA frames. The shared primitives — `storage_identity_cert` (mint the self-signed cert from an Ed25519 identity key, SAN = rendezvous URL), `spki_sha256` (derive the pin), and `PinnedServerCertVerifier` / `pinned_client_config` (the fail-closed consumer verifier) — live in the `ohd-h3-helpers` crate's `tls_pin` module, so both the storage server (and its Android binding) and any consumer (CORD's relay MCP client) depend on one implementation.
 
 ## Cross-references
 

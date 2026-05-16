@@ -53,7 +53,10 @@ pub fn execute(input: &Value, storage: &Storage) -> ToolResult<Value> {
     )
 }
 
-fn slugify(s: &str) -> String {
+/// Lowercase + non-alphanumeric → `_`, used to derive the `symptom.<slug>`
+/// event type. Public so the share-scope layer can resolve the type a
+/// `log_symptom` call would write before dispatching it.
+pub fn slugify(s: &str) -> String {
     s.to_lowercase()
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })

@@ -28,3 +28,10 @@ h3-quinn = "0.0"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 rustls-pemfile = "2"
 rcgen = { version = "0.13", default-features = false, features = ["pem", "ring"] }
+# `tls_pin`: SHA-256 of the cert SPKI (the pin), base64url for the share
+# artifact's `pin=` parameter, and the cert-validity timestamps rcgen's
+# `CertificateParams` takes as `time::OffsetDateTime` (rcgen depends on
+# `time` but does not re-export it).
+sha2 = "0.10"
+base64 = "0.22"
+time = { version = "0.3", default-features = false, features = ["std"] }

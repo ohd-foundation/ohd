@@ -24,9 +24,14 @@ mod auth_server;
 mod http3;
 mod jwks;
 mod oauth;
-mod relay_client;
 mod server;
 mod sync_server;
+
+// The outbound relay tunnel client + registration flow live in the reusable
+// `ohd-relay-client` crate (Phase 4b) so the Android uniffi binding and CORD
+// can share them. The server uses the `tunnel-service` feature, which keeps
+// the pre-extraction `serve_relay_tunnel(opts, service, shutdown)` shape.
+use ohd_relay_client as relay_client;
 
 /// Generated Connect-RPC service stubs. Produced at build time by
 /// `connectrpc-build` from `proto/ohdc/v0/ohdc.proto` (see `build.rs`).

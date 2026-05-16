@@ -1924,6 +1924,7 @@ name = "ohd-h3-helpers"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "base64",
  "bytes",
  "h3",
  "h3-quinn",
@@ -1933,6 +1934,8 @@ dependencies = [
  "rcgen",
  "rustls",
  "rustls-pemfile",
+ "sha2",
+ "time",
 ]
 
 [[package]]
@@ -1945,6 +1948,30 @@ dependencies = [
  "tempfile",
  "thiserror 1.0.69",
  "time",
+]
+
+[[package]]
+name = "ohd-relay-client"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "bytes",
+ "connectrpc",
+ "hex",
+ "http",
+ "hyper",
+ "hyper-util",
+ "quinn",
+ "reqwest",
+ "rustls",
+ "rustls-platform-verifier",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 1.0.69",
+ "tokio",
+ "tower",
+ "tracing",
 ]
 
 [[package]]
@@ -2027,6 +2054,7 @@ dependencies = [
  "hyper-util",
  "jsonwebtoken",
  "ohd-h3-helpers",
+ "ohd-relay-client",
  "ohd-storage-core",
  "protoc-bin-vendored",
  "quinn",
@@ -2037,7 +2065,6 @@ dependencies = [
  "rusqlite",
  "rustls",
  "rustls-pemfile",
- "rustls-platform-verifier",
  "serde",
  "serde_json",
  "sha2",

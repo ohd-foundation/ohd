@@ -19,6 +19,12 @@ members = [
     # is the per-request dispatch glue (ConnectRpcService vs axum::Router),
     # which stays in each binary.
     "crates/ohd-h3-helpers",
+    # Reusable OHD Relay client: storage registration, the OpenTunnel QUIC
+    # client, heartbeat/refresh/deregister, and the client-side TunnelFrame
+    # codec. Consumed by ohd-storage-server, the Android uniffi binding, and
+    # CORD. The default build is portable (no server-only deps); the hyper
+    # HTTP/2 session bridge is gated behind the `tunnel-service` feature.
+    "crates/ohd-relay-client",
 ]
 
 # OHD patch: openssl-src is forced to skip x86_64 assembly via a local
