@@ -34,6 +34,31 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <!--
+        Foreground-service permissions for the share responder
+        (`data/ShareResponderService.kt`). The responder must keep running
+        while the app is backgrounded so a doctor / CORD can reach the
+        phone's health data — Android 14 (API 34) requires both the generic
+        FOREGROUND_SERVICE permission and the type-specific one matching the
+        `<service android:foregroundServiceType>` declared below.
+
+        We use `connectedDevice`: the responder holds a persistent QUIC
+        tunnel to a relay / remote consumer (the doctor's device). The
+        `dataSync` type was rejected — Android 14 caps a `dataSync` foreground
+        service at ~6 hours, which would silently kill an always-on
+        responder; `connectedDevice` is the closest always-on networked-peer
+        type and has no such cap. `specialUse` is the documented fallback but
+        requires a Play-review justification string, so the better-fitting
+        standard type is preferred.
+    -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <!-- A `connectedDevice` foreground service additionally requires one of a
+         set of connectivity permissions. The share responder holds a network
+         tunnel to the relay, so CHANGE_NETWORK_STATE satisfies that gate —
+         without it startForeground throws SecurityException on launch. -->
+    <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
+
+    <!--
         CAMERA — used by the FoodScreen inline barcode preview (CameraX +
         ML Kit). Marked optional via `<uses-feature required="false">` so
         devices without a camera (rare on phones, but Wear / TV variants
@@ -145,6 +170,7 @@
             android:exported="true"
             android:label="@string/app_name"
             android:theme="@android:style/Theme.Material.NoActionBar"
+            android:launchMode="singleTop"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|uiMode">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -192,6 +218,30 @@
                 <action android:name="com.google.firebase.MESSAGING_EVENT" />
             </intent-filter>
         </service>
+
+        <!--
+            Share-responder foreground service (`data/ShareResponderService.kt`).
+
+            Hosts the CORD data-link Phase 4d share responders so the relay
+            tunnel survives the app being backgrounded — a doctor / CORD can
+            reach the phone's health data without the app in the foreground.
+            It runs only while at least one share has remote access enabled
+            and stops (removing its notification) once the last is disabled.
+
+            `foregroundServiceType="connectedDevice"` — the responder holds a
+            persistent QUIC tunnel to a relay / remote consumer. `dataSync`
+            was rejected: its ~6 h Android-14 cap would kill an always-on
+            responder. The runtime `startForeground(..., type)` call in the
+            service passes the matching `FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE`.
+
+            `exported="false"` — only the app starts it (via
+            `ShareResponders.activate` / `resumeAll`); no external component
+            should be able to.
+        -->
+        <service
+            android:name=".data.ShareResponderService"
+            android:exported="false"
+            android:foregroundServiceType="connectedDevice" />
 
         <!--
             Full-screen emergency dialog activity and the loud-notification

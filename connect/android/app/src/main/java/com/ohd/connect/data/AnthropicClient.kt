@@ -78,7 +78,7 @@ object AnthropicClient {
                         setRequestProperty("authorization", "Bearer $apiKey")
                         setRequestProperty(
                             "anthropic-beta",
-                            "oauth-2025-04-20,claude-code-2025-04-08",
+                            "oauth-2025-04-20",
                         )
                     } else {
                         setRequestProperty("x-api-key", apiKey)
@@ -175,17 +175,14 @@ object AnthropicClient {
             //  - "sk-ant-api…"  → standard API key, sent via x-api-key.
             //  - "sk-ant-oat…"  → Claude Code OAuth token, sent as
             //    Authorization: Bearer + the `oauth-2025-04-20` beta flag.
-            //    The Claude Code subscription pool gates Sonnet/Opus
-            //    behind a `claude-code-2025-04-08` beta flag — without
-            //    it OAuth tokens only resolve Haiku. Anything else is
-            //    best-effort treated as an API key.
+            //    OAuth tokens resolve Haiku with just that flag; the
+            //    `claude-code-2025-04-08` flag the desktop client used to
+            //    pass is now rejected by the API (HTTP 400). Anything else
+            //    is best-effort treated as an API key.
             val isOauth = apiKey.startsWith("sk-ant-oat")
             if (isOauth) {
                 setRequestProperty("authorization", "Bearer $apiKey")
-                setRequestProperty(
-                    "anthropic-beta",
-                    "oauth-2025-04-20,claude-code-2025-04-08",
-                )
+                setRequestProperty("anthropic-beta", "oauth-2025-04-20")
             } else {
                 setRequestProperty("x-api-key", apiKey)
             }

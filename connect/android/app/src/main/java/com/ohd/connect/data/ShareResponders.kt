@@ -131,6 +131,14 @@ object ShareResponders {
     /** True iff a responder is currently running for this share. */
     fun isActive(grantUlid: String): Boolean = running[grantUlid]?.isRunning() == true
 
+    /**
+     * Number of share responders currently running — i.e. the count of
+     * remote connections the relay can reach. [ShareResponderService] uses
+     * this both for the persistent notification's "N connection(s)" text and
+     * to decide whether the foreground service still has work to do.
+     */
+    fun activeCount(): Int = running.values.count { it.isRunning() }
+
     /** The persisted binding for a share, or null when remote access is off. */
     fun binding(ctx: Context, grantUlid: String): Binding? =
         Auth.getRemoteShare(ctx, grantUlid)?.let {
@@ -176,6 +184,11 @@ object ShareResponders {
             )
             Auth.saveRemoteShare(ctx, grantUlid, binding.toJson())
             startResponder(grantUlid, binding, identityKey, allowInsecureDev)
+            // Hand the responder a durable host: the foreground service
+            // keeps the process (and its tunnel) alive while the app is
+            // backgrounded. Idempotent — re-triggers the resume path if the
+            // service is already running.
+            ShareResponderService.start(ctx)
             binding
         }
     }
@@ -189,6 +202,9 @@ object ShareResponders {
     fun deactivate(ctx: Context, grantUlid: String) {
         running.remove(grantUlid)?.stop()
         Auth.saveRemoteShare(ctx, grantUlid, null)
+        // When the last remote share is turned off the foreground service
+        // has nothing left to host — stop it so its notification disappears.
+        ShareResponderService.stopIfIdle(ctx)
     }
 
     /**
@@ -205,6 +221,10 @@ object ShareResponders {
             runCatching { startResponder(ulid, binding, identityKey, allowInsecureDev = false) }
                 .onFailure { Log.w(TAG, "resume responder failed for $ulid", it) }
         }
+        // If anything came up, make sure the durable foreground host is
+        // running too — a cold start via `MainActivity` should also leave a
+        // backgrounding-survivable responder behind. Idempotent.
+        if (activeCount() > 0) ShareResponderService.start(ctx)
     }
 
     /**

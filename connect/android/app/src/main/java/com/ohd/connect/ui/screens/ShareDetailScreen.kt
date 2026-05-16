@@ -42,7 +42,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import android.widget.Toast
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
 import com.ohd.connect.data.AuditEntry
 import com.ohd.connect.data.AuditFilter
@@ -365,9 +368,27 @@ private fun ShareLinkCard(
         Spacer(Modifier.height(12.dp))
         QrImage(content = link.canonicalUrl())
         Spacer(Modifier.height(12.dp))
+        CopyLinkButton(link.canonicalUrl())
+        Spacer(Modifier.height(8.dp))
         OutlinedButton(onClick = onReissue, modifier = Modifier.fillMaxWidth()) {
             Text("Re-issue link")
         }
+    }
+}
+
+/** A full-width button that copies the share link to the clipboard. */
+@Composable
+private fun CopyLinkButton(url: String) {
+    val clipboard = LocalClipboardManager.current
+    val context = LocalContext.current
+    OutlinedButton(
+        onClick = {
+            clipboard.setText(AnnotatedString(url))
+            Toast.makeText(context, "Link copied", Toast.LENGTH_SHORT).show()
+        },
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Text("Copy link")
     }
 }
 
@@ -538,6 +559,8 @@ private fun ActivateRemoteAccessCard(
             Spacer(Modifier.height(12.dp))
             QrImage(content = link.canonicalUrl())
             Spacer(Modifier.height(12.dp))
+            CopyLinkButton(link.canonicalUrl())
+            Spacer(Modifier.height(8.dp))
             OutlinedButton(
                 onClick = {
                     if (busy) return@OutlinedButton

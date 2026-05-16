@@ -251,8 +251,12 @@ fun FoodSearchScreen(
                     RemoteLookupState.Idle -> Unit
                 }
                 itemsIndexed(
+                    // Key by index, not name: OpenFoodFacts search routinely
+                    // returns several products with the same display name
+                    // (e.g. M&M's "Peanut" variants), and a duplicate
+                    // LazyColumn key crashes the app.
                     remoteResults,
-                    key = { _, item -> "remote-${item.name}" },
+                    key = { index, _ -> "remote-$index" },
                 ) { index, item ->
                     OhdListItem(
                         primary = item.name,
@@ -270,7 +274,7 @@ fun FoodSearchScreen(
             item(key = "local-header") {
                 OhdSectionHeader(text = "RESULTS")
             }
-            itemsIndexed(results, key = { _, item -> "local-${item.name}" }) { index, item ->
+            itemsIndexed(results, key = { index, _ -> "local-$index" }) { index, item ->
                 // Tapping a result no longer logs directly — it opens the
                 // FoodDetailScreen so the user can pick amount/unit before
                 // committing the event.

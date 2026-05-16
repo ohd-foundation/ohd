@@ -1,5 +1,6 @@
 package com.ohd.connect
 
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -59,21 +60,52 @@ import com.ohd.connect.ui.theme.OhdTheme
  * those failures are gated behind TODO comments).
  */
 class MainActivity : ComponentActivity() {
+
+    companion object {
+        /**
+         * Intent extra carrying a nav route to land on after launch. Set by
+         * [com.ohd.connect.data.ShareResponderService]'s persistent
+         * notification so tapping it opens the app on the Shares screen.
+         */
+        const val EXTRA_START_ROUTE = "com.ohd.connect.extra.START_ROUTE"
+    }
+
+    /** Route the launching intent asked us to land on, if any. */
+    private var pendingRoute by mutableStateOf<String?>(null)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         StorageRepository.init(applicationContext)
+        pendingRoute = intent?.getStringExtra(EXTRA_START_ROUTE)
         setContent {
             OhdTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
-                    OhdConnectApp()
+                    OhdConnectApp(
+                        startRoute = pendingRoute,
+                        onStartRouteConsumed = { pendingRoute = null },
+                    )
                 }
             }
         }
     }
+
+    /**
+     * A second tap on the share-responder notification while the activity is
+     * already alive arrives here — re-publish the requested route so the
+     * Compose tree navigates again.
+     */
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        intent.getStringExtra(EXTRA_START_ROUTE)?.let { pendingRoute = it }
+    }
 }
 
 @Composable
-private fun OhdConnectApp() {
+private fun OhdConnectApp(
+    startRoute: String? = null,
+    onStartRouteConsumed: () -> Unit = {},
+) {
     val ctx = LocalContext.current
     var inSetup by remember { mutableStateOf(Auth.isFirstRun(ctx)) }
     var inClaim by remember { mutableStateOf(false) }
@@ -221,7 +253,10 @@ private fun OhdConnectApp() {
             }
         }
 
-        OhdConnectShell()
+        OhdConnectShell(
+            startRoute = startRoute,
+            onStartRouteConsumed = onStartRouteConsumed,
+        )
     }
 }
 
@@ -236,9 +271,20 @@ private fun OhdConnectApp() {
  * retained for now in case we want a tablet/desktop layout later.
  */
 @Composable
-private fun OhdConnectShell() {
+private fun OhdConnectShell(
+    startRoute: String? = null,
+    onStartRouteConsumed: () -> Unit = {},
+) {
     val navController = rememberNavController()
     val snackbar = remember { SnackbarHostState() }
+
+    // A launch route from the share-responder notification ("Shares" screen).
+    // Navigated once the NavHost is composed so Home stays on the back stack.
+    LaunchedEffect(startRoute) {
+        val route = startRoute ?: return@LaunchedEffect
+        navController.navigate(route)
+        onStartRouteConsumed()
+    }
 
     Scaffold(
         modifier = Modifier.fillMaxSize(),
