@@ -208,14 +208,22 @@ object ShareResponders {
     }
 
     /**
-     * Resume every share left with remote access enabled — called once from
-     * `MainActivity` after the storage handle is open. A share whose
-     * responder is already running is skipped.
+     * Resume every share the user left with remote access enabled.
+     *
+     * The set of shares to resume is derived from the **persisted bindings**
+     * ([Auth.listRemoteShareGrantUlids]) — a binding exists iff remote access
+     * is on. It must NOT be derived by filtering `listGrants(...)`: the Shares
+     * UI lists with `includeRevoked = true` while the resume path used
+     * `includeRevoked = false`, so any share whose grant fell outside that
+     * filter was activatable yet never reconnected after an app restart.
+     *
+     * A share whose responder is already running is skipped. A binding whose
+     * grant no longer resolves fails [startResponder] gracefully (logged).
      */
-    fun resumeAll(ctx: Context, grantUlids: List<String>) {
+    fun resumeAll(ctx: Context) {
         val identityKey = runCatching { StorageRepository.storageIdentityKey() }
             .getOrNull() ?: return
-        for (ulid in grantUlids) {
+        for (ulid in Auth.listRemoteShareGrantUlids(ctx)) {
             if (isActive(ulid)) continue
             val binding = binding(ctx, ulid) ?: continue
             runCatching { startResponder(ulid, binding, identityKey, allowInsecureDev = false) }
@@ -262,15 +270,13 @@ object ShareResponders {
                 return
             }
         }
-        val grantUlids = StorageRepository.listGrants(includeRevoked = false)
-            .getOrDefault(emptyList())
-            .map { it.ulid }
-        if (grantUlids.isEmpty()) {
-            Log.i(TAG, "push-wake: no grants to resume")
+        val remoteShares = Auth.listRemoteShareGrantUlids(ctx)
+        if (remoteShares.isEmpty()) {
+            Log.i(TAG, "push-wake: no remote shares to resume")
             return
         }
-        Log.i(TAG, "push-wake: resuming responders for ${grantUlids.size} share(s)")
-        resumeAll(ctx, grantUlids)
+        Log.i(TAG, "push-wake: resuming responders for ${remoteShares.size} share(s)")
+        resumeAll(ctx)
         // A push-woken responder should also get the durable foreground host.
         // Safe here — `wake` is not on the onStartCommand → resumeAll path, so
         // this does not re-enter the restart loop guarded against in resumeAll.

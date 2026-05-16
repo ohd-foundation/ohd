@@ -502,4 +502,19 @@ object Auth {
     /** The persisted remote-access binding JSON for a share, or null. */
     fun getRemoteShare(ctx: Context, grantUlid: String): String? =
         prefs(ctx).getString(KEY_REMOTE_SHARE_PREFIX + grantUlid, null)
+
+    /**
+     * Every grant ULID that currently has a persisted remote-access binding.
+     *
+     * This — not the grants table — is the source of truth for "which shares
+     * are remote-enabled": a binding exists iff the user activated remote
+     * access and has not turned it off. The responder-resume path must walk
+     * *this* list, because filtering through `listGrants(includeRevoked = …)`
+     * silently drops shares whose grant doesn't match the chosen filter, so
+     * they never reconnect after an app restart.
+     */
+    fun listRemoteShareGrantUlids(ctx: Context): List<String> =
+        prefs(ctx).all.keys
+            .filter { it.startsWith(KEY_REMOTE_SHARE_PREFIX) }
+            .map { it.removePrefix(KEY_REMOTE_SHARE_PREFIX) }
 }

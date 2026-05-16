@@ -214,17 +214,13 @@ private fun OhdConnectApp(
         // (CORD data link Phase 4d) by starting the durable share-responder
         // foreground service — its onStartCommand re-dials every persisted
         // binding so the relay tunnel comes back up after an app restart.
-        // Only started when at least one remote share exists, so a phone
-        // with nothing shared shows no persistent notification.
+        // Started iff at least one remote-share binding is persisted; the
+        // binding list is the source of truth (it does not need storage
+        // open, so there is no cold-start race against the storage handle).
         LaunchedEffect(Unit) {
-            if (!StorageRepository.isOpen()) return@LaunchedEffect
             kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                val grantUlids = StorageRepository.listGrants(includeRevoked = false)
-                    .getOrDefault(emptyList())
-                    .map { it.ulid }
-                val hasRemoteShare = grantUlids.any {
-                    com.ohd.connect.data.ShareResponders.binding(ctx, it) != null
-                }
+                val hasRemoteShare = com.ohd.connect.data.Auth
+                    .listRemoteShareGrantUlids(ctx).isNotEmpty()
                 if (hasRemoteShare) {
                     com.ohd.connect.data.ShareResponderService.start(ctx)
                 }

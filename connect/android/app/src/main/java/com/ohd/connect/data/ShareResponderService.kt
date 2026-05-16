@@ -85,10 +85,7 @@ class ShareResponderService : Service() {
         // Open it with the persisted stub key — the same path MainActivity
         // and ShareResponders.wake use — then resume the responders.
         ensureStorageOpen(applicationContext)
-        val grantUlids = StorageRepository.listGrants(includeRevoked = false)
-            .getOrDefault(emptyList())
-            .map { it.ulid }
-        ShareResponders.resumeAll(applicationContext, grantUlids)
+        ShareResponders.resumeAll(applicationContext)
 
         val count = ShareResponders.activeCount()
         if (count == 0) {
