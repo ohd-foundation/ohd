@@ -1,6 +1,9 @@
 package com.ohd.connect.data
 
 import android.content.Context
+import androidx.health.connect.client.HealthConnectClient
+import androidx.health.connect.client.changes.DeletionChange
+import androidx.health.connect.client.changes.UpsertionChange
 import androidx.health.connect.client.records.ActiveCaloriesBurnedRecord
 import androidx.health.connect.client.records.BasalBodyTemperatureRecord
 import androidx.health.connect.client.records.BasalMetabolicRateRecord
@@ -35,6 +38,7 @@ import androidx.health.connect.client.records.Vo2MaxRecord
 import androidx.health.connect.client.records.WeightRecord
 import androidx.health.connect.client.records.WheelchairPushesRecord
 import androidx.health.connect.client.records.metadata.Metadata
+import androidx.health.connect.client.request.ChangesTokenRequest
 import androidx.health.connect.client.request.ReadRecordsRequest
 import androidx.health.connect.client.time.TimeRangeFilter
 import java.time.Duration
@@ -44,53 +48,99 @@ import kotlin.reflect.KClass
 /**
  * Result of a [syncFromHealthConnect] run.
  *
- * - [readByType] — number of Health Connect records observed per record
- *   type, keyed by the OHD event type (e.g. `"activity.steps"`). One per
- *   type, even if zero, so the Settings screen can render a stable list.
+ * - [readByType] — number of OHD events derived per record type for this
+ *   run, keyed by the OHD event type (e.g. `"activity.steps"`). One entry
+ *   per known type, even if zero, so the Settings screen can render a
+ *   stable list.
  * - [ingested]   — total events handed to [StorageRepository.putEvent].
  *   May be less than the sum of [readByType] values if individual events
  *   failed (count goes to [errors]).
  * - [errors]     — human-readable error strings, one per failed type or
  *   ingest. Surfaced in the Debug section of the Health Connect
  *   settings screen.
+ * - [mode]       — how this run discovered records: a one-time historical
+ *   backfill, or an incremental Changes-API delta.
+ * - [changesProcessed] — number of Health Connect `Change` rows consumed
+ *   from the Changes API (`UpsertionChange` + `DeletionChange`). Zero for
+ *   a pure historical backfill.
+ * - [deletions]  — number of `DeletionChange` rows observed (records
+ *   removed in Health Connect since the last sync).
+ * - [tokenAcquired] — whether this run ended holding a valid changes
+ *   token; surfaced in the Debug card so the user can see incremental
+ *   sync is armed.
  */
 data class SyncResult(
     val readByType: Map<String, Int>,
     val ingested: Int,
     val errors: List<String>,
+    val mode: SyncMode = SyncMode.Incremental,
+    val changesProcessed: Int = 0,
+    val deletions: Int = 0,
+    val tokenAcquired: Boolean = false,
 )
 
+/** How a [syncFromHealthConnect] run discovered records to ingest. */
+enum class SyncMode {
+    /** One-time bounded historical read — first sync, or after token expiry. */
+    HistoricalBackfill,
+
+    /** Delta read via the Health Connect Changes API. */
+    Incremental,
+}
+
 /**
- * Persisted sync metadata, stored in the same EncryptedSharedPreferences
- * file as `Auth`. `null` last-sync means "never synced".
+ * Persisted sync metadata, stored in the same `SharedPreferences` file as
+ * the rest of the Health Connect state.
  */
 private const val KEY_LAST_SYNC_MS = "health_connect_last_sync_ms"
-private const val KEY_TYPE_LAST_SYNC_PREFIX = "health_connect_last_sync_ms__"
-// First-ever sync pulls a full 5-year history. Health Connect itself
+private const val KEY_CHANGES_TOKEN = "health_connect_changes_token"
+// The first-ever sync pulls a bounded history. Health Connect itself
 // stores per-record retention up to ~30 days for some types and longer
 // for others; the platform clamps the range, we just ask for "all".
-// After this initial pull, subsequent runs use `lastSyncMs` so the
-// window stays delta-only.
+// After this initial pull, every subsequent run is delta-only via the
+// Changes API — see the function doc below.
 private const val DEFAULT_BACKFILL_DAYS = 365L * 5L
 
 /**
- * Read records from Health Connect since the last sync (or 30 days if
- * never), turn each into an [EventInput], and persist via
- * [StorageRepository.putEvent].
+ * Pull fresh data from Health Connect and persist it as OHD events.
  *
- * Per-type failures are isolated with [runCatching] so a single broken
- * record type can't abort the whole import. The function commits the new
- * `lastSyncMs` only after all eight reads complete; partial-progress
- * mid-failure isn't worth the complexity for v1.
+ * ## Why the Changes API
+ *
+ * The old approach used a per-record-type timestamp watermark: read every
+ * record with `timestamp > latest stored event`. That silently dropped
+ * data. Samsung Health drip-feeds samples into Health Connect *after* a
+ * sync has run, stamped with times that fall *below* the current
+ * watermark — heart-rate especially — so those samples were skipped
+ * forever.
+ *
+ * Health Connect's Changes API hands changes back in **insertion order**,
+ * independent of record timestamp, so a late-arriving backdated sample is
+ * still delivered. This function uses it for every sync after the first.
+ *
+ * ## Flow
+ *
+ *  - **Initial sync** (no stored changes token): do a one-time bounded
+ *    historical read ([DEFAULT_BACKFILL_DAYS]) so existing history lands,
+ *    then acquire a changes token. Every later run is incremental.
+ *  - **Incremental sync** (token present): loop `getChanges` while
+ *    `hasMore`, advancing the token, and persist `nextChangesToken`.
+ *  - **Token expired** (`changesTokenExpired == true`, or `getChanges`
+ *    throws for a stale token): discard it, do a fresh historical read,
+ *    re-acquire a token.
+ *
+ * Per-type failures are isolated with [runCatching] so one broken record
+ * type can't abort the whole import.
  *
  * @param ctx     Application context — used for prefs + the HC client.
- * @param sinceMs Override the persisted last-sync timestamp; `null` reads
- *                from prefs (or defaults to 30 days ago).
- * @param untilMs Upper bound. Defaults to "now"; tests can pin it.
+ * @param forceHistorical Force the historical-backfill path even when a
+ *                changes token exists; backs the Settings "Sync from
+ *                scratch" affordance. Discards the stored token.
+ * @param untilMs Upper bound for the historical read. Defaults to "now";
+ *                tests can pin it.
  */
 suspend fun syncFromHealthConnect(
     ctx: Context,
-    sinceMs: Long? = null,
+    forceHistorical: Boolean = false,
     untilMs: Long = System.currentTimeMillis(),
 ): SyncResult {
     val client = OhdHealthConnect.client(ctx) ?: return SyncResult(
@@ -99,608 +149,245 @@ suspend fun syncFromHealthConnect(
         errors = listOf("Health Connect provider not installed."),
     )
 
-    val backfillSince = untilMs - Duration.ofDays(DEFAULT_BACKFILL_DAYS).toMillis()
+    val ingest = IngestAccumulator()
+    val storedToken = HealthConnectPrefs.changesToken(ctx)
+        ?.takeUnless { forceHistorical }
 
-    val readByType = mutableMapOf<String, Int>()
-    val errors = mutableListOf<String>()
-    var ingested = 0
+    if (storedToken == null) {
+        // ---- Initial sync (or forced "from scratch") ----------------
+        // No token yet: pull a bounded history once, then arm the
+        // Changes API for every future run.
+        if (forceHistorical) HealthConnectPrefs.clearChangesToken(ctx)
+        historicalBackfill(client, ingest, untilMs)
+        val token = acquireChangesToken(ctx, client, ingest)
+        HealthConnectPrefs.setLastSyncMs(ctx, untilMs)
+        return ingest.toResult(SyncMode.HistoricalBackfill, tokenAcquired = token != null)
+    }
 
-    // ---- Helper that runs one record-type sync ----
-    //
-    // Each record type tracks its own `lastSyncMs` cursor in
-    // [HealthConnectPrefs]. First call for a type defaults to the 5-year
-    // backfill window — so granting a new permission later still pulls
-    // history for that type (the original "granted Sleep after months,
-    // got nothing" bug). The caller-supplied [sinceMs] overrides every
-    // per-type cursor; used by the Settings "Sync now from scratch" button.
-    suspend fun <T : Record> readType(
-        recordKlass: KClass<T>,
-        eventType: String,
-        toEvents: (T) -> List<EventInput>,
-    ) {
-        // Ask storage for the latest event we already have of this type
-        // from Health Connect. That timestamp is the incremental cursor —
-        // no separate prefs counter to keep in sync. Self-healing across
-        // reinstalls and any sync that committed events but failed before
-        // updating a cursor: re-running picks up exactly where we left off.
-        val latestStored = StorageRepository
-            .queryEvents(
-                EventFilter(
-                    eventTypesIn = listOf(eventType),
-                    sourceIn = listOf(SOURCE_TAG),
-                    limit = 1,
-                    visibility = EventVisibility.All,
-                ),
-            )
-            .getOrNull()
-            ?.firstOrNull()
-            ?.timestampMs
-        val effectiveSince = sinceMs
-            ?: latestStored?.plus(1) // +1 ms so we don't re-pull the same record
-            ?: backfillSince
-        val timeRange = TimeRangeFilter.between(
-            Instant.ofEpochMilli(effectiveSince),
-            Instant.ofEpochMilli(untilMs),
+    // ---- Incremental sync via the Changes API -----------------------
+    val expired = drainChanges(ctx, client, storedToken, ingest)
+    if (expired) {
+        // The provider rotated us out (default retention is ~30 days of
+        // change history). Fall back to a fresh historical read and
+        // re-arm — same recovery path as a never-synced install.
+        ingest.errors.add(
+            "Changes token expired — ran a fresh historical backfill and re-armed.",
         )
-        // Page through results. Health Connect's `ReadRecordsRequest` caps
-        // at 5000 rows per call and exposes a `pageToken` for the next
-        // batch. The default 1000 was easy to overflow on a 5-year
-        // backfill of HR samples — the watch records one HR record per
-        // workout / minute, and each can carry 100+ sub-samples.
-        val outcome = runCatching {
-            var totalRecords = 0
-            var pageToken: String? = null
-            while (true) {
-                val request = ReadRecordsRequest(
+        HealthConnectPrefs.clearChangesToken(ctx)
+        ingest.reset()
+        historicalBackfill(client, ingest, untilMs)
+        val token = acquireChangesToken(ctx, client, ingest)
+        HealthConnectPrefs.setLastSyncMs(ctx, untilMs)
+        return ingest.toResult(SyncMode.HistoricalBackfill, tokenAcquired = token != null)
+    }
+
+    HealthConnectPrefs.setLastSyncMs(ctx, untilMs)
+    return ingest.toResult(
+        SyncMode.Incremental,
+        tokenAcquired = HealthConnectPrefs.changesToken(ctx) != null,
+    )
+}
+
+/**
+ * Acquire a fresh Changes-API token covering every record type we map and
+ * persist it. Returns the token, or `null` on failure (error appended to
+ * [ingest]). A `null` here just means the next run retries the historical
+ * path — no data is lost.
+ */
+private suspend fun acquireChangesToken(
+    ctx: Context,
+    client: HealthConnectClient,
+    ingest: IngestAccumulator,
+): String? {
+    return runCatching {
+        val token = client.getChangesToken(
+            ChangesTokenRequest(recordTypes = RECORD_MAPPERS.keys),
+        )
+        HealthConnectPrefs.setChangesToken(ctx, token)
+        token
+    }.getOrElse { e ->
+        ingest.errors.add("Failed to acquire changes token — ${e.message ?: "(null)"}")
+        null
+    }
+}
+
+/**
+ * Loop `getChanges` from [startToken] while `hasMore`, advancing and
+ * persisting the token after each page so a crash mid-drain resumes
+ * cleanly. Each [UpsertionChange] is mapped + ingested; each
+ * [DeletionChange] is counted (storage has no per-source-id delete yet —
+ * see [IngestAccumulator.deletions]).
+ *
+ * @return `true` if the provider reported the token expired — the caller
+ *         should fall back to a historical backfill.
+ */
+private suspend fun drainChanges(
+    ctx: Context,
+    client: HealthConnectClient,
+    startToken: String,
+    ingest: IngestAccumulator,
+): Boolean {
+    var token = startToken
+    while (true) {
+        val response = try {
+            client.getChanges(token)
+        } catch (e: Exception) {
+            // Some providers surface an expired token as a thrown
+            // IllegalStateException rather than `changesTokenExpired`.
+            // Treat any failure on the very first page as "expired" so we
+            // recover instead of wedging; a mid-drain failure is logged
+            // and retried by the worker on the next firing.
+            return if (token == startToken) {
+                true
+            } else {
+                ingest.errors.add("getChanges failed mid-drain — ${e.message ?: "(null)"}")
+                false
+            }
+        }
+        if (response.changesTokenExpired) return true
+
+        for (change in response.changes) {
+            when (change) {
+                is UpsertionChange -> ingestRecord(change.record, ingest)
+                is DeletionChange -> ingest.deletions++
+                else -> Unit
+            }
+        }
+        ingest.changesProcessed += response.changes.size
+
+        token = response.nextChangesToken
+        HealthConnectPrefs.setChangesToken(ctx, token)
+        if (!response.hasMore) break
+    }
+    return false
+}
+
+/**
+ * One-time bounded historical read across every mapped record type. Kept
+ * from the original watermark implementation — it only runs on the first
+ * sync (or after a token expiry), so paging the full window is fine.
+ */
+private suspend fun historicalBackfill(
+    client: HealthConnectClient,
+    ingest: IngestAccumulator,
+    untilMs: Long,
+) {
+    val sinceMs = untilMs - Duration.ofDays(DEFAULT_BACKFILL_DAYS).toMillis()
+    val timeRange = TimeRangeFilter.between(
+        Instant.ofEpochMilli(sinceMs),
+        Instant.ofEpochMilli(untilMs),
+    )
+    for ((recordKlass, _) in RECORD_MAPPERS) {
+        readHistorical(client, recordKlass, timeRange, ingest)
+    }
+}
+
+/**
+ * Page through `readRecords` for one record type and ingest every row.
+ * `ReadRecordsRequest` caps at 5000 rows per call; the watch can produce
+ * far more HR samples than that across a 5-year window, so we follow the
+ * `pageToken` until exhausted.
+ */
+private suspend fun <T : Record> readHistorical(
+    client: HealthConnectClient,
+    recordKlass: KClass<T>,
+    timeRange: TimeRangeFilter,
+    ingest: IngestAccumulator,
+) {
+    val outcome = runCatching {
+        var pageToken: String? = null
+        while (true) {
+            val response = client.readRecords(
+                ReadRecordsRequest(
                     recordType = recordKlass,
                     timeRangeFilter = timeRange,
                     pageSize = 5_000,
                     pageToken = pageToken,
-                )
-                val response = client.readRecords(request)
-                totalRecords += response.records.size
-                for (record in response.records) {
-                    val events = toEvents(record)
-                    for (input in events) {
-                        val res = StorageRepository.putEvent(input)
-                        if (res.isSuccess) {
-                            when (val o = res.getOrNull()) {
-                                is PutEventOutcome.Committed,
-                                is PutEventOutcome.Pending -> ingested++
-                                is PutEventOutcome.Error -> errors.add(
-                                    "$eventType: storage error ${o.code}: ${o.message}",
-                                )
-                                null -> Unit
-                            }
-                        } else {
-                            errors.add(
-                                "$eventType: putEvent threw ${res.exceptionOrNull()?.message ?: "(null)"}",
-                            )
-                        }
-                    }
-                }
-                pageToken = response.pageToken
-                if (pageToken == null) break
+                ),
+            )
+            for (record in response.records) {
+                ingestRecord(record, ingest)
             }
-            readByType[eventType] = totalRecords
+            pageToken = response.pageToken
+            if (pageToken == null) break
         }
-        // No per-type cursor to maintain — the watermark is the latest
-        // stored event itself (see `latestStored` above).
-        if (outcome.isFailure) {
-            readByType.putIfAbsent(eventType, 0)
-            errors.add(
-                "$eventType: read failed — ${outcome.exceptionOrNull()?.message ?: "(null)"}",
+    }
+    if (outcome.isFailure) {
+        ingest.errors.add(
+            "${recordKlass.simpleName}: historical read failed — " +
+                (outcome.exceptionOrNull()?.message ?: "(null)"),
+        )
+    }
+}
+
+/**
+ * Map a single Health Connect [Record] to OHD [EventInput]s via
+ * [RECORD_MAPPERS] and persist each through [StorageRepository.putEvent].
+ *
+ * `putEvent` is idempotent on `(source, sourceId)`, so a record delivered
+ * by both the historical backfill and the first Changes-API page is
+ * de-duplicated by storage — no extra bookkeeping here. Unknown record
+ * types (mapper absent) are silently ignored.
+ */
+private fun ingestRecord(record: Record, ingest: IngestAccumulator) {
+    val mapper = RECORD_MAPPERS[record::class] ?: return
+    val events = runCatching { mapper(record) }.getOrElse { e ->
+        ingest.errors.add("${record::class.simpleName}: mapping failed — ${e.message ?: "(null)"}")
+        return
+    }
+    for (input in events) {
+        ingest.readByType[input.eventType] =
+            (ingest.readByType[input.eventType] ?: 0) + 1
+        val res = StorageRepository.putEvent(input)
+        if (res.isSuccess) {
+            when (val o = res.getOrNull()) {
+                is PutEventOutcome.Committed,
+                is PutEventOutcome.Pending -> ingest.ingested++
+                is PutEventOutcome.Error -> ingest.errors.add(
+                    "${input.eventType}: storage error ${o.code}: ${o.message}",
+                )
+                null -> Unit
+            }
+        } else {
+            ingest.errors.add(
+                "${input.eventType}: putEvent threw " +
+                    (res.exceptionOrNull()?.message ?: "(null)"),
             )
         }
     }
+}
 
-    // ---- Steps ----
-    readType(StepsRecord::class, EVT_STEPS) { rec ->
-        listOf(
-            EventInput(
-                timestampMs = rec.startTime.toEpochMilli(),
-                durationMs = Duration.between(rec.startTime, rec.endTime).toMillis()
-                    .coerceAtLeast(0L),
-                eventType = EVT_STEPS,
-                channels = listOf(
-                    EventChannelInput(
-                        path = "count",
-                        scalar = OhdScalar.Int(rec.count),
-                    ),
-                ),
-                source = SOURCE_TAG,
-                sourceId = rec.metadata.id,
-                notes = sourceNote(rec.metadata),
-            ),
-        )
+/** Mutable scratch state threaded through one [syncFromHealthConnect] run. */
+private class IngestAccumulator {
+    val readByType: MutableMap<String, Int> = mutableMapOf()
+    val errors: MutableList<String> = mutableListOf()
+    var ingested: Int = 0
+    var changesProcessed: Int = 0
+    var deletions: Int = 0
+
+    /** Drop ingest counters before a post-expiry historical retry. */
+    fun reset() {
+        readByType.clear()
+        ingested = 0
+        changesProcessed = 0
+        deletions = 0
+        // `errors` is intentionally kept — the expiry note belongs in the result.
     }
 
-    // ---- Heart rate ----
-    //
-    // A HeartRateRecord carries 1+ samples covering [startTime, endTime].
-    // Fan out one OHD event per sample so the per-bpm timestamp survives.
-    readType(HeartRateRecord::class, EVT_HEART_RATE) { rec ->
-        rec.samples.map { sample ->
-            EventInput(
-                timestampMs = sample.time.toEpochMilli(),
-                eventType = EVT_HEART_RATE,
-                channels = listOf(
-                    EventChannelInput(
-                        path = "bpm",
-                        scalar = OhdScalar.Real(sample.beatsPerMinute.toDouble()),
-                    ),
-                ),
-                source = SOURCE_TAG,
-                sourceId = "${rec.metadata.id}:${sample.time.toEpochMilli()}",
-                notes = sourceNote(rec.metadata),
-            )
-        }
-    }
-
-    // ---- Blood pressure ----
-    readType(BloodPressureRecord::class, EVT_BLOOD_PRESSURE) { rec ->
-        listOf(
-            EventInput(
-                timestampMs = rec.time.toEpochMilli(),
-                eventType = EVT_BLOOD_PRESSURE,
-                channels = listOf(
-                    EventChannelInput(
-                        path = "systolic_mmhg",
-                        scalar = OhdScalar.Real(rec.systolic.inMillimetersOfMercury),
-                    ),
-                    EventChannelInput(
-                        path = "diastolic_mmhg",
-                        scalar = OhdScalar.Real(rec.diastolic.inMillimetersOfMercury),
-                    ),
-                ),
-                source = SOURCE_TAG,
-                sourceId = rec.metadata.id,
-                notes = sourceNote(rec.metadata),
-            ),
+    fun toResult(mode: SyncMode, tokenAcquired: Boolean): SyncResult {
+        // Ensure every well-known type appears so the Settings list is stable.
+        val byType = readByType.toMutableMap()
+        for ((_, eventType) in HEALTH_CONNECT_TYPES) byType.putIfAbsent(eventType, 0)
+        return SyncResult(
+            readByType = byType,
+            ingested = ingested,
+            errors = errors,
+            mode = mode,
+            changesProcessed = changesProcessed,
+            deletions = deletions,
+            tokenAcquired = tokenAcquired,
         )
     }
-
-    // ---- Blood glucose ----
-    //
-    // OHD canonicalises glucose to mmol/L. Health Connect's BloodGlucose unit
-    // ships an mmol-per-litre accessor as a `Double`.
-    readType(BloodGlucoseRecord::class, EVT_GLUCOSE) { rec ->
-        listOf(
-            EventInput(
-                timestampMs = rec.time.toEpochMilli(),
-                eventType = EVT_GLUCOSE,
-                channels = listOf(
-                    EventChannelInput(
-                        path = "value",
-                        scalar = OhdScalar.Real(rec.level.inMillimolesPerLiter),
-                    ),
-                    EventChannelInput(
-                        path = "unit",
-                        scalar = OhdScalar.Text("mmol/L"),
-                    ),
-                ),
-                source = SOURCE_TAG,
-                sourceId = rec.metadata.id,
-                notes = sourceNote(rec.metadata),
-            ),
-        )
-    }
-
-    // ---- Weight ----
-    readType(WeightRecord::class, EVT_WEIGHT) { rec ->
-        listOf(
-            EventInput(
-                timestampMs = rec.time.toEpochMilli(),
-                eventType = EVT_WEIGHT,
-                channels = listOf(
-                    EventChannelInput(
-                        path = "kg",
-                        scalar = OhdScalar.Real(rec.weight.inKilograms),
-                    ),
-                ),
-                source = SOURCE_TAG,
-                sourceId = rec.metadata.id,
-                notes = sourceNote(rec.metadata),
-            ),
-        )
-    }
-
-    // ---- Body temperature ----
-    readType(BodyTemperatureRecord::class, EVT_TEMPERATURE) { rec ->
-        listOf(
-            EventInput(
-                timestampMs = rec.time.toEpochMilli(),
-                eventType = EVT_TEMPERATURE,
-                channels = listOf(
-                    EventChannelInput(
-                        path = "celsius",
-                        scalar = OhdScalar.Real(rec.temperature.inCelsius),
-                    ),
-                ),
-                source = SOURCE_TAG,
-                sourceId = rec.metadata.id,
-                notes = sourceNote(rec.metadata),
-            ),
-        )
-    }
-
-    // ---- Sleep ----
-    //
-    // A SleepSessionRecord has its own start/end. We emit a single
-    // `activity.sleep` event with `duration_minutes` rather than fanning
-    // out per-stage; clinician views can drill into Health Connect for
-    // detail when they care.
-    readType(SleepSessionRecord::class, EVT_SLEEP) { rec ->
-        val durationMs = Duration.between(rec.startTime, rec.endTime).toMillis()
-            .coerceAtLeast(0L)
-        listOf(
-            EventInput(
-                timestampMs = rec.startTime.toEpochMilli(),
-                durationMs = durationMs,
-                eventType = EVT_SLEEP,
-                channels = listOf(
-                    EventChannelInput(
-                        path = "duration_minutes",
-                        scalar = OhdScalar.Int(durationMs / 60_000L),
-                    ),
-                ),
-                source = SOURCE_TAG,
-                sourceId = rec.metadata.id,
-                notes = sourceNote(rec.metadata, fallbackTitle = rec.title),
-            ),
-        )
-    }
-
-    // ---- Oxygen saturation ----
-    readType(OxygenSaturationRecord::class, EVT_SPO2) { rec ->
-        listOf(
-            EventInput(
-                timestampMs = rec.time.toEpochMilli(),
-                eventType = EVT_SPO2,
-                channels = listOf(
-                    EventChannelInput(
-                        path = "percentage",
-                        scalar = OhdScalar.Real(rec.percentage.value),
-                    ),
-                ),
-                source = SOURCE_TAG,
-                sourceId = rec.metadata.id,
-                notes = sourceNote(rec.metadata),
-            ),
-        )
-    }
-
-    // ---- Resting heart rate ----
-    readType(RestingHeartRateRecord::class, EVT_RESTING_HEART_RATE) { rec ->
-        listOf(
-            EventInput(
-                timestampMs = rec.time.toEpochMilli(),
-                eventType = EVT_RESTING_HEART_RATE,
-                channels = listOf(EventChannelInput("bpm", OhdScalar.Real(rec.beatsPerMinute.toDouble()))),
-                source = SOURCE_TAG,
-                sourceId = rec.metadata.id,
-                notes = sourceNote(rec.metadata),
-            ),
-        )
-    }
-
-    // ---- Heart rate variability (RMSSD) ----
-    readType(HeartRateVariabilityRmssdRecord::class, EVT_HRV_RMSSD) { rec ->
-        listOf(
-            EventInput(
-                timestampMs = rec.time.toEpochMilli(),
-                eventType = EVT_HRV_RMSSD,
-                channels = listOf(EventChannelInput("rmssd_ms", OhdScalar.Real(rec.heartRateVariabilityMillis))),
-                source = SOURCE_TAG,
-                sourceId = rec.metadata.id,
-                notes = sourceNote(rec.metadata),
-            ),
-        )
-    }
-
-    // ---- Respiratory rate ----
-    readType(RespiratoryRateRecord::class, EVT_RESPIRATORY_RATE) { rec ->
-        listOf(
-            EventInput(
-                timestampMs = rec.time.toEpochMilli(),
-                eventType = EVT_RESPIRATORY_RATE,
-                channels = listOf(EventChannelInput("rate_per_min", OhdScalar.Real(rec.rate))),
-                source = SOURCE_TAG,
-                sourceId = rec.metadata.id,
-                notes = sourceNote(rec.metadata),
-            ),
-        )
-    }
-
-    // ---- Basal body temperature ----
-    readType(BasalBodyTemperatureRecord::class, EVT_BASAL_BODY_TEMP) { rec ->
-        listOf(
-            EventInput(
-                timestampMs = rec.time.toEpochMilli(),
-                eventType = EVT_BASAL_BODY_TEMP,
-                channels = listOf(EventChannelInput("celsius", OhdScalar.Real(rec.temperature.inCelsius))),
-                source = SOURCE_TAG,
-                sourceId = rec.metadata.id,
-                notes = sourceNote(rec.metadata),
-            ),
-        )
-    }
-
-    // ---- Body composition ----
-    readType(HeightRecord::class, EVT_HEIGHT) { rec ->
-        listOf(
-            EventInput(
-                timestampMs = rec.time.toEpochMilli(),
-                eventType = EVT_HEIGHT,
-                channels = listOf(EventChannelInput("meters", OhdScalar.Real(rec.height.inMeters))),
-                source = SOURCE_TAG,
-                sourceId = rec.metadata.id,
-                notes = sourceNote(rec.metadata),
-            ),
-        )
-    }
-    readType(BodyFatRecord::class, EVT_BODY_FAT) { rec ->
-        listOf(
-            EventInput(
-                timestampMs = rec.time.toEpochMilli(),
-                eventType = EVT_BODY_FAT,
-                channels = listOf(EventChannelInput("percentage", OhdScalar.Real(rec.percentage.value))),
-                source = SOURCE_TAG,
-                sourceId = rec.metadata.id,
-                notes = sourceNote(rec.metadata),
-            ),
-        )
-    }
-    readType(BodyWaterMassRecord::class, EVT_BODY_WATER_MASS) { rec ->
-        listOf(
-            EventInput(
-                timestampMs = rec.time.toEpochMilli(),
-                eventType = EVT_BODY_WATER_MASS,
-                channels = listOf(EventChannelInput("kg", OhdScalar.Real(rec.mass.inKilograms))),
-                source = SOURCE_TAG,
-                sourceId = rec.metadata.id,
-                notes = sourceNote(rec.metadata),
-            ),
-        )
-    }
-    readType(BoneMassRecord::class, EVT_BONE_MASS) { rec ->
-        listOf(
-            EventInput(
-                timestampMs = rec.time.toEpochMilli(),
-                eventType = EVT_BONE_MASS,
-                channels = listOf(EventChannelInput("kg", OhdScalar.Real(rec.mass.inKilograms))),
-                source = SOURCE_TAG,
-                sourceId = rec.metadata.id,
-                notes = sourceNote(rec.metadata),
-            ),
-        )
-    }
-    readType(LeanBodyMassRecord::class, EVT_LEAN_BODY_MASS) { rec ->
-        listOf(
-            EventInput(
-                timestampMs = rec.time.toEpochMilli(),
-                eventType = EVT_LEAN_BODY_MASS,
-                channels = listOf(EventChannelInput("kg", OhdScalar.Real(rec.mass.inKilograms))),
-                source = SOURCE_TAG,
-                sourceId = rec.metadata.id,
-                notes = sourceNote(rec.metadata),
-            ),
-        )
-    }
-
-    // ---- Activity ----
-    readType(DistanceRecord::class, EVT_DISTANCE) { rec ->
-        listOf(
-            EventInput(
-                timestampMs = rec.startTime.toEpochMilli(),
-                durationMs = Duration.between(rec.startTime, rec.endTime).toMillis().coerceAtLeast(0L),
-                eventType = EVT_DISTANCE,
-                channels = listOf(EventChannelInput("meters", OhdScalar.Real(rec.distance.inMeters))),
-                source = SOURCE_TAG,
-                sourceId = rec.metadata.id,
-                notes = sourceNote(rec.metadata),
-            ),
-        )
-    }
-    readType(ElevationGainedRecord::class, EVT_ELEVATION) { rec ->
-        listOf(
-            EventInput(
-                timestampMs = rec.startTime.toEpochMilli(),
-                durationMs = Duration.between(rec.startTime, rec.endTime).toMillis().coerceAtLeast(0L),
-                eventType = EVT_ELEVATION,
-                channels = listOf(EventChannelInput("meters", OhdScalar.Real(rec.elevation.inMeters))),
-                source = SOURCE_TAG,
-                sourceId = rec.metadata.id,
-                notes = sourceNote(rec.metadata),
-            ),
-        )
-    }
-    readType(FloorsClimbedRecord::class, EVT_FLOORS) { rec ->
-        listOf(
-            EventInput(
-                timestampMs = rec.startTime.toEpochMilli(),
-                durationMs = Duration.between(rec.startTime, rec.endTime).toMillis().coerceAtLeast(0L),
-                eventType = EVT_FLOORS,
-                channels = listOf(EventChannelInput("count", OhdScalar.Real(rec.floors))),
-                source = SOURCE_TAG,
-                sourceId = rec.metadata.id,
-                notes = sourceNote(rec.metadata),
-            ),
-        )
-    }
-    readType(ActiveCaloriesBurnedRecord::class, EVT_ACTIVE_CALORIES) { rec ->
-        listOf(
-            EventInput(
-                timestampMs = rec.startTime.toEpochMilli(),
-                durationMs = Duration.between(rec.startTime, rec.endTime).toMillis().coerceAtLeast(0L),
-                eventType = EVT_ACTIVE_CALORIES,
-                channels = listOf(EventChannelInput("kcal", OhdScalar.Real(rec.energy.inKilocalories))),
-                source = SOURCE_TAG,
-                sourceId = rec.metadata.id,
-                notes = sourceNote(rec.metadata),
-            ),
-        )
-    }
-    readType(TotalCaloriesBurnedRecord::class, EVT_TOTAL_CALORIES) { rec ->
-        listOf(
-            EventInput(
-                timestampMs = rec.startTime.toEpochMilli(),
-                durationMs = Duration.between(rec.startTime, rec.endTime).toMillis().coerceAtLeast(0L),
-                eventType = EVT_TOTAL_CALORIES,
-                channels = listOf(EventChannelInput("kcal", OhdScalar.Real(rec.energy.inKilocalories))),
-                source = SOURCE_TAG,
-                sourceId = rec.metadata.id,
-                notes = sourceNote(rec.metadata),
-            ),
-        )
-    }
-    readType(BasalMetabolicRateRecord::class, EVT_BMR) { rec ->
-        listOf(
-            EventInput(
-                timestampMs = rec.time.toEpochMilli(),
-                eventType = EVT_BMR,
-                channels = listOf(EventChannelInput("kcal_per_day", OhdScalar.Real(rec.basalMetabolicRate.inKilocaloriesPerDay))),
-                source = SOURCE_TAG,
-                sourceId = rec.metadata.id,
-                notes = sourceNote(rec.metadata),
-            ),
-        )
-    }
-    readType(Vo2MaxRecord::class, EVT_VO2_MAX) { rec ->
-        listOf(
-            EventInput(
-                timestampMs = rec.time.toEpochMilli(),
-                eventType = EVT_VO2_MAX,
-                channels = listOf(EventChannelInput("ml_per_kg_per_min", OhdScalar.Real(rec.vo2MillilitersPerMinuteKilogram))),
-                source = SOURCE_TAG,
-                sourceId = rec.metadata.id,
-                notes = sourceNote(rec.metadata),
-            ),
-        )
-    }
-    readType(ExerciseSessionRecord::class, EVT_EXERCISE) { rec ->
-        listOf(
-            EventInput(
-                timestampMs = rec.startTime.toEpochMilli(),
-                durationMs = Duration.between(rec.startTime, rec.endTime).toMillis().coerceAtLeast(0L),
-                eventType = EVT_EXERCISE,
-                channels = listOf(
-                    EventChannelInput("exercise_type", OhdScalar.Int(rec.exerciseType.toLong())),
-                    EventChannelInput("title", OhdScalar.Text(rec.title ?: "")),
-                ),
-                source = SOURCE_TAG,
-                sourceId = rec.metadata.id,
-                notes = sourceNote(rec.metadata, fallbackTitle = rec.title),
-            ),
-        )
-    }
-    readType(PowerRecord::class, EVT_POWER) { rec ->
-        rec.samples.map { s ->
-            EventInput(
-                timestampMs = s.time.toEpochMilli(),
-                eventType = EVT_POWER,
-                channels = listOf(EventChannelInput("watts", OhdScalar.Real(s.power.inWatts))),
-                source = SOURCE_TAG,
-                sourceId = "${rec.metadata.id}:${s.time.toEpochMilli()}",
-                notes = sourceNote(rec.metadata),
-            )
-        }
-    }
-    readType(SpeedRecord::class, EVT_SPEED) { rec ->
-        rec.samples.map { s ->
-            EventInput(
-                timestampMs = s.time.toEpochMilli(),
-                eventType = EVT_SPEED,
-                channels = listOf(EventChannelInput("m_per_s", OhdScalar.Real(s.speed.inMetersPerSecond))),
-                source = SOURCE_TAG,
-                sourceId = "${rec.metadata.id}:${s.time.toEpochMilli()}",
-                notes = sourceNote(rec.metadata),
-            )
-        }
-    }
-    readType(StepsCadenceRecord::class, EVT_STEPS_CADENCE) { rec ->
-        rec.samples.map { s ->
-            EventInput(
-                timestampMs = s.time.toEpochMilli(),
-                eventType = EVT_STEPS_CADENCE,
-                channels = listOf(EventChannelInput("steps_per_min", OhdScalar.Real(s.rate))),
-                source = SOURCE_TAG,
-                sourceId = "${rec.metadata.id}:${s.time.toEpochMilli()}",
-                notes = sourceNote(rec.metadata),
-            )
-        }
-    }
-    readType(CyclingPedalingCadenceRecord::class, EVT_CYCLING_CADENCE) { rec ->
-        rec.samples.map { s ->
-            EventInput(
-                timestampMs = s.time.toEpochMilli(),
-                eventType = EVT_CYCLING_CADENCE,
-                channels = listOf(EventChannelInput("rpm", OhdScalar.Real(s.revolutionsPerMinute))),
-                source = SOURCE_TAG,
-                sourceId = "${rec.metadata.id}:${s.time.toEpochMilli()}",
-                notes = sourceNote(rec.metadata),
-            )
-        }
-    }
-    readType(WheelchairPushesRecord::class, EVT_WHEELCHAIR_PUSHES) { rec ->
-        listOf(
-            EventInput(
-                timestampMs = rec.startTime.toEpochMilli(),
-                durationMs = Duration.between(rec.startTime, rec.endTime).toMillis().coerceAtLeast(0L),
-                eventType = EVT_WHEELCHAIR_PUSHES,
-                channels = listOf(EventChannelInput("count", OhdScalar.Int(rec.count))),
-                source = SOURCE_TAG,
-                sourceId = rec.metadata.id,
-                notes = sourceNote(rec.metadata),
-            ),
-        )
-    }
-
-    // ---- Nutrition / hydration ----
-    readType(NutritionRecord::class, EVT_NUTRITION) { rec ->
-        val chans = mutableListOf<EventChannelInput>()
-        rec.energy?.inKilocalories?.let { chans += EventChannelInput("kcal", OhdScalar.Real(it)) }
-        rec.totalCarbohydrate?.inGrams?.let { chans += EventChannelInput("carbs_g", OhdScalar.Real(it)) }
-        rec.protein?.inGrams?.let { chans += EventChannelInput("protein_g", OhdScalar.Real(it)) }
-        rec.totalFat?.inGrams?.let { chans += EventChannelInput("fat_g", OhdScalar.Real(it)) }
-        rec.sugar?.inGrams?.let { chans += EventChannelInput("sugar_g", OhdScalar.Real(it)) }
-        rec.dietaryFiber?.inGrams?.let { chans += EventChannelInput("fiber_g", OhdScalar.Real(it)) }
-        rec.caffeine?.inGrams?.let { chans += EventChannelInput("caffeine_mg", OhdScalar.Real(it * 1000.0)) }
-        rec.name?.takeIf { it.isNotBlank() }?.let { chans += EventChannelInput("name", OhdScalar.Text(it)) }
-        listOf(
-            EventInput(
-                timestampMs = rec.startTime.toEpochMilli(),
-                durationMs = Duration.between(rec.startTime, rec.endTime).toMillis().coerceAtLeast(0L),
-                eventType = EVT_NUTRITION,
-                channels = chans,
-                source = SOURCE_TAG,
-                sourceId = rec.metadata.id,
-                notes = sourceNote(rec.metadata),
-            ),
-        )
-    }
-    readType(HydrationRecord::class, EVT_HYDRATION) { rec ->
-        listOf(
-            EventInput(
-                timestampMs = rec.startTime.toEpochMilli(),
-                durationMs = Duration.between(rec.startTime, rec.endTime).toMillis().coerceAtLeast(0L),
-                eventType = EVT_HYDRATION,
-                channels = listOf(EventChannelInput("liters", OhdScalar.Real(rec.volume.inLiters))),
-                source = SOURCE_TAG,
-                sourceId = rec.metadata.id,
-                notes = sourceNote(rec.metadata),
-            ),
-        )
-    }
-
-    // Persist the upper bound so the next sync only reads new data.
-    HealthConnectPrefs.setLastSyncMs(ctx, untilMs)
-
-    return SyncResult(
-        readByType = readByType,
-        ingested = ingested,
-        errors = errors,
-    )
 }
 
 /**
@@ -714,6 +401,539 @@ private fun sourceNote(metadata: Metadata, fallbackTitle: String? = null): Strin
     val src = pkg ?: fallbackTitle ?: return "source: Health Connect"
     return "source: Health Connect — $src"
 }
+
+// =============================================================================
+// Record-type → OHD-event mapping table.
+//
+// One entry per Health Connect record type we ingest. The same table drives
+// both the historical backfill (`readRecords`) and the incremental Changes
+// API (`getChanges`) — the *discovery* of which records to read differs, the
+// mapping does not. Keys also seed `ChangesTokenRequest.recordTypes`.
+// =============================================================================
+
+/**
+ * Cast helper so each mapper lambda can be written against its concrete
+ * record type while the table stays `KClass<out Record> -> (Record) -> …`.
+ */
+@Suppress("UNCHECKED_CAST")
+private fun <T : Record> mapper(fn: (T) -> List<EventInput>): (Record) -> List<EventInput> =
+    fn as (Record) -> List<EventInput>
+
+internal val RECORD_MAPPERS: Map<KClass<out Record>, (Record) -> List<EventInput>> = mapOf(
+    // ---- Steps ----
+    StepsRecord::class to mapper<StepsRecord> { rec ->
+        listOf(
+            EventInput(
+                timestampMs = rec.startTime.toEpochMilli(),
+                durationMs = Duration.between(rec.startTime, rec.endTime).toMillis()
+                    .coerceAtLeast(0L),
+                eventType = EVT_STEPS,
+                channels = listOf(EventChannelInput("count", OhdScalar.Int(rec.count))),
+                source = SOURCE_TAG,
+                sourceId = rec.metadata.id,
+                notes = sourceNote(rec.metadata),
+            ),
+        )
+    },
+
+    // ---- Heart rate ----
+    //
+    // A HeartRateRecord carries 1+ samples covering [startTime, endTime].
+    // Fan out one OHD event per sample so the per-bpm timestamp survives.
+    HeartRateRecord::class to mapper<HeartRateRecord> { rec ->
+        rec.samples.map { sample ->
+            EventInput(
+                timestampMs = sample.time.toEpochMilli(),
+                eventType = EVT_HEART_RATE,
+                channels = listOf(
+                    EventChannelInput("bpm", OhdScalar.Real(sample.beatsPerMinute.toDouble())),
+                ),
+                source = SOURCE_TAG,
+                sourceId = "${rec.metadata.id}:${sample.time.toEpochMilli()}",
+                notes = sourceNote(rec.metadata),
+            )
+        }
+    },
+
+    // ---- Blood pressure ----
+    BloodPressureRecord::class to mapper<BloodPressureRecord> { rec ->
+        listOf(
+            EventInput(
+                timestampMs = rec.time.toEpochMilli(),
+                eventType = EVT_BLOOD_PRESSURE,
+                channels = listOf(
+                    EventChannelInput(
+                        "systolic_mmhg",
+                        OhdScalar.Real(rec.systolic.inMillimetersOfMercury),
+                    ),
+                    EventChannelInput(
+                        "diastolic_mmhg",
+                        OhdScalar.Real(rec.diastolic.inMillimetersOfMercury),
+                    ),
+                ),
+                source = SOURCE_TAG,
+                sourceId = rec.metadata.id,
+                notes = sourceNote(rec.metadata),
+            ),
+        )
+    },
+
+    // ---- Blood glucose ----
+    //
+    // OHD canonicalises glucose to mmol/L. Health Connect's BloodGlucose unit
+    // ships an mmol-per-litre accessor as a `Double`.
+    BloodGlucoseRecord::class to mapper<BloodGlucoseRecord> { rec ->
+        listOf(
+            EventInput(
+                timestampMs = rec.time.toEpochMilli(),
+                eventType = EVT_GLUCOSE,
+                channels = listOf(
+                    EventChannelInput("value", OhdScalar.Real(rec.level.inMillimolesPerLiter)),
+                    EventChannelInput("unit", OhdScalar.Text("mmol/L")),
+                ),
+                source = SOURCE_TAG,
+                sourceId = rec.metadata.id,
+                notes = sourceNote(rec.metadata),
+            ),
+        )
+    },
+
+    // ---- Weight ----
+    WeightRecord::class to mapper<WeightRecord> { rec ->
+        listOf(
+            EventInput(
+                timestampMs = rec.time.toEpochMilli(),
+                eventType = EVT_WEIGHT,
+                channels = listOf(EventChannelInput("kg", OhdScalar.Real(rec.weight.inKilograms))),
+                source = SOURCE_TAG,
+                sourceId = rec.metadata.id,
+                notes = sourceNote(rec.metadata),
+            ),
+        )
+    },
+
+    // ---- Body temperature ----
+    BodyTemperatureRecord::class to mapper<BodyTemperatureRecord> { rec ->
+        listOf(
+            EventInput(
+                timestampMs = rec.time.toEpochMilli(),
+                eventType = EVT_TEMPERATURE,
+                channels = listOf(
+                    EventChannelInput("celsius", OhdScalar.Real(rec.temperature.inCelsius)),
+                ),
+                source = SOURCE_TAG,
+                sourceId = rec.metadata.id,
+                notes = sourceNote(rec.metadata),
+            ),
+        )
+    },
+
+    // ---- Sleep ----
+    //
+    // A SleepSessionRecord has its own start/end. We emit a single
+    // `activity.sleep` event with `duration_minutes` rather than fanning
+    // out per-stage; clinician views can drill into Health Connect for
+    // detail when they care.
+    SleepSessionRecord::class to mapper<SleepSessionRecord> { rec ->
+        val durationMs = Duration.between(rec.startTime, rec.endTime).toMillis()
+            .coerceAtLeast(0L)
+        listOf(
+            EventInput(
+                timestampMs = rec.startTime.toEpochMilli(),
+                durationMs = durationMs,
+                eventType = EVT_SLEEP,
+                channels = listOf(
+                    EventChannelInput("duration_minutes", OhdScalar.Int(durationMs / 60_000L)),
+                ),
+                source = SOURCE_TAG,
+                sourceId = rec.metadata.id,
+                notes = sourceNote(rec.metadata, fallbackTitle = rec.title),
+            ),
+        )
+    },
+
+    // ---- Oxygen saturation ----
+    OxygenSaturationRecord::class to mapper<OxygenSaturationRecord> { rec ->
+        listOf(
+            EventInput(
+                timestampMs = rec.time.toEpochMilli(),
+                eventType = EVT_SPO2,
+                channels = listOf(
+                    EventChannelInput("percentage", OhdScalar.Real(rec.percentage.value)),
+                ),
+                source = SOURCE_TAG,
+                sourceId = rec.metadata.id,
+                notes = sourceNote(rec.metadata),
+            ),
+        )
+    },
+
+    // ---- Resting heart rate ----
+    RestingHeartRateRecord::class to mapper<RestingHeartRateRecord> { rec ->
+        listOf(
+            EventInput(
+                timestampMs = rec.time.toEpochMilli(),
+                eventType = EVT_RESTING_HEART_RATE,
+                channels = listOf(
+                    EventChannelInput("bpm", OhdScalar.Real(rec.beatsPerMinute.toDouble())),
+                ),
+                source = SOURCE_TAG,
+                sourceId = rec.metadata.id,
+                notes = sourceNote(rec.metadata),
+            ),
+        )
+    },
+
+    // ---- Heart rate variability (RMSSD) ----
+    HeartRateVariabilityRmssdRecord::class to mapper<HeartRateVariabilityRmssdRecord> { rec ->
+        listOf(
+            EventInput(
+                timestampMs = rec.time.toEpochMilli(),
+                eventType = EVT_HRV_RMSSD,
+                channels = listOf(
+                    EventChannelInput("rmssd_ms", OhdScalar.Real(rec.heartRateVariabilityMillis)),
+                ),
+                source = SOURCE_TAG,
+                sourceId = rec.metadata.id,
+                notes = sourceNote(rec.metadata),
+            ),
+        )
+    },
+
+    // ---- Respiratory rate ----
+    RespiratoryRateRecord::class to mapper<RespiratoryRateRecord> { rec ->
+        listOf(
+            EventInput(
+                timestampMs = rec.time.toEpochMilli(),
+                eventType = EVT_RESPIRATORY_RATE,
+                channels = listOf(EventChannelInput("rate_per_min", OhdScalar.Real(rec.rate))),
+                source = SOURCE_TAG,
+                sourceId = rec.metadata.id,
+                notes = sourceNote(rec.metadata),
+            ),
+        )
+    },
+
+    // ---- Basal body temperature ----
+    BasalBodyTemperatureRecord::class to mapper<BasalBodyTemperatureRecord> { rec ->
+        listOf(
+            EventInput(
+                timestampMs = rec.time.toEpochMilli(),
+                eventType = EVT_BASAL_BODY_TEMP,
+                channels = listOf(
+                    EventChannelInput("celsius", OhdScalar.Real(rec.temperature.inCelsius)),
+                ),
+                source = SOURCE_TAG,
+                sourceId = rec.metadata.id,
+                notes = sourceNote(rec.metadata),
+            ),
+        )
+    },
+
+    // ---- Body composition ----
+    HeightRecord::class to mapper<HeightRecord> { rec ->
+        listOf(
+            EventInput(
+                timestampMs = rec.time.toEpochMilli(),
+                eventType = EVT_HEIGHT,
+                channels = listOf(EventChannelInput("meters", OhdScalar.Real(rec.height.inMeters))),
+                source = SOURCE_TAG,
+                sourceId = rec.metadata.id,
+                notes = sourceNote(rec.metadata),
+            ),
+        )
+    },
+    BodyFatRecord::class to mapper<BodyFatRecord> { rec ->
+        listOf(
+            EventInput(
+                timestampMs = rec.time.toEpochMilli(),
+                eventType = EVT_BODY_FAT,
+                channels = listOf(
+                    EventChannelInput("percentage", OhdScalar.Real(rec.percentage.value)),
+                ),
+                source = SOURCE_TAG,
+                sourceId = rec.metadata.id,
+                notes = sourceNote(rec.metadata),
+            ),
+        )
+    },
+    BodyWaterMassRecord::class to mapper<BodyWaterMassRecord> { rec ->
+        listOf(
+            EventInput(
+                timestampMs = rec.time.toEpochMilli(),
+                eventType = EVT_BODY_WATER_MASS,
+                channels = listOf(EventChannelInput("kg", OhdScalar.Real(rec.mass.inKilograms))),
+                source = SOURCE_TAG,
+                sourceId = rec.metadata.id,
+                notes = sourceNote(rec.metadata),
+            ),
+        )
+    },
+    BoneMassRecord::class to mapper<BoneMassRecord> { rec ->
+        listOf(
+            EventInput(
+                timestampMs = rec.time.toEpochMilli(),
+                eventType = EVT_BONE_MASS,
+                channels = listOf(EventChannelInput("kg", OhdScalar.Real(rec.mass.inKilograms))),
+                source = SOURCE_TAG,
+                sourceId = rec.metadata.id,
+                notes = sourceNote(rec.metadata),
+            ),
+        )
+    },
+    LeanBodyMassRecord::class to mapper<LeanBodyMassRecord> { rec ->
+        listOf(
+            EventInput(
+                timestampMs = rec.time.toEpochMilli(),
+                eventType = EVT_LEAN_BODY_MASS,
+                channels = listOf(EventChannelInput("kg", OhdScalar.Real(rec.mass.inKilograms))),
+                source = SOURCE_TAG,
+                sourceId = rec.metadata.id,
+                notes = sourceNote(rec.metadata),
+            ),
+        )
+    },
+
+    // ---- Activity ----
+    DistanceRecord::class to mapper<DistanceRecord> { rec ->
+        listOf(
+            EventInput(
+                timestampMs = rec.startTime.toEpochMilli(),
+                durationMs = Duration.between(rec.startTime, rec.endTime).toMillis()
+                    .coerceAtLeast(0L),
+                eventType = EVT_DISTANCE,
+                channels = listOf(
+                    EventChannelInput("meters", OhdScalar.Real(rec.distance.inMeters)),
+                ),
+                source = SOURCE_TAG,
+                sourceId = rec.metadata.id,
+                notes = sourceNote(rec.metadata),
+            ),
+        )
+    },
+    ElevationGainedRecord::class to mapper<ElevationGainedRecord> { rec ->
+        listOf(
+            EventInput(
+                timestampMs = rec.startTime.toEpochMilli(),
+                durationMs = Duration.between(rec.startTime, rec.endTime).toMillis()
+                    .coerceAtLeast(0L),
+                eventType = EVT_ELEVATION,
+                channels = listOf(
+                    EventChannelInput("meters", OhdScalar.Real(rec.elevation.inMeters)),
+                ),
+                source = SOURCE_TAG,
+                sourceId = rec.metadata.id,
+                notes = sourceNote(rec.metadata),
+            ),
+        )
+    },
+    FloorsClimbedRecord::class to mapper<FloorsClimbedRecord> { rec ->
+        listOf(
+            EventInput(
+                timestampMs = rec.startTime.toEpochMilli(),
+                durationMs = Duration.between(rec.startTime, rec.endTime).toMillis()
+                    .coerceAtLeast(0L),
+                eventType = EVT_FLOORS,
+                channels = listOf(EventChannelInput("count", OhdScalar.Real(rec.floors))),
+                source = SOURCE_TAG,
+                sourceId = rec.metadata.id,
+                notes = sourceNote(rec.metadata),
+            ),
+        )
+    },
+    ActiveCaloriesBurnedRecord::class to mapper<ActiveCaloriesBurnedRecord> { rec ->
+        listOf(
+            EventInput(
+                timestampMs = rec.startTime.toEpochMilli(),
+                durationMs = Duration.between(rec.startTime, rec.endTime).toMillis()
+                    .coerceAtLeast(0L),
+                eventType = EVT_ACTIVE_CALORIES,
+                channels = listOf(
+                    EventChannelInput("kcal", OhdScalar.Real(rec.energy.inKilocalories)),
+                ),
+                source = SOURCE_TAG,
+                sourceId = rec.metadata.id,
+                notes = sourceNote(rec.metadata),
+            ),
+        )
+    },
+    TotalCaloriesBurnedRecord::class to mapper<TotalCaloriesBurnedRecord> { rec ->
+        listOf(
+            EventInput(
+                timestampMs = rec.startTime.toEpochMilli(),
+                durationMs = Duration.between(rec.startTime, rec.endTime).toMillis()
+                    .coerceAtLeast(0L),
+                eventType = EVT_TOTAL_CALORIES,
+                channels = listOf(
+                    EventChannelInput("kcal", OhdScalar.Real(rec.energy.inKilocalories)),
+                ),
+                source = SOURCE_TAG,
+                sourceId = rec.metadata.id,
+                notes = sourceNote(rec.metadata),
+            ),
+        )
+    },
+    BasalMetabolicRateRecord::class to mapper<BasalMetabolicRateRecord> { rec ->
+        listOf(
+            EventInput(
+                timestampMs = rec.time.toEpochMilli(),
+                eventType = EVT_BMR,
+                channels = listOf(
+                    EventChannelInput(
+                        "kcal_per_day",
+                        OhdScalar.Real(rec.basalMetabolicRate.inKilocaloriesPerDay),
+                    ),
+                ),
+                source = SOURCE_TAG,
+                sourceId = rec.metadata.id,
+                notes = sourceNote(rec.metadata),
+            ),
+        )
+    },
+    Vo2MaxRecord::class to mapper<Vo2MaxRecord> { rec ->
+        listOf(
+            EventInput(
+                timestampMs = rec.time.toEpochMilli(),
+                eventType = EVT_VO2_MAX,
+                channels = listOf(
+                    EventChannelInput(
+                        "ml_per_kg_per_min",
+                        OhdScalar.Real(rec.vo2MillilitersPerMinuteKilogram),
+                    ),
+                ),
+                source = SOURCE_TAG,
+                sourceId = rec.metadata.id,
+                notes = sourceNote(rec.metadata),
+            ),
+        )
+    },
+    ExerciseSessionRecord::class to mapper<ExerciseSessionRecord> { rec ->
+        listOf(
+            EventInput(
+                timestampMs = rec.startTime.toEpochMilli(),
+                durationMs = Duration.between(rec.startTime, rec.endTime).toMillis()
+                    .coerceAtLeast(0L),
+                eventType = EVT_EXERCISE,
+                channels = listOf(
+                    EventChannelInput("exercise_type", OhdScalar.Int(rec.exerciseType.toLong())),
+                    EventChannelInput("title", OhdScalar.Text(rec.title ?: "")),
+                ),
+                source = SOURCE_TAG,
+                sourceId = rec.metadata.id,
+                notes = sourceNote(rec.metadata, fallbackTitle = rec.title),
+            ),
+        )
+    },
+    PowerRecord::class to mapper<PowerRecord> { rec ->
+        rec.samples.map { s ->
+            EventInput(
+                timestampMs = s.time.toEpochMilli(),
+                eventType = EVT_POWER,
+                channels = listOf(EventChannelInput("watts", OhdScalar.Real(s.power.inWatts))),
+                source = SOURCE_TAG,
+                sourceId = "${rec.metadata.id}:${s.time.toEpochMilli()}",
+                notes = sourceNote(rec.metadata),
+            )
+        }
+    },
+    SpeedRecord::class to mapper<SpeedRecord> { rec ->
+        rec.samples.map { s ->
+            EventInput(
+                timestampMs = s.time.toEpochMilli(),
+                eventType = EVT_SPEED,
+                channels = listOf(
+                    EventChannelInput("m_per_s", OhdScalar.Real(s.speed.inMetersPerSecond)),
+                ),
+                source = SOURCE_TAG,
+                sourceId = "${rec.metadata.id}:${s.time.toEpochMilli()}",
+                notes = sourceNote(rec.metadata),
+            )
+        }
+    },
+    StepsCadenceRecord::class to mapper<StepsCadenceRecord> { rec ->
+        rec.samples.map { s ->
+            EventInput(
+                timestampMs = s.time.toEpochMilli(),
+                eventType = EVT_STEPS_CADENCE,
+                channels = listOf(EventChannelInput("steps_per_min", OhdScalar.Real(s.rate))),
+                source = SOURCE_TAG,
+                sourceId = "${rec.metadata.id}:${s.time.toEpochMilli()}",
+                notes = sourceNote(rec.metadata),
+            )
+        }
+    },
+    CyclingPedalingCadenceRecord::class to mapper<CyclingPedalingCadenceRecord> { rec ->
+        rec.samples.map { s ->
+            EventInput(
+                timestampMs = s.time.toEpochMilli(),
+                eventType = EVT_CYCLING_CADENCE,
+                channels = listOf(EventChannelInput("rpm", OhdScalar.Real(s.revolutionsPerMinute))),
+                source = SOURCE_TAG,
+                sourceId = "${rec.metadata.id}:${s.time.toEpochMilli()}",
+                notes = sourceNote(rec.metadata),
+            )
+        }
+    },
+    WheelchairPushesRecord::class to mapper<WheelchairPushesRecord> { rec ->
+        listOf(
+            EventInput(
+                timestampMs = rec.startTime.toEpochMilli(),
+                durationMs = Duration.between(rec.startTime, rec.endTime).toMillis()
+                    .coerceAtLeast(0L),
+                eventType = EVT_WHEELCHAIR_PUSHES,
+                channels = listOf(EventChannelInput("count", OhdScalar.Int(rec.count))),
+                source = SOURCE_TAG,
+                sourceId = rec.metadata.id,
+                notes = sourceNote(rec.metadata),
+            ),
+        )
+    },
+
+    // ---- Nutrition / hydration ----
+    NutritionRecord::class to mapper<NutritionRecord> { rec ->
+        val chans = mutableListOf<EventChannelInput>()
+        rec.energy?.inKilocalories?.let { chans += EventChannelInput("kcal", OhdScalar.Real(it)) }
+        rec.totalCarbohydrate?.inGrams?.let {
+            chans += EventChannelInput("carbs_g", OhdScalar.Real(it))
+        }
+        rec.protein?.inGrams?.let { chans += EventChannelInput("protein_g", OhdScalar.Real(it)) }
+        rec.totalFat?.inGrams?.let { chans += EventChannelInput("fat_g", OhdScalar.Real(it)) }
+        rec.sugar?.inGrams?.let { chans += EventChannelInput("sugar_g", OhdScalar.Real(it)) }
+        rec.dietaryFiber?.inGrams?.let { chans += EventChannelInput("fiber_g", OhdScalar.Real(it)) }
+        rec.caffeine?.inGrams?.let {
+            chans += EventChannelInput("caffeine_mg", OhdScalar.Real(it * 1000.0))
+        }
+        rec.name?.takeIf { it.isNotBlank() }?.let {
+            chans += EventChannelInput("name", OhdScalar.Text(it))
+        }
+        listOf(
+            EventInput(
+                timestampMs = rec.startTime.toEpochMilli(),
+                durationMs = Duration.between(rec.startTime, rec.endTime).toMillis()
+                    .coerceAtLeast(0L),
+                eventType = EVT_NUTRITION,
+                channels = chans,
+                source = SOURCE_TAG,
+                sourceId = rec.metadata.id,
+                notes = sourceNote(rec.metadata),
+            ),
+        )
+    },
+    HydrationRecord::class to mapper<HydrationRecord> { rec ->
+        listOf(
+            EventInput(
+                timestampMs = rec.startTime.toEpochMilli(),
+                durationMs = Duration.between(rec.startTime, rec.endTime).toMillis()
+                    .coerceAtLeast(0L),
+                eventType = EVT_HYDRATION,
+                channels = listOf(EventChannelInput("liters", OhdScalar.Real(rec.volume.inLiters))),
+                source = SOURCE_TAG,
+                sourceId = rec.metadata.id,
+                notes = sourceNote(rec.metadata),
+            ),
+        )
+    },
+)
 
 // =============================================================================
 // Event-type constants. Kept here so the per-type mapping table sits next to
@@ -769,59 +989,39 @@ val HEALTH_CONNECT_TYPES: List<Pair<String, String>> = listOf(
 )
 
 // =============================================================================
-// Pref-backed sync metadata. Kept out of `Auth` so the Health Connect file
-// stays self-contained, but we reuse `Auth.prefs(...)` access via a thin
-// SharedPreferences read — they share the same EncryptedSharedPreferences
-// file by name.
+// Pref-backed sync metadata.
+//
+// The Changes-API token is the only cursor we keep — it replaces the old
+// per-record-type timestamp watermark, which silently dropped backdated
+// samples drip-fed by Samsung Health. `lastSyncMs` is display-only.
 // =============================================================================
 
 internal object HealthConnectPrefs {
 
     /**
-     * Per-type cursor used by [readType]. Each record type tracks its own
-     * last-sync timestamp so adding a new permission type later doesn't
-     * skip the 5-year backfill the way a global cursor did (the original
-     * bug: granting Sleep after months of Steps-only sync would only read
-     * sleep from "now" onwards).
+     * The persisted Health Connect Changes-API token. `null` means "never
+     * synced" — [syncFromHealthConnect] then runs a one-time historical
+     * backfill and acquires a fresh token. Every later run advances this
+     * token as it drains `getChanges`.
      */
-    fun typeLastSyncMs(ctx: Context, eventType: String): Long? {
-        val raw = prefs(ctx).getLong("$KEY_TYPE_LAST_SYNC_PREFIX$eventType", 0L)
-        return raw.takeIf { it > 0 }
+    fun changesToken(ctx: Context): String? =
+        prefs(ctx).getString(KEY_CHANGES_TOKEN, null)?.takeIf { it.isNotEmpty() }
+
+    fun setChangesToken(ctx: Context, token: String) {
+        prefs(ctx).edit().putString(KEY_CHANGES_TOKEN, token).apply()
     }
 
-    fun setTypeLastSyncMs(ctx: Context, eventType: String, ms: Long) {
-        prefs(ctx).edit().putLong("$KEY_TYPE_LAST_SYNC_PREFIX$eventType", ms).apply()
+    /** Drop the token — forces a historical backfill + re-arm on the next run. */
+    fun clearChangesToken(ctx: Context) {
+        prefs(ctx).edit().remove(KEY_CHANGES_TOKEN).apply()
     }
 
-    /**
-     * Latest of all per-type cursors — what the Settings screen displays
-     * as "last sync". Falls back to the legacy global cursor for installs
-     * that haven't yet sync'd under the new per-type scheme.
-     */
-    fun lastSyncMs(ctx: Context): Long? {
-        val all = prefs(ctx).all
-        val latest = all.entries
-            .filter { it.key.startsWith(KEY_TYPE_LAST_SYNC_PREFIX) }
-            .mapNotNull { (it.value as? Long)?.takeIf { v -> v > 0 } }
-            .maxOrNull()
-        if (latest != null) return latest
-        val legacy = prefs(ctx).getLong(KEY_LAST_SYNC_MS, 0L)
-        return legacy.takeIf { it > 0 }
-    }
+    /** Last-sync wall-clock timestamp — display only ("2 h ago" on Settings). */
+    fun lastSyncMs(ctx: Context): Long? =
+        prefs(ctx).getLong(KEY_LAST_SYNC_MS, 0L).takeIf { it > 0 }
 
-    /** Update the legacy global cursor too — Settings reads it for display. */
     fun setLastSyncMs(ctx: Context, ms: Long) {
         prefs(ctx).edit().putLong(KEY_LAST_SYNC_MS, ms).apply()
-    }
-
-    /** Wipe every per-type cursor — forces a full backfill on the next run. */
-    fun clearAllTypeCursors(ctx: Context) {
-        val editor = prefs(ctx).edit()
-        prefs(ctx).all.keys
-            .filter { it.startsWith(KEY_TYPE_LAST_SYNC_PREFIX) }
-            .forEach { editor.remove(it) }
-        editor.remove(KEY_LAST_SYNC_MS)
-        editor.apply()
     }
 
     private fun prefs(ctx: Context) = ctx.getSharedPreferences(

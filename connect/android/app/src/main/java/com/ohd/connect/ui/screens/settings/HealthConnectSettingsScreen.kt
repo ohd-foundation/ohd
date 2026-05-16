@@ -66,7 +66,8 @@ import kotlinx.coroutines.withContext
  *  3. **Last sync**    — relative-time display + on-demand "Sync now".
  *  4. **Per-type**     — read-only checklist of the 8 record types with the
  *                        last sync's per-type counts beside them.
- *  5. **Debug**        — error strings from the last sync, if any.
+ *  5. **Debug**        — Changes-API token state, change/deletion counts,
+ *                        and error strings from the last sync.
  *
  * The screen handles the `NotInstalled` case gracefully: every action
  * that would touch the SDK is gated on a non-null `client(ctx)` (or on
@@ -238,7 +239,9 @@ fun HealthConnectSettingsScreen(
                             color = OhdColors.Ink,
                         )
                         Text(
-                            text = "WorkManager runs in the background; only delta records since the last sync are pulled.",
+                            text = "WorkManager runs in the background; the Health Connect " +
+                                "Changes API pulls every new record in insertion order, " +
+                                "including backdated samples.",
                             fontFamily = OhdBody,
                             fontWeight = FontWeight.W400,
                             fontSize = 12.sp,
@@ -297,22 +300,41 @@ fun HealthConnectSettingsScreen(
             }
 
             // -------------------- 5. Debug --------------------
-            val errs = lastResult?.errors.orEmpty()
-            if (errs.isNotEmpty()) {
+            //
+            // Always shown once Health Connect is installed — it surfaces
+            // the Changes-API token state so a tester can confirm
+            // incremental sync is armed, plus per-run change/deletion
+            // counts and any errors from the last sync.
+            if (availability == OhdHealthConnect.Availability.Installed) {
                 OhdCard(title = "Debug") {
-                    val debugText = remember(lastResult) {
+                    val tokenArmed = remember(lastResult, lastSyncMs) {
+                        HealthConnectPrefs.changesToken(ctx) != null
+                    }
+                    val debugText = remember(lastResult, tokenArmed) {
                         buildString {
-                            val r = lastResult ?: return@buildString
-                            appendLine("ingested=${r.ingested}")
-                            if (r.readByType.isNotEmpty()) {
-                                appendLine("readByType:")
-                                r.readByType.entries
-                                    .sortedBy { it.key }
-                                    .forEach { (k, v) -> appendLine("  $k=$v") }
-                            }
-                            if (r.errors.isNotEmpty()) {
-                                appendLine("errors (${r.errors.size}):")
-                                r.errors.forEach { appendLine("  $it") }
+                            appendLine(
+                                "changes token: " +
+                                    if (tokenArmed) "armed (incremental)" else "none (will backfill)",
+                            )
+                            val r = lastResult
+                            if (r == null) {
+                                append("no sync run this session")
+                            } else {
+                                appendLine("last run mode: ${r.mode}")
+                                appendLine("ingested=${r.ingested}")
+                                appendLine("changesProcessed=${r.changesProcessed}")
+                                appendLine("deletions=${r.deletions}")
+                                val nonZero = r.readByType.filterValues { it > 0 }
+                                if (nonZero.isNotEmpty()) {
+                                    appendLine("readByType:")
+                                    nonZero.entries
+                                        .sortedBy { it.key }
+                                        .forEach { (k, v) -> appendLine("  $k=$v") }
+                                }
+                                if (r.errors.isNotEmpty()) {
+                                    appendLine("errors (${r.errors.size}):")
+                                    r.errors.forEach { appendLine("  $it") }
+                                }
                             }
                         }.trimEnd()
                     }
@@ -327,8 +349,37 @@ fun HealthConnectSettingsScreen(
                     }
                     Row(
                         modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-                        horizontalArrangement = Arrangement.End,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
                     ) {
+                        // Drops the changes token and re-runs a full
+                        // historical backfill — recovers a wedged sync
+                        // and re-arms the Changes API from scratch.
+                        OhdButton(
+                            label = "Sync from scratch",
+                            variant = OhdButtonVariant.Secondary,
+                            enabled = !syncing,
+                            onClick = onScratch@{
+                                if (syncing) return@onScratch
+                                scope.launch {
+                                    syncing = true
+                                    val result = runCatching {
+                                        withContext(Dispatchers.IO) {
+                                            syncFromHealthConnect(ctx, forceHistorical = true)
+                                        }
+                                    }
+                                    syncing = false
+                                    if (result.isSuccess) {
+                                        val r = result.getOrThrow()
+                                        lastResult = r
+                                        lastSyncMs = HealthConnectPrefs.lastSyncMs(ctx)
+                                        snackbar = "Backfilled ${r.ingested} events from Health Connect"
+                                    } else {
+                                        snackbar = "Sync failed: " +
+                                            (result.exceptionOrNull()?.message ?: "(unknown)")
+                                    }
+                                }
+                            },
+                        )
                         OhdButton(
                             label = "Copy",
                             variant = OhdButtonVariant.Secondary,
