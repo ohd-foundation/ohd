@@ -21,14 +21,50 @@ use crate::codes::{verify_pkce_s256, CodeError, Continuation};
 use crate::errors::{ApiError, ApiResult};
 use crate::html;
 use crate::server::AppState;
+use crate::store::{canonical_recovery, sha256_hex};
 use crate::token::{mint_id_token, ACCESS_TOKEN_TTL_SECS};
 use axum::extract::{Form, Query, State};
-use axum::http::header::{HeaderMap, AUTHORIZATION, LOCATION};
+use axum::http::header::{HeaderMap, AUTHORIZATION, COOKIE, LOCATION, SET_COOKIE};
 use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Response};
 use axum::Json;
 use serde::Deserialize;
 use serde_json::json;
+
+// --- SSO session cookie ----------------------------------------------------
+
+/// The IdP SSO session cookie name.
+const SSO_COOKIE: &str = "ohd_idp_sso";
+
+/// Read the SSO session token from the request `Cookie` header, if present.
+fn sso_cookie(headers: &HeaderMap) -> Option<String> {
+    let raw = headers.get(COOKIE)?.to_str().ok()?;
+    for pair in raw.split(';') {
+        let pair = pair.trim();
+        if let Some(v) = pair.strip_prefix(&format!("{SSO_COOKIE}=")) {
+            if !v.is_empty() {
+                return Some(v.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Build the `Set-Cookie` value that plants the SSO session.
+/// `Secure`, `HttpOnly`, `SameSite=Lax`, scoped to the whole site, with a
+/// `Max-Age` matching the session TTL.
+fn set_sso_cookie(token: &str, ttl_secs: i64) -> String {
+    format!(
+        "{SSO_COOKIE}={token}; Path=/; Max-Age={ttl_secs}; \
+         HttpOnly; Secure; SameSite=Lax"
+    )
+}
+
+/// Build the `Set-Cookie` value that clears the SSO session — an empty
+/// value with `Max-Age=0` so the browser drops it immediately.
+fn clear_sso_cookie() -> String {
+    format!("{SSO_COOKIE}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax")
+}
 
 // --- /authorize ------------------------------------------------------------
 
@@ -119,28 +155,69 @@ fn validate_authorize(
     })
 }
 
-/// `GET /authorize` — the OIDC authorization endpoint. With no session
-/// (Phase 2 has no SSO cookie yet) a valid request renders the login page.
+/// `GET /authorize` — the OIDC authorization endpoint.
+///
+/// - **SSO hit:** a valid, unexpired SSO cookie → skip the login page,
+///   resolve the profile from the session, and go straight to minting an
+///   authorization code + redirecting to the RP. A second RP login is
+///   therefore promptless.
+/// - **SSO miss:** no cookie, or an expired/unknown session → render the
+///   login page.
 pub async fn authorize(
     State(app): State<AppState>,
+    headers: HeaderMap,
     Query(p): Query<AuthorizeParams>,
 ) -> Response {
-    match validate_authorize(&app, &p) {
-        Ok(v) => Html(html::login_page(
-            &v.client_id,
-            &v.redirect_uri,
-            &v.scope,
-            &v.state,
-            v.nonce.as_deref(),
-            &v.code_challenge,
-            app.config.signup.open,
-            None,
-        ))
-        .into_response(),
+    let v = match validate_authorize(&app, &p) {
+        Ok(v) => v,
         Err(msg) => {
-            (StatusCode::BAD_REQUEST, Html(html::error_page(&msg))).into_response()
+            return (StatusCode::BAD_REQUEST, Html(html::error_page(&msg))).into_response()
+        }
+    };
+
+    // SSO hit: a live session cookie short-circuits straight to a code.
+    if let Some(token) = sso_cookie(&headers) {
+        match app.idp_store.lookup_session(&token) {
+            Ok(Some(session)) => {
+                let f = FlowFields {
+                    client_id: v.client_id.clone(),
+                    redirect_uri: v.redirect_uri.clone(),
+                    scope: v.scope.clone(),
+                    state: v.state.clone(),
+                    nonce: v.nonce.clone(),
+                    code_challenge: v.code_challenge.clone(),
+                };
+                return match issue_and_redirect(
+                    &app,
+                    &f,
+                    &session.profile_ulid,
+                    &session.email,
+                    session.auth_time,
+                    None, // the cookie already exists — do not re-set it
+                ) {
+                    Ok(resp) => resp,
+                    Err(e) => e.into_response(),
+                };
+            }
+            // Unknown / expired session → fall through to the login page.
+            Ok(None) => {}
+            Err(e) => return ApiError::from(e).into_response(),
         }
     }
+
+    // SSO miss: render the login page.
+    Html(html::login_page(
+        &v.client_id,
+        &v.redirect_uri,
+        &v.scope,
+        &v.state,
+        v.nonce.as_deref(),
+        &v.code_challenge,
+        app.config.signup.open,
+        app.config.recovery.enabled,
+        None,
+    ))
+    .into_response()
 }
 
 // --- /login ----------------------------------------------------------------
@@ -200,23 +277,35 @@ pub async fn login_form(
         f.nonce(),
         &f.code_challenge,
         app.config.signup.open,
+        app.config.recovery.enabled,
         None,
     ))
     .into_response()
 }
 
-/// `POST /login` form body — the flow fields plus the credentials.
+/// `POST /login` form body — the flow fields plus the credentials. The
+/// page submits one of two credential shapes; both fields are optional so
+/// the form deserializes either way:
+///
+/// - **password login:** `email` + `password`.
+/// - **recovery-code login:** `recovery_code` (gated on
+///   `config.recovery.enabled`).
 #[derive(Debug, Deserialize)]
 pub struct LoginForm {
     #[serde(flatten)]
     pub flow: FlowFields,
-    pub email: String,
-    pub password: String,
+    #[serde(default)]
+    pub email: Option<String>,
+    #[serde(default)]
+    pub password: Option<String>,
+    #[serde(default)]
+    pub recovery_code: Option<String>,
 }
 
 /// `POST /login` — verify the credentials, then continue the authorize
 /// flow by minting a code and redirecting. On failure re-render `/login`
-/// with an error banner.
+/// with an error banner. Handles both the password and recovery-code
+/// branches.
 pub async fn login_submit(
     State(app): State<AppState>,
     Form(form): Form<LoginForm>,
@@ -226,27 +315,84 @@ pub async fn login_submit(
         return (StatusCode::BAD_REQUEST, Html(html::error_page(&msg))).into_response();
     }
 
-    let account = match app.accounts.find_by_email(&form.email) {
-        Ok(Some(a)) => a,
-        Ok(None) => return login_error(&app, f),
-        Err(e) => return ApiError::from(e).into_response(),
-    };
-    if !account.verify_password(&form.password) {
-        return login_error(&app, f);
+    // Recovery-code branch — taken when a non-empty recovery code is
+    // submitted and recovery login is enabled.
+    let recovery = form
+        .recovery_code
+        .as_deref()
+        .filter(|s| !s.trim().is_empty());
+    if let Some(code) = recovery {
+        if !app.config.recovery.enabled {
+            return login_error(&app, f, "Recovery-code sign-in is disabled.");
+        }
+        let hash = sha256_hex(&canonical_recovery(code));
+        let account = match app.accounts.find_by_recovery_hash(&hash) {
+            Ok(Some(a)) => a,
+            Ok(None) => return login_error(&app, f, "That recovery code is not valid."),
+            Err(e) => return ApiError::from(e).into_response(),
+        };
+        // The recovery code resolves the profile directly. The email may
+        // be absent (a profile with no email credential yet); the
+        // `id_token` carries an empty string in that case — honest about
+        // what the IdP knows.
+        let email = account.email.unwrap_or_default();
+        let auth_time = now_unix();
+        return finish_login(&app, f, &account.profile_ulid, &email, auth_time);
     }
 
-    // Authenticated — mint a code and redirect back to the RP.
+    // Password branch.
+    let email = match form.email.as_deref().filter(|s| !s.trim().is_empty()) {
+        Some(e) => e,
+        None => return login_error(&app, f, "Enter your email and password."),
+    };
+    let password = form.password.as_deref().unwrap_or("");
+    let account = match app.accounts.find_by_email(email) {
+        Ok(Some(a)) => a,
+        Ok(None) => return login_error(&app, f, "Incorrect email or password."),
+        Err(e) => return ApiError::from(e).into_response(),
+    };
+    if !account.verify_password(password) {
+        return login_error(&app, f, "Incorrect email or password.");
+    }
+
     let auth_time = now_unix();
-    match issue_and_redirect(&app, f, &account.profile_ulid, &account.email, auth_time) {
+    finish_login(&app, f, &account.profile_ulid, &account.email, auth_time)
+}
+
+/// Complete an authenticated login: mint a bounded SSO session, then mint
+/// an authorization code and redirect to the RP carrying both the `code`
+/// and the SSO `Set-Cookie`.
+fn finish_login(
+    app: &AppState,
+    f: &FlowFields,
+    profile_ulid: &str,
+    email: &str,
+    auth_time: i64,
+) -> Response {
+    let ttl = sso_ttl_secs(app);
+    let cookie = match app
+        .idp_store
+        .create_session(profile_ulid, email, auth_time, ttl)
+    {
+        Ok(token) => Some(set_sso_cookie(&token, ttl)),
+        Err(e) => return ApiError::from(e).into_response(),
+    };
+    match issue_and_redirect(app, f, profile_ulid, email, auth_time, cookie) {
         Ok(resp) => resp,
         Err(e) => e.into_response(),
     }
 }
 
-/// Re-render the login page with the generic credential error. The same
-/// message for "no such email" and "wrong password" — no account
-/// enumeration.
-fn login_error(app: &AppState, f: &FlowFields) -> Response {
+/// The SSO session lifetime in seconds, derived from
+/// `config.session.sso_ttl_hours` (floored at one hour).
+fn sso_ttl_secs(app: &AppState) -> i64 {
+    app.config.session.sso_ttl_hours.max(1) * 3600
+}
+
+/// Re-render the login page with a credential error. Callers pass a
+/// message that does not enable account enumeration — the same wording for
+/// "no such email" and "wrong password".
+fn login_error(app: &AppState, f: &FlowFields, message: &str) -> Response {
     Html(html::login_page(
         &f.client_id,
         &f.redirect_uri,
@@ -255,7 +401,8 @@ fn login_error(app: &AppState, f: &FlowFields) -> Response {
         f.nonce(),
         &f.code_challenge,
         app.config.signup.open,
-        Some("Incorrect email or password."),
+        app.config.recovery.enabled,
+        Some(message),
     ))
     .into_response()
 }
@@ -390,6 +537,19 @@ pub async fn continue_flow(
         Err(e) => return ApiError::from(e).into_response(),
     };
 
+    // The sign-up just authenticated the user — mint the SSO session here
+    // so a subsequent RP login is promptless, the same as a password login.
+    let ttl = sso_ttl_secs(&app);
+    let cookie = match app.idp_store.create_session(
+        &cont.profile_ulid,
+        &cont.email,
+        cont.auth_time,
+        ttl,
+    ) {
+        Ok(token) => Some(set_sso_cookie(&token, ttl)),
+        Err(e) => return ApiError::from(e).into_response(),
+    };
+
     let code = match app.idp_store.issue_code(
         &cont.client_id,
         &cont.profile_ulid,
@@ -403,17 +563,19 @@ pub async fn continue_flow(
         Ok(c) => c,
         Err(e) => return ApiError::from(e).into_response(),
     };
-    redirect_to_rp(&cont.redirect_uri, &code, &cont.state)
+    redirect_to_rp(&cont.redirect_uri, &code, &cont.state, cookie)
 }
 
 /// Mint an authorization code for an authenticated user and 302 the
-/// browser back to the RP's `redirect_uri?code=…&state=…`.
+/// browser back to the RP's `redirect_uri?code=…&state=…`. An optional
+/// `Set-Cookie` value plants the SSO session on the same response.
 fn issue_and_redirect(
     app: &AppState,
     f: &FlowFields,
     profile_ulid: &str,
     email: &str,
     _auth_time: i64,
+    set_cookie: Option<String>,
 ) -> ApiResult<Response> {
     let code = app
         .idp_store
@@ -428,11 +590,17 @@ fn issue_and_redirect(
             app.config.session.code_ttl_secs,
         )
         .map_err(ApiError::from)?;
-    Ok(redirect_to_rp(&f.redirect_uri, &code, &f.state))
+    Ok(redirect_to_rp(&f.redirect_uri, &code, &f.state, set_cookie))
 }
 
-/// Build the 302 back to the RP carrying `code` + `state`.
-fn redirect_to_rp(redirect_uri: &str, code: &str, state: &str) -> Response {
+/// Build the 302 back to the RP carrying `code` + `state`, optionally with
+/// a `Set-Cookie` header for the SSO session.
+fn redirect_to_rp(
+    redirect_uri: &str,
+    code: &str,
+    state: &str,
+    set_cookie: Option<String>,
+) -> Response {
     let sep = if redirect_uri.contains('?') { '&' } else { '?' };
     let location = format!(
         "{redirect_uri}{sep}code={}&state={}",
@@ -442,6 +610,11 @@ fn redirect_to_rp(redirect_uri: &str, code: &str, state: &str) -> Response {
     let mut headers = HeaderMap::new();
     if let Ok(v) = location.parse() {
         headers.insert(LOCATION, v);
+    }
+    if let Some(cookie) = set_cookie {
+        if let Ok(v) = cookie.parse() {
+            headers.insert(SET_COOKIE, v);
+        }
     }
     (StatusCode::FOUND, headers).into_response()
 }
@@ -535,7 +708,7 @@ pub async fn token(State(app): State<AppState>, Form(form): Form<TokenForm>) -> 
 
     // All checks passed — mint the token set.
     let id_token = match mint_id_token(
-        &app.signing_key,
+        app.keys.active(),
         &app.config.server.issuer,
         &redeemed.profile_ulid,
         &redeemed.client_id,
@@ -623,6 +796,187 @@ fn bearer_token(headers: &HeaderMap) -> Option<String> {
     } else {
         Some(token.to_string())
     }
+}
+
+// --- /reset (password reset via recovery code) -----------------------------
+
+/// `GET /reset` — the "forgot password?" page: enter a recovery code + a
+/// new password. Reachable from the login page's link, carrying the
+/// authorize-flow params so a successful reset resumes the original flow.
+pub async fn reset_form(State(app): State<AppState>, Query(f): Query<FlowFields>) -> Response {
+    if !app.config.recovery.enabled {
+        return (
+            StatusCode::FORBIDDEN,
+            Html(html::error_page("Recovery-code password reset is disabled.")),
+        )
+            .into_response();
+    }
+    if let Err(msg) = f.revalidate(&app) {
+        return (StatusCode::BAD_REQUEST, Html(html::error_page(&msg))).into_response();
+    }
+    Html(html::reset_page(
+        &f.client_id,
+        &f.redirect_uri,
+        &f.scope,
+        &f.state,
+        f.nonce(),
+        &f.code_challenge,
+        None,
+    ))
+    .into_response()
+}
+
+/// `POST /reset` form body — flow fields + the recovery code + the new
+/// password. `email` is only needed when the profile has no email
+/// credential yet (see [`crate::store::AccountStore::reset_password`]).
+#[derive(Debug, Deserialize)]
+pub struct ResetForm {
+    #[serde(flatten)]
+    pub flow: FlowFields,
+    pub recovery_code: String,
+    pub password: String,
+    pub confirm: String,
+    #[serde(default)]
+    pub email: Option<String>,
+}
+
+/// `POST /reset` — validate the recovery code, set the new password, then
+/// continue the authorize flow exactly as a fresh login does (mint an SSO
+/// session + an authorization code, redirect to the RP).
+pub async fn reset_submit(State(app): State<AppState>, Form(form): Form<ResetForm>) -> Response {
+    if !app.config.recovery.enabled {
+        return (
+            StatusCode::FORBIDDEN,
+            Html(html::error_page("Recovery-code password reset is disabled.")),
+        )
+            .into_response();
+    }
+    let f = &form.flow;
+    if let Err(msg) = f.revalidate(&app) {
+        return (StatusCode::BAD_REQUEST, Html(html::error_page(&msg))).into_response();
+    }
+
+    let reset_error = |msg: &str| -> Response {
+        Html(html::reset_page(
+            &f.client_id,
+            &f.redirect_uri,
+            &f.scope,
+            &f.state,
+            f.nonce(),
+            &f.code_challenge,
+            Some(msg),
+        ))
+        .into_response()
+    };
+
+    if form.password != form.confirm {
+        return reset_error("The two passwords do not match.");
+    }
+
+    // Resolve the profile from the recovery code.
+    let hash = sha256_hex(&canonical_recovery(&form.recovery_code));
+    let account = match app.accounts.find_by_recovery_hash(&hash) {
+        Ok(Some(a)) => a,
+        Ok(None) => return reset_error("That recovery code is not valid."),
+        Err(e) => return ApiError::from(e).into_response(),
+    };
+
+    // Set (or create) the password. A profile with no email credential
+    // yet needs an email supplied to create one.
+    let new_email = form.email.as_deref().filter(|s| !s.trim().is_empty());
+    let email = match app
+        .accounts
+        .reset_password(&account.profile_ulid, &form.password, new_email)
+    {
+        Ok(email) => email,
+        // reset_password's errors are user-facing input problems
+        // (no email given, weak password, email already taken).
+        Err(e) => return reset_error(&e.to_string()),
+    };
+
+    // The recovery code authenticated the user — continue the flow with a
+    // fresh SSO session, just like a password login.
+    let auth_time = now_unix();
+    finish_login(&app, f, &account.profile_ulid, &email, auth_time)
+}
+
+// --- /logout (RP-Initiated Logout) -----------------------------------------
+
+/// `GET`/`POST /logout` query/form parameters.
+#[derive(Debug, Deserialize)]
+pub struct LogoutParams {
+    /// Where to send the browser after logout — only honoured if it
+    /// exactly matches a registered client redirect URI.
+    #[serde(default)]
+    pub post_logout_redirect_uri: Option<String>,
+    /// Echoed back on the post-logout redirect, per RP-Initiated Logout.
+    #[serde(default)]
+    pub state: Option<String>,
+}
+
+/// `GET`/`POST /logout` — RP-Initiated Logout. Deletes the IdP SSO session
+/// and clears the cookie. If `post_logout_redirect_uri` is supplied and
+/// exactly matches a registered client redirect URI the browser is
+/// redirected there; otherwise a plain "signed out" page is shown.
+pub async fn logout(
+    State(app): State<AppState>,
+    headers: HeaderMap,
+    params: Option<Query<LogoutParams>>,
+) -> Response {
+    let params = params.map(|Query(p)| p).unwrap_or(LogoutParams {
+        post_logout_redirect_uri: None,
+        state: None,
+    });
+
+    // Delete the session server-side, if the browser carried one.
+    if let Some(token) = sso_cookie(&headers) {
+        if let Err(e) = app.idp_store.delete_session(&token) {
+            return ApiError::from(e).into_response();
+        }
+    }
+
+    let clear = clear_sso_cookie();
+
+    // A post-logout redirect is only honoured when it exactly matches a
+    // registered redirect URI — never an open redirect.
+    if let Some(uri) = params
+        .post_logout_redirect_uri
+        .as_deref()
+        .filter(|s| !s.is_empty())
+    {
+        let registered = app
+            .config
+            .clients
+            .iter()
+            .any(|c| c.redirect_uris.iter().any(|u| u == uri));
+        if registered {
+            let location = match &params.state {
+                Some(s) if !s.is_empty() => {
+                    let sep = if uri.contains('?') { '&' } else { '?' };
+                    format!("{uri}{sep}state={}", urlencoding::encode(s))
+                }
+                _ => uri.to_string(),
+            };
+            let mut hdrs = HeaderMap::new();
+            if let Ok(v) = location.parse() {
+                hdrs.insert(LOCATION, v);
+            }
+            if let Ok(v) = clear.parse() {
+                hdrs.insert(SET_COOKIE, v);
+            }
+            return (StatusCode::FOUND, hdrs).into_response();
+        }
+        // An unregistered redirect target is silently ignored — fall
+        // through to the plain signed-out page.
+    }
+
+    // No (valid) redirect target — show the signed-out page, still
+    // clearing the cookie.
+    let mut hdrs = HeaderMap::new();
+    if let Ok(v) = clear.parse() {
+        hdrs.insert(SET_COOKIE, v);
+    }
+    (StatusCode::OK, hdrs, Html(html::logged_out_page())).into_response()
 }
 
 fn now_unix() -> i64 {

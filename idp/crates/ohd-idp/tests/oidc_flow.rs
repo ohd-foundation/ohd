@@ -10,7 +10,7 @@ use base64::Engine;
 use http_body_util::BodyExt;
 use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
 use ohd_idp::store::AccountStore as AS;
-use ohd_idp::{build_router, config, AccountStore, IdpStore, SigningKey};
+use ohd_idp::{build_router, config, AccountStore, IdpStore, KeyStore, SigningKey};
 use serde::Deserialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -45,7 +45,12 @@ fn harness() -> Harness {
     let key = SigningKey::generate().expect("key generates");
     let accounts = AccountStore::in_memory().expect("account store");
     let idp_store = IdpStore::in_memory().expect("idp store");
-    let router = build_router(cfg, key.clone(), accounts.clone(), idp_store);
+    let router = build_router(
+        cfg,
+        KeyStore::in_memory(key.clone()),
+        accounts.clone(),
+        idp_store,
+    );
     Harness {
         router,
         accounts,

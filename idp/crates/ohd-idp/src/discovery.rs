@@ -17,6 +17,8 @@ pub struct Discovery {
     pub token_endpoint: String,
     pub jwks_uri: String,
     pub userinfo_endpoint: String,
+    /// RP-Initiated Logout endpoint (OpenID Connect RP-Initiated Logout 1.0).
+    pub end_session_endpoint: String,
     pub response_types_supported: Vec<String>,
     pub subject_types_supported: Vec<String>,
     pub id_token_signing_alg_values_supported: Vec<String>,
@@ -34,6 +36,7 @@ impl Discovery {
             token_endpoint: format!("{issuer}/token"),
             jwks_uri: format!("{issuer}/jwks"),
             userinfo_endpoint: format!("{issuer}/userinfo"),
+            end_session_endpoint: format!("{issuer}/logout"),
             response_types_supported: vec!["code".to_string()],
             subject_types_supported: vec!["public".to_string()],
             id_token_signing_alg_values_supported: vec!["RS256".to_string()],
@@ -59,6 +62,7 @@ mod tests {
         assert_eq!(d.token_endpoint, "https://accounts.ohd.dev/token");
         assert_eq!(d.jwks_uri, "https://accounts.ohd.dev/jwks");
         assert_eq!(d.userinfo_endpoint, "https://accounts.ohd.dev/userinfo");
+        assert_eq!(d.end_session_endpoint, "https://accounts.ohd.dev/logout");
         assert_eq!(d.id_token_signing_alg_values_supported, ["RS256"]);
         assert_eq!(d.code_challenge_methods_supported, ["S256"]);
         assert_eq!(d.response_types_supported, ["code"]);

@@ -216,6 +216,174 @@ pub struct NewAccount {
     pub recovery_code: String,
 }
 
+/// A profile resolved from a recovery code. The profile may or may not
+/// already have an email credential — recovery-code login resolves the
+/// identity directly off `profiles`, independent of `email_credentials`.
+#[derive(Debug, Clone)]
+pub struct RecoveryAccount {
+    /// The stable OHD identity.
+    pub profile_ulid: String,
+    /// The email of this profile's existing credential, if it has one.
+    pub email: Option<String>,
+}
+
+impl AccountStore {
+    /// Resolve a recovery-code hash to a profile. `recovery_hash` must be
+    /// the lowercase-hex sha-256 of the *canonical* recovery code (see
+    /// [`canonical_recovery`] + [`sha256_hex`]) — the exact encoding
+    /// `profiles.recovery_hash_hex` stores. Returns the profile plus the
+    /// email of its existing credential, if any.
+    pub fn find_by_recovery_hash(&self, recovery_hash: &str) -> Result<Option<RecoveryAccount>> {
+        let conn = self.pool.get().context("checking out DB connection")?;
+        let profile_ulid: Option<String> = conn
+            .query_row(
+                "SELECT profile_ulid FROM profiles WHERE recovery_hash_hex = ?1",
+                params![recovery_hash],
+                |r| r.get(0),
+            )
+            .map(Some)
+            .or_else(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                other => Err(other),
+            })
+            .context("querying profiles by recovery hash")?;
+
+        let profile_ulid = match profile_ulid {
+            Some(p) => p,
+            None => return Ok(None),
+        };
+
+        // The profile may already have an email credential — resolve it so
+        // a recovery-code login can carry the email into the `id_token`.
+        let email: Option<String> = conn
+            .query_row(
+                "SELECT email FROM email_credentials WHERE profile_ulid = ?1",
+                params![profile_ulid],
+                |r| r.get(0),
+            )
+            .map(Some)
+            .or_else(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                other => Err(other),
+            })
+            .context("querying email_credentials for profile")?;
+
+        Ok(Some(RecoveryAccount { profile_ulid, email }))
+    }
+
+    /// Set (or replace) the password for a profile authenticated by a
+    /// recovery code.
+    ///
+    /// If the profile already has an email credential its `password_hash`
+    /// is updated in place. If it has none, `new_email` must be supplied —
+    /// a fresh `email_credentials` row is created binding that email to the
+    /// profile. The email is normalized + validated and must not already
+    /// belong to a *different* profile. Returns the credential's email.
+    pub fn reset_password(
+        &self,
+        profile_ulid: &str,
+        new_password: &str,
+        new_email: Option<&str>,
+    ) -> Result<String> {
+        validate_password(new_password)?;
+        let password_hash = hash_password(new_password)?;
+        let now = now_iso();
+
+        let mut conn = self.pool.get().context("checking out DB connection")?;
+        let tx = conn.transaction().context("opening transaction")?;
+
+        // The profile must exist (the recovery code already resolved it,
+        // but re-check inside the transaction).
+        let profile_exists: bool = tx
+            .query_row(
+                "SELECT 1 FROM profiles WHERE profile_ulid = ?1",
+                params![profile_ulid],
+                |_| Ok(()),
+            )
+            .map(|_| true)
+            .or_else(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => Ok(false),
+                other => Err(other),
+            })
+            .context("checking profile exists")?;
+        if !profile_exists {
+            return Err(anyhow!("no such profile"));
+        }
+
+        // Does this profile already have an email credential?
+        let existing_email: Option<String> = tx
+            .query_row(
+                "SELECT email FROM email_credentials WHERE profile_ulid = ?1",
+                params![profile_ulid],
+                |r| r.get(0),
+            )
+            .map(Some)
+            .or_else(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                other => Err(other),
+            })
+            .context("querying existing credential")?;
+
+        let email = match existing_email {
+            Some(email) => {
+                // Update the password in place.
+                tx.execute(
+                    "UPDATE email_credentials
+                       SET password_hash = ?1, updated_at = ?2
+                     WHERE profile_ulid = ?3",
+                    params![password_hash, now, profile_ulid],
+                )
+                .context("updating password hash")?;
+                email
+            }
+            None => {
+                // No credential yet — the user must supply an email to
+                // create one.
+                let raw = new_email.ok_or_else(|| {
+                    anyhow!(
+                        "this account has no email yet — enter one to set a password"
+                    )
+                })?;
+                let normalized = normalize_email(raw);
+                validate_email(&normalized)?;
+
+                // The email must not already belong to another profile.
+                let taken: Option<String> = tx
+                    .query_row(
+                        "SELECT profile_ulid FROM email_credentials WHERE email = ?1",
+                        params![normalized],
+                        |r| r.get(0),
+                    )
+                    .map(Some)
+                    .or_else(|e| match e {
+                        rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                        other => Err(other),
+                    })
+                    .context("checking email ownership")?;
+                if let Some(owner) = taken {
+                    if owner != profile_ulid {
+                        return Err(anyhow!(
+                            "that email is already in use by another account"
+                        ));
+                    }
+                }
+
+                tx.execute(
+                    "INSERT INTO email_credentials
+                       (email, profile_ulid, password_hash, created_at, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?4)",
+                    params![normalized, profile_ulid, password_hash, now],
+                )
+                .context("inserting email_credentials row")?;
+                normalized
+            }
+        };
+
+        tx.commit().context("committing password reset")?;
+        Ok(email)
+    }
+}
+
 /// Normalize an email: trim + lowercase. The store key is the normalized
 /// form, so lookups and inserts agree regardless of how the user typed it.
 pub fn normalize_email(email: &str) -> String {
@@ -435,6 +603,107 @@ mod tests {
         };
         assert!(acct.verify_password("a-decent-password"));
         assert!(!acct.verify_password("a-decent-passwerd"));
+    }
+
+    #[test]
+    fn find_by_recovery_hash_resolves_the_profile() {
+        let store = AccountStore::in_memory().unwrap();
+        let created = store
+            .create_account("rec@example.com", "a-good-password")
+            .unwrap();
+        // The hash a recovery code lands in `profiles` as.
+        let hash = sha256_hex(&canonical_recovery(&created.recovery_code));
+
+        let found = store
+            .find_by_recovery_hash(&hash)
+            .unwrap()
+            .expect("profile resolved from recovery hash");
+        assert_eq!(found.profile_ulid, created.profile_ulid);
+        assert_eq!(found.email.as_deref(), Some("rec@example.com"));
+
+        // An unknown hash resolves to nothing.
+        assert!(store
+            .find_by_recovery_hash(&sha256_hex("NOTAREALCODE"))
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn reset_password_updates_an_existing_credential() {
+        let store = AccountStore::in_memory().unwrap();
+        let created = store
+            .create_account("reset@example.com", "old-password")
+            .unwrap();
+
+        let email = store
+            .reset_password(&created.profile_ulid, "brand-new-password", None)
+            .unwrap();
+        assert_eq!(email, "reset@example.com");
+
+        let acct = store
+            .find_by_email("reset@example.com")
+            .unwrap()
+            .expect("account still found");
+        assert!(acct.verify_password("brand-new-password"));
+        assert!(!acct.verify_password("old-password"));
+    }
+
+    #[test]
+    fn reset_password_creates_a_credential_for_an_emailless_profile() {
+        let store = AccountStore::in_memory().unwrap();
+        // A profile with a recovery hash but no email credential — the
+        // shape a profile minted outside the IdP can have.
+        let recovery = "AAAA BBBB CCCC DDDD";
+        let hash = sha256_hex(&canonical_recovery(recovery));
+        {
+            let conn = store.pool.get().unwrap();
+            conn.execute(
+                "INSERT INTO profiles (profile_ulid, recovery_hash_hex, plan, created_at, last_seen_at)
+                 VALUES ('01EMAILLESS', ?1, 'free', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+                params![hash],
+            )
+            .unwrap();
+        }
+
+        // Without an email it cannot create a credential.
+        assert!(store
+            .reset_password("01EMAILLESS", "a-new-password", None)
+            .is_err());
+
+        // With an email it creates one.
+        let email = store
+            .reset_password("01EMAILLESS", "a-new-password", Some("fresh@example.com"))
+            .unwrap();
+        assert_eq!(email, "fresh@example.com");
+        let acct = store
+            .find_by_email("fresh@example.com")
+            .unwrap()
+            .expect("credential created");
+        assert_eq!(acct.profile_ulid, "01EMAILLESS");
+        assert!(acct.verify_password("a-new-password"));
+    }
+
+    #[test]
+    fn reset_password_rejects_an_email_owned_by_another_profile() {
+        let store = AccountStore::in_memory().unwrap();
+        store
+            .create_account("owner@example.com", "owner-password")
+            .unwrap();
+        // A second, email-less profile.
+        let hash = sha256_hex(&canonical_recovery("ZZZZ YYYY"));
+        {
+            let conn = store.pool.get().unwrap();
+            conn.execute(
+                "INSERT INTO profiles (profile_ulid, recovery_hash_hex, plan, created_at, last_seen_at)
+                 VALUES ('01OTHER', ?1, 'free', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+                params![hash],
+            )
+            .unwrap();
+        }
+        let err = store
+            .reset_password("01OTHER", "a-new-password", Some("owner@example.com"))
+            .unwrap_err();
+        assert!(err.to_string().contains("already in use"));
     }
 
     #[test]

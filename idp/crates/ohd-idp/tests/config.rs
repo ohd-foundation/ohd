@@ -109,11 +109,11 @@ issuer = "https://accounts.ohd.dev"
 #[test]
 fn shipped_default_idp_toml_parses() {
     // The repo's default idp.toml must always be valid TOML with the
-    // expected listen port + RP clients. Issuer is env-overridable, so
-    // this test does not assert it (see `config_load_defaults_*`).
+    // expected RP clients. `listen` and `issuer` are env-overridable, so
+    // this test does not assert them — a peer test mutating `OHD_IDP_*`
+    // runs concurrently (see `config_load_defaults_*`).
     let text = include_str!("../../../idp.toml");
     let cfg = config::from_str(text).expect("shipped idp.toml parses");
-    assert_eq!(cfg.server.listen.port(), 8447);
     assert!(cfg.client("cord-web").is_some());
     assert!(cfg.client("connect-web").is_some());
     assert!(cfg.client("connect-web").unwrap().public);

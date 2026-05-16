@@ -37,9 +37,17 @@ const STYLE: &str = r#"<style>
   h1 { font-size: 1.35rem; margin: 0 0 1.5rem; }
   label { display: block; font-size: 0.85rem; font-weight: 600;
     margin: 1rem 0 0.35rem; }
-  input[type=email], input[type=password] { width: 100%; padding: 0.6rem 0.7rem;
-    font-size: 1rem; border: 1px solid #d2d2d7; border-radius: 8px; }
-  input:focus { outline: 2px solid var(--ohd-red); outline-offset: -1px; }
+  input[type=email], input[type=password], textarea { width: 100%;
+    padding: 0.6rem 0.7rem; font-size: 1rem; border: 1px solid #d2d2d7;
+    border-radius: 8px; font-family: inherit; }
+  textarea { resize: vertical; font-family: ui-monospace, SFMono-Regular,
+    Menlo, monospace; letter-spacing: 0.04em; }
+  input:focus, textarea:focus { outline: 2px solid var(--ohd-red);
+    outline-offset: -1px; }
+  details.alt { margin-top: 1.5rem; border-top: 1px solid #e5e5ea;
+    padding-top: 0.75rem; }
+  details.alt summary { cursor: pointer; font-size: 0.875rem;
+    color: var(--ohd-red); }
   button { width: 100%; margin-top: 1.5rem; padding: 0.7rem; font-size: 1rem;
     font-weight: 600; color: #fff; background: var(--ohd-red); border: 0;
     border-radius: 8px; cursor: pointer; }
@@ -100,7 +108,14 @@ fn flow_fields(
 }
 
 /// The `GET /login` page. `error` renders an error banner when a prior
-/// `POST /login` failed; `signup_open` adds the sign-up link.
+/// `POST /login` failed; `signup_open` adds the sign-up link;
+/// `recovery_enabled` adds the recovery-code form + "forgot password?"
+/// link.
+///
+/// The page carries two `POST /login` forms — an email/password form and a
+/// recovery-code form. The recovery form is hidden behind a `<details>`
+/// toggle so the password path stays the prominent default, with no
+/// client JS.
 #[allow(clippy::too_many_arguments)]
 pub fn login_page(
     client_id: &str,
@@ -110,6 +125,7 @@ pub fn login_page(
     nonce: Option<&str>,
     code_challenge: &str,
     signup_open: bool,
+    recovery_enabled: bool,
     error: Option<&str>,
 ) -> String {
     let error_banner = error
@@ -124,17 +140,82 @@ pub fn login_page(
     } else {
         String::new()
     };
+    let recovery_block = if recovery_enabled {
+        format!(
+            "<details class=\"alt\"><summary>Sign in with a recovery code</summary>\
+             <form method=\"post\" action=\"/login\">{hidden}\
+             <label for=\"recovery_code\">Recovery code</label>\
+             <textarea id=\"recovery_code\" name=\"recovery_code\" rows=\"4\" required \
+             autocomplete=\"off\" spellcheck=\"false\"></textarea>\
+             <button type=\"submit\">Sign in with recovery code</button></form></details>\
+             <div class=\"links\"><a href=\"/reset?{carry}\">Forgot your password?</a></div>",
+            hidden = hidden,
+            carry = carry_query(client_id, redirect_uri, scope, state, nonce, code_challenge),
+        )
+    } else {
+        String::new()
+    };
     let body = format!(
         "<div class=\"card\"><p class=\"brand\">OHD <span class=\"accent\">Identity</span></p>\
          <h1>Sign in</h1>{error_banner}\
          <form method=\"post\" action=\"/login\">{hidden}\
          <label for=\"email\">Email</label>\
-         <input type=\"email\" id=\"email\" name=\"email\" required autofocus autocomplete=\"username\">\
+         <input type=\"email\" id=\"email\" name=\"email\" autofocus autocomplete=\"username\">\
          <label for=\"password\">Password</label>\
-         <input type=\"password\" id=\"password\" name=\"password\" required autocomplete=\"current-password\">\
-         <button type=\"submit\">Sign in</button></form>{signup_link}</div>",
+         <input type=\"password\" id=\"password\" name=\"password\" autocomplete=\"current-password\">\
+         <button type=\"submit\">Sign in</button></form>\
+         {recovery_block}{signup_link}</div>",
     );
     page("Sign in — OHD Identity", &body)
+}
+
+/// The `GET /reset` page — password reset via a recovery code. The user
+/// pastes their recovery code and a new password; `email` is asked for too
+/// (optional — only needed if the profile has no email credential yet).
+#[allow(clippy::too_many_arguments)]
+pub fn reset_page(
+    client_id: &str,
+    redirect_uri: &str,
+    scope: &str,
+    state: &str,
+    nonce: Option<&str>,
+    code_challenge: &str,
+    error: Option<&str>,
+) -> String {
+    let error_banner = error
+        .map(|e| format!("<div class=\"error\">{}</div>", escape(e)))
+        .unwrap_or_default();
+    let hidden = flow_fields(client_id, redirect_uri, scope, state, nonce, code_challenge);
+    let body = format!(
+        "<div class=\"card\"><p class=\"brand\">OHD <span class=\"accent\">Identity</span></p>\
+         <h1>Reset your password</h1>{error_banner}\
+         <p class=\"muted\">Enter your recovery code and a new password. \
+         If your account has no email yet, add one below.</p>\
+         <form method=\"post\" action=\"/reset\">{hidden}\
+         <label for=\"recovery_code\">Recovery code</label>\
+         <textarea id=\"recovery_code\" name=\"recovery_code\" rows=\"4\" required autofocus \
+         autocomplete=\"off\" spellcheck=\"false\"></textarea>\
+         <label for=\"password\">New password</label>\
+         <input type=\"password\" id=\"password\" name=\"password\" required autocomplete=\"new-password\">\
+         <label for=\"confirm\">Confirm new password</label>\
+         <input type=\"password\" id=\"confirm\" name=\"confirm\" required autocomplete=\"new-password\">\
+         <label for=\"email\">Email <span class=\"muted\">(only if your account has none yet)</span></label>\
+         <input type=\"email\" id=\"email\" name=\"email\" autocomplete=\"username\">\
+         <button type=\"submit\">Set new password</button></form>\
+         <div class=\"links\"><a href=\"/login?{carry}\">Back to sign in</a></div></div>",
+        carry = carry_query(client_id, redirect_uri, scope, state, nonce, code_challenge),
+    );
+    page("Reset password — OHD Identity", &body)
+}
+
+/// The `/logout` confirmation page — shown when logout has no (valid)
+/// `post_logout_redirect_uri` to send the browser back to.
+pub fn logged_out_page() -> String {
+    let body = "<div class=\"card\"><p class=\"brand\">OHD <span class=\"accent\">Identity</span></p>\
+         <h1>Signed out</h1>\
+         <p class=\"muted\">You have been signed out of OHD. Close this tab, \
+         or return to the application to sign in again.</p></div>";
+    page("Signed out — OHD Identity", body)
 }
 
 /// The `GET /signup` page.
@@ -248,6 +329,7 @@ mod tests {
             Some("nonce-xyz"),
             "challenge-123",
             true,
+            true,
             None,
         );
         assert!(html.contains("name=\"client_id\" value=\"cord-web\""));
@@ -260,19 +342,50 @@ mod tests {
     #[test]
     fn login_page_hides_signup_when_closed() {
         let html = login_page(
-            "cord-web", "https://x/cb", "openid", "s", None, "c", false, None,
+            "cord-web", "https://x/cb", "openid", "s", None, "c", false, true, None,
         );
         assert!(!html.contains("/signup?"));
     }
 
     #[test]
+    fn login_page_shows_recovery_when_enabled_and_hides_it_when_not() {
+        let with = login_page(
+            "cord-web", "https://x/cb", "openid", "s", None, "c", true, true, None,
+        );
+        assert!(with.contains("recovery_code"));
+        assert!(with.contains("/reset?"));
+
+        let without = login_page(
+            "cord-web", "https://x/cb", "openid", "s", None, "c", true, false, None,
+        );
+        assert!(!without.contains("recovery_code"));
+        assert!(!without.contains("/reset?"));
+    }
+
+    #[test]
     fn login_page_renders_error_banner() {
         let html = login_page(
-            "cord-web", "https://x/cb", "openid", "s", None, "c", true,
+            "cord-web", "https://x/cb", "openid", "s", None, "c", true, true,
             Some("Incorrect email or password"),
         );
         assert!(html.contains("Incorrect email or password"));
         assert!(html.contains("class=\"error\""));
+    }
+
+    #[test]
+    fn reset_page_carries_flow_params() {
+        let html = reset_page(
+            "cord-web", "https://cord.ohd.dev/cb", "openid", "st-r", None, "ch", None,
+        );
+        assert!(html.contains("action=\"/reset\""));
+        assert!(html.contains("name=\"state\" value=\"st-r\""));
+        assert!(html.contains("recovery_code"));
+    }
+
+    #[test]
+    fn logged_out_page_renders() {
+        let html = logged_out_page();
+        assert!(html.contains("Signed out"));
     }
 
     #[test]

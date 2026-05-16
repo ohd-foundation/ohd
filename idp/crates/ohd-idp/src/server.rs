@@ -2,7 +2,7 @@
 
 use crate::codes::IdpStore;
 use crate::config::Config;
-use crate::keys::SigningKey;
+use crate::keystore::KeyStore;
 use crate::registry::ClientRegistry;
 use crate::routes;
 use crate::store::AccountStore;
@@ -18,26 +18,28 @@ use tower_http::trace::TraceLayer;
 #[derive(Clone)]
 pub struct AppState {
     pub config: Arc<Config>,
-    pub signing_key: SigningKey,
+    /// The IdP's signing keys — the active key plus rotation-overlap keys.
+    pub keys: KeyStore,
     pub clients: ClientRegistry,
     /// The shared OHD SaaS account store — email/password credentials.
     pub accounts: AccountStore,
-    /// The IdP-local store — authorization codes + access tokens.
+    /// The IdP-local store — authorization codes + access tokens + SSO
+    /// sessions.
     pub idp_store: IdpStore,
 }
 
-/// Assemble the axum router from a resolved config, a loaded signing key,
-/// and the two opened stores.
+/// Assemble the axum router from a resolved config, the loaded signing
+/// keys, and the two opened stores.
 pub fn build_router(
     config: Config,
-    signing_key: SigningKey,
+    keys: KeyStore,
     accounts: AccountStore,
     idp_store: IdpStore,
 ) -> Router {
     let clients = ClientRegistry::from_config(&config.clients);
     let state = AppState {
         config: Arc::new(config),
-        signing_key,
+        keys,
         clients,
         accounts,
         idp_store,
@@ -56,9 +58,17 @@ pub fn build_router(
             "/signup",
             get(routes::oidc::signup_form).post(routes::oidc::signup_submit),
         )
+        .route(
+            "/reset",
+            get(routes::oidc::reset_form).post(routes::oidc::reset_submit),
+        )
         .route("/continue", get(routes::oidc::continue_flow))
         .route("/token", post(routes::oidc::token))
         .route("/userinfo", get(routes::oidc::userinfo))
+        .route(
+            "/logout",
+            get(routes::oidc::logout).post(routes::oidc::logout),
+        )
         .with_state(state)
         .layer(TraceLayer::new_for_http())
         .layer(CorsLayer::permissive())

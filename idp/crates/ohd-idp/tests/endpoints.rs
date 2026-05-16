@@ -4,7 +4,7 @@
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
-use ohd_idp::{build_router, config, AccountStore, ClientRegistry, IdpStore, SigningKey};
+use ohd_idp::{build_router, config, AccountStore, ClientRegistry, IdpStore, KeyStore, SigningKey};
 use serde_json::Value;
 use tower::ServiceExt;
 
@@ -30,7 +30,7 @@ fn router() -> axum::Router {
     let key = SigningKey::generate().expect("key generates");
     let accounts = AccountStore::in_memory().expect("account store");
     let idp_store = IdpStore::in_memory().expect("idp store");
-    build_router(cfg, key, accounts, idp_store)
+    build_router(cfg, KeyStore::in_memory(key), accounts, idp_store)
 }
 
 async fn get_json(router: axum::Router, path: &str) -> (StatusCode, Value) {

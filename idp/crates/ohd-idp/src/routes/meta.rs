@@ -1,7 +1,6 @@
 //! Metadata + liveness endpoints: OIDC discovery, JWKS, and `/healthz`.
 
 use crate::discovery::Discovery;
-use crate::jwks::Jwks;
 use crate::server::AppState;
 use axum::extract::State;
 use axum::Json;
@@ -22,7 +21,9 @@ pub async fn discovery(State(app): State<AppState>) -> Json<Discovery> {
     Json(Discovery::for_issuer(&app.config.server.issuer))
 }
 
-/// `GET /jwks` — the JSON Web Key Set with the current RS256 public key.
-pub async fn jwks(State(app): State<AppState>) -> Json<Jwks> {
-    Json(Jwks::from_current(&app.signing_key))
+/// `GET /jwks` — the JSON Web Key Set: the active RS256 public key plus
+/// every non-expired rotation-overlap key, so an `id_token` signed under a
+/// recently-rotated key still verifies.
+pub async fn jwks(State(app): State<AppState>) -> Json<crate::jwks::Jwks> {
+    Json(app.keys.jwks())
 }

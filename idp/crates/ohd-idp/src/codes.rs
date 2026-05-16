@@ -60,6 +60,13 @@ CREATE TABLE IF NOT EXISTS continuations (
     auth_time      INTEGER NOT NULL,
     expires_at     INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS sso_sessions (
+    session_hash  TEXT PRIMARY KEY,
+    profile_ulid  TEXT NOT NULL,
+    email         TEXT NOT NULL,
+    auth_time     INTEGER NOT NULL,
+    expires_at    INTEGER NOT NULL
+);
 ";
 
 /// A pending authorization — what `/authorize` records for a login still
@@ -416,6 +423,92 @@ impl IdpStore {
     }
 }
 
+/// A bounded IdP SSO session — the browser-side single-sign-on state that
+/// lets a second RP login skip the password prompt. Resolved from the SSO
+/// cookie at `/authorize`.
+#[derive(Debug, Clone)]
+pub struct SsoSession {
+    pub profile_ulid: String,
+    pub email: String,
+    /// When the user originally authenticated (Unix seconds) — carried
+    /// into the `id_token`'s `auth_time` for a promptless re-login.
+    pub auth_time: i64,
+}
+
+impl IdpStore {
+    /// Mint a bounded SSO session for a just-authenticated user. Returns
+    /// the opaque session token set as the SSO cookie; only its hash is
+    /// stored. `ttl_secs` is `config.session.sso_ttl_hours` in seconds.
+    pub fn create_session(
+        &self,
+        profile_ulid: &str,
+        email: &str,
+        auth_time: i64,
+        ttl_secs: i64,
+    ) -> Result<String> {
+        let token = random_token(48);
+        let conn = self.pool.get().context("checking out DB connection")?;
+        conn.execute(
+            "INSERT INTO sso_sessions (session_hash, profile_ulid, email, auth_time, expires_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                sha256_b64(&token),
+                profile_ulid,
+                email,
+                auth_time,
+                now_unix() + ttl_secs,
+            ],
+        )
+        .context("inserting SSO session")?;
+        Ok(token)
+    }
+
+    /// Resolve an SSO session token to its identity, if it exists and is
+    /// unexpired. An expired session is treated as absent — the caller
+    /// then re-prompts.
+    pub fn lookup_session(&self, token: &str) -> Result<Option<SsoSession>> {
+        let conn = self.pool.get().context("checking out DB connection")?;
+        let row = conn
+            .query_row(
+                "SELECT profile_ulid, email, auth_time, expires_at
+                   FROM sso_sessions WHERE session_hash = ?1",
+                params![sha256_b64(token)],
+                |r| {
+                    Ok((
+                        SsoSession {
+                            profile_ulid: r.get(0)?,
+                            email: r.get(1)?,
+                            auth_time: r.get(2)?,
+                        },
+                        r.get::<_, i64>(3)?,
+                    ))
+                },
+            )
+            .map(Some)
+            .or_else(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                other => Err(other),
+            })
+            .context("querying SSO session")?;
+        Ok(match row {
+            Some((s, expires_at)) if expires_at > now_unix() => Some(s),
+            _ => None,
+        })
+    }
+
+    /// Delete an SSO session (RP-initiated logout). Idempotent — deleting
+    /// an unknown or already-deleted session is not an error.
+    pub fn delete_session(&self, token: &str) -> Result<()> {
+        let conn = self.pool.get().context("checking out DB connection")?;
+        conn.execute(
+            "DELETE FROM sso_sessions WHERE session_hash = ?1",
+            params![sha256_b64(token)],
+        )
+        .context("deleting SSO session")?;
+        Ok(())
+    }
+}
+
 /// Verify a PKCE `code_verifier` against a stored S256 `code_challenge`.
 /// `code_challenge == base64url(sha256(code_verifier))`.
 pub fn verify_pkce_s256(code_verifier: &str, code_challenge: &str) -> bool {
@@ -527,5 +620,32 @@ mod tests {
             .issue_access_token("01XYZ", "u@e.com", "openid", -1)
             .unwrap();
         assert!(store.lookup_access_token(&token).unwrap().is_none());
+    }
+
+    #[test]
+    fn sso_session_round_trips_and_logs_out() {
+        let store = IdpStore::in_memory().unwrap();
+        let token = store
+            .create_session("01PROFILE", "u@e.com", 1_700_000_000, 3600)
+            .unwrap();
+        let s = store.lookup_session(&token).unwrap().expect("session found");
+        assert_eq!(s.profile_ulid, "01PROFILE");
+        assert_eq!(s.email, "u@e.com");
+        assert_eq!(s.auth_time, 1_700_000_000);
+
+        // Logout deletes it — the next lookup misses.
+        store.delete_session(&token).unwrap();
+        assert!(store.lookup_session(&token).unwrap().is_none());
+        // Deleting again is a harmless no-op.
+        store.delete_session(&token).unwrap();
+    }
+
+    #[test]
+    fn expired_sso_session_is_not_returned() {
+        let store = IdpStore::in_memory().unwrap();
+        let token = store
+            .create_session("01PROFILE", "u@e.com", 1_700_000_000, -1)
+            .unwrap();
+        assert!(store.lookup_session(&token).unwrap().is_none());
     }
 }
