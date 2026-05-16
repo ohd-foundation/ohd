@@ -1,0 +1,43 @@
+# Production cord.toml for the OHD Cloud deployment (cord.ohd.dev).
+# The docker-compose `ohd-cord` service mounts this at /etc/ohd-cord/cord.toml.
+# Every secret is read from the environment — see DEPLOY.md.
+
+[server]
+listen = "0.0.0.0:8446"
+public_url = "https://cord.ohd.dev"
+data_dir = "/var/lib/ohd-cord"
+data_key_env = "OHD_CORD_DATA_KEY"
+# The Docker image bundles the built SPA here; cord-server serves it.
+web_dir = "/srv/cord-web"
+
+[auth]
+session_ttl_hours = 720
+session_jwt_secret_env = "OHD_CORD_SESSION_SECRET"
+
+# The OHD identity provider. A clinic / employer deployment points this at
+# its own IdP instead. The provider must allow the redirect URI
+# https://cord.ohd.dev/v1/auth/callback
+[[auth.provider]]
+id = "ohd"
+issuer = "https://accounts.ohd.dev"
+client_id = "cord-web"
+client_secret_env = "OHD_CORD_OIDC_OHD_SECRET"
+scopes = ["openid", "email", "profile"]
+
+[models]
+default_provider = "anthropic"
+
+[[models.provider]]
+id = "anthropic"
+kind = "anthropic"
+api_key_env = "OHD_CORD_ANTHROPIC_KEY"
+models = ["claude-opus-4-7", "claude-sonnet-4-6"]
+
+[models.byo]
+# OHD Cloud lets users add their own key. A HIPAA-bound deployment sets
+# this false to keep inference on the operator's BAA-covered account.
+allow_user_keys = true
+
+[relay]
+default_relay = "https://relay.ohd.dev"
+allow_custom_relay = true
