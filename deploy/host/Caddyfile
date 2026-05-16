@@ -55,11 +55,10 @@ storage.ohd.dev {
 # UFW rules in DEPLOYMENT.md), bypassing Caddy.
 relay.ohd.dev {
     encode gzip zstd
-    reverse_proxy ohd-relay:8443 {
-        transport http {
-            versions h2c
-        }
-    }
+    # No h2c transport override: the consumer-attach endpoint
+    # (/v1/attach/<rendezvous_id>) is a WebSocket and needs HTTP/1.1 to the
+    # upstream — forcing h2c 502s the upgrade handshake.
+    reverse_proxy ohd-relay:8443
 }
 
 # ---- api.ohd.dev ----------------------------------------------------------

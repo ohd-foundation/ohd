@@ -45,6 +45,26 @@ export interface Connection {
 // Wire-compatible alias kept for clarity at the API boundary.
 export type Source = Connection;
 
+// One event type present in a connection's storage, from `describe_data`.
+export interface EventTypeSummary {
+  event_type: string;
+  count: number;
+  latest_iso: string | null;
+}
+
+// The `describe_data` payload: total event count and the per-type breakdown.
+export interface DataSummary {
+  total_events: number;
+  event_types: EventTypeSummary[];
+}
+
+// Response of GET /v1/sources/:id/summary. `summary` is null when the
+// connection is unreachable (e.g. an offline phone-backed storage).
+export interface ConnectionSummary {
+  summary: DataSummary | null;
+  status?: string;
+}
+
 export interface SystemProvider {
   id: string;
   kind: string;
@@ -180,6 +200,10 @@ export const api = {
 
   refreshConnection(id: string): Promise<{ source: Connection }> {
     return request("POST", `/v1/sources/${encodeURIComponent(id)}/refresh`);
+  },
+
+  connectionSummary(id: string): Promise<ConnectionSummary> {
+    return request("GET", `/v1/sources/${encodeURIComponent(id)}/summary`);
   },
 
   deleteConnection(id: string): Promise<{ ok: boolean }> {

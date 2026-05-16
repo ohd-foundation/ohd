@@ -8,7 +8,7 @@ use axum::routing::{delete, get, post};
 use axum::Router;
 use std::sync::Arc;
 use tower_http::cors::CorsLayer;
-use tower_http::services::ServeDir;
+use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
 
 /// Cloneable per-request state. `Config` is `Arc`-wrapped so cloning is
@@ -44,6 +44,7 @@ pub fn build_router(db: Db, config: Config) -> Router {
             get(routes::sources::get_one).delete(routes::sources::delete_one),
         )
         .route("/v1/sources/:id/refresh", post(routes::sources::refresh))
+        .route("/v1/sources/:id/summary", get(routes::sources::summary))
         .route("/v1/models", get(routes::models::list))
         .route("/v1/models/byo", post(routes::models::add_byo))
         .route("/v1/models/byo/:id", delete(routes::models::delete_byo))
@@ -59,9 +60,15 @@ pub fn build_router(db: Db, config: Config) -> Router {
         .with_state(state);
 
     // When this deployment serves the bundled SPA, anything not matched
-    // above falls through to the static assets.
+    // above falls through to the static assets — and any path that is not
+    // a real file (a client-side route like `/connections/<id>`) falls
+    // back to `index.html` so a hard refresh / deep link loads the SPA
+    // instead of 404ing.
     if let Some(dir) = web_dir {
-        router = router.fallback_service(ServeDir::new(dir));
+        let index = format!("{}/index.html", dir.trim_end_matches('/'));
+        router = router.fallback_service(
+            ServeDir::new(&dir).fallback(ServeFile::new(index)),
+        );
     }
 
     router

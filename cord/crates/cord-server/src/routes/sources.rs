@@ -128,6 +128,46 @@ pub async fn refresh(
     Ok(Json(json!({ "source": app.db.get_source(&user.0, &id)? })))
 }
 
+/// A compact, read-only data summary for a connected source.
+///
+/// Calls the source's MCP `describe_data` tool and returns its parsed JSON
+/// under `summary`. An offline (phone-backed) connection is not a server
+/// error: when the source is unreachable or the tool fails this returns
+/// HTTP 200 with `{ "summary": null, "status": "unreachable" }`.
+pub async fn summary(
+    user: CurrentUser,
+    State(app): State<AppState>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Value>> {
+    let source = app.db.get_source(&user.0, &id)?;
+    let unreachable = || Json(json!({ "summary": null, "status": "unreachable" }));
+
+    let mcp = match build_mcp_client(&app, &source) {
+        Ok(mcp) => mcp,
+        Err(e) => {
+            tracing::info!(source = %id, error = %e, "summary: could not build mcp client");
+            return Ok(unreachable());
+        }
+    };
+    match mcp.call_tool("describe_data", json!({})).await {
+        Ok((text, false)) => match serde_json::from_str::<Value>(&text) {
+            Ok(parsed) => Ok(Json(json!({ "summary": parsed }))),
+            Err(e) => {
+                tracing::info!(source = %id, error = %e, "summary: describe_data output not JSON");
+                Ok(unreachable())
+            }
+        },
+        Ok((text, true)) => {
+            tracing::info!(source = %id, tool_error = %text, "summary: describe_data tool error");
+            Ok(unreachable())
+        }
+        Err(e) => {
+            tracing::info!(source = %id, error = %e, "summary: describe_data unreachable");
+            Ok(unreachable())
+        }
+    }
+}
+
 async fn probe(endpoint: &str) -> bool {
     let Ok(client) = reqwest::Client::builder()
         .timeout(Duration::from_secs(3))
