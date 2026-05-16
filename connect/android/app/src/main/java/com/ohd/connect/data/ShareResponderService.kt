@@ -10,6 +10,7 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.ohd.connect.MainActivity
@@ -53,6 +54,16 @@ import com.ohd.connect.MainActivity
  */
 class ShareResponderService : Service() {
 
+    /**
+     * Partial wake lock held while responders are running. The QUIC tunnel
+     * keeps itself alive with a 15 s keep-alive PING; if the device dozes
+     * (screen off — the common case while the user chats with CORD from a
+     * laptop) those timers stop firing and the relay idle-times-out the
+     * tunnel after 120 s. A partial wake lock keeps the CPU scheduling the
+     * keep-alive so the tunnel survives the gaps between exchanges.
+     */
+    private var wakeLock: PowerManager.WakeLock? = null
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -93,6 +104,9 @@ class ShareResponderService : Service() {
         // Refresh the notification with the real reachable-connection count.
         goForeground(buildNotification(applicationContext, count))
 
+        // Keep the CPU awake so the tunnel's keep-alive survives doze.
+        acquireWakeLock()
+
         // START_STICKY: if Android kills us under memory pressure, recreate
         // the service (with a null intent) and re-run the resume path.
         return START_STICKY
@@ -100,7 +114,25 @@ class ShareResponderService : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
+        releaseWakeLock()
         Log.i(TAG, "ShareResponderService destroyed")
+    }
+
+    private fun acquireWakeLock() {
+        if (wakeLock?.isHeld == true) return
+        val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+        wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, WAKE_LOCK_TAG).apply {
+            // Not reference-counted: onStartCommand may run more than once
+            // (START_STICKY recreate, a second share activated) — acquire
+            // must stay idempotent so a single release in onDestroy frees it.
+            setReferenceCounted(false)
+            acquire()
+        }
+    }
+
+    private fun releaseWakeLock() {
+        wakeLock?.let { if (it.isHeld) it.release() }
+        wakeLock = null
     }
 
     private fun stopForegroundCompat() {
@@ -123,6 +155,9 @@ class ShareResponderService : Service() {
 
         /** Internal action: the notification's "Stop sharing" button. */
         private const val ACTION_STOP_SHARING = "com.ohd.connect.action.STOP_SHARING"
+
+        /** Wake-lock tag — `package:purpose`, the convention logcat expects. */
+        private const val WAKE_LOCK_TAG = "ohd:share-responder"
 
         /**
          * Start (or, if already running, re-trigger the resume path on) the

@@ -211,16 +211,23 @@ private fun OhdConnectApp(
         }
 
         // Resume every share the user left with remote access enabled
-        // (CORD data link Phase 4d). Each persisted binding re-starts its
-        // background share responder so the relay tunnel comes back up
-        // after an app restart. Runs on IO — the responder dials the relay.
+        // (CORD data link Phase 4d) by starting the durable share-responder
+        // foreground service — its onStartCommand re-dials every persisted
+        // binding so the relay tunnel comes back up after an app restart.
+        // Only started when at least one remote share exists, so a phone
+        // with nothing shared shows no persistent notification.
         LaunchedEffect(Unit) {
             if (!StorageRepository.isOpen()) return@LaunchedEffect
             kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
                 val grantUlids = StorageRepository.listGrants(includeRevoked = false)
                     .getOrDefault(emptyList())
                     .map { it.ulid }
-                com.ohd.connect.data.ShareResponders.resumeAll(ctx, grantUlids)
+                val hasRemoteShare = grantUlids.any {
+                    com.ohd.connect.data.ShareResponders.binding(ctx, it) != null
+                }
+                if (hasRemoteShare) {
+                    com.ohd.connect.data.ShareResponderService.start(ctx)
+                }
             }
         }
 

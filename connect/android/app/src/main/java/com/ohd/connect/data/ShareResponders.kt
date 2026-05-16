@@ -221,10 +221,13 @@ object ShareResponders {
             runCatching { startResponder(ulid, binding, identityKey, allowInsecureDev = false) }
                 .onFailure { Log.w(TAG, "resume responder failed for $ulid", it) }
         }
-        // If anything came up, make sure the durable foreground host is
-        // running too — a cold start via `MainActivity` should also leave a
-        // backgrounding-survivable responder behind. Idempotent.
-        if (activeCount() > 0) ShareResponderService.start(ctx)
+        // CRITICAL: must NOT start ShareResponderService here.
+        // ShareResponderService.onStartCommand() itself calls resumeAll(), so
+        // starting the service from inside resumeAll() is an infinite restart
+        // loop: start → onStartCommand → resumeAll → start → … It pegs the
+        // main thread, floods the FGS notification, and thrashes the relay
+        // tunnel. Callers that want the durable host start the service
+        // themselves — see [activate] and `MainActivity`'s cold-start path.
     }
 
     /**
@@ -268,6 +271,10 @@ object ShareResponders {
         }
         Log.i(TAG, "push-wake: resuming responders for ${grantUlids.size} share(s)")
         resumeAll(ctx, grantUlids)
+        // A push-woken responder should also get the durable foreground host.
+        // Safe here — `wake` is not on the onStartCommand → resumeAll path, so
+        // this does not re-enter the restart loop guarded against in resumeAll.
+        if (activeCount() > 0) ShareResponderService.start(ctx)
     }
 
     /** Stop every running responder — called on storage close / sign-out. */
