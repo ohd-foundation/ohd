@@ -264,6 +264,26 @@ is generated; both public keys stay in the JWKS for
 verify; then the old key is dropped. RPs (CORD, the relay's verifier)
 already handle a `kid` miss by refetching the JWKS — no RP change needed.
 
+## Local → server identity: the ULID handoff
+
+OHD is local-first: an on-device user already has a `profile_ulid` minted
+on the phone, and never needs an IdP. Identity only enters when that user
+moves to **server-side** storage — and the goal is that they keep the
+*same* ULID, so their existing data carries over under one account.
+
+So when a local-first user first creates an `accounts.ohd.dev` account
+(or first signs in to server-side storage), the request **may carry a
+preferred ULID** — the one the device already uses. The IdP adopts it as
+the account's `profile_ulid` **iff** it is a well-formed ULID and not
+already in use. Only on a collision is the user assigned a fresh ULID
+(and would have to re-point their data). A ULID is 128 bits — a collision
+is astronomically unlikely, so in practice the local ULID is always
+preserved and the "forced to switch" path effectively never fires.
+
+The carry mechanism (an RP threading the device's ULID through sign-up)
+ships with the local→server migration feature; this section fixes the
+rule the IdP applies when it does.
+
 ## Security
 
 - **Passwords are stored only as argon2id hashes** in the SaaS account
