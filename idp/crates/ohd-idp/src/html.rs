@@ -252,10 +252,14 @@ pub fn signup_page(
 
 /// The post-sign-up confirmation page — shows the recovery code once and
 /// continues the flow on submit. The recovery code is rendered into the
-/// page body and is *not* re-posted; the flow resumes via the carried
-/// authorize params and a server-side `continue` token.
-#[allow(clippy::too_many_arguments)]
-pub fn recovery_page(continue_url: &str, recovery_code: &str) -> String {
+/// page body and is *not* re-posted; the flow resumes via a server-side
+/// `continue` token carried as a hidden field.
+///
+/// The token MUST be a hidden `<input>`, not part of the form `action`:
+/// a GET form discards any query string on its `action` URL and rebuilds
+/// the query from its fields, so `action="/continue?token=…"` would submit
+/// to `/continue` with no token.
+pub fn recovery_page(continue_token: &str, recovery_code: &str) -> String {
     let body = format!(
         "<div class=\"card\"><p class=\"brand\">OHD <span class=\"accent\">Identity</span></p>\
          <h1>Save your recovery code</h1>\
@@ -264,10 +268,11 @@ pub fn recovery_page(continue_url: &str, recovery_code: &str) -> String {
          it somewhere safe.</p>\
          <div class=\"recovery\">{code}</div>\
          <p class=\"warn\">OHD cannot show this code again.</p>\
-         <form method=\"get\" action=\"{cont}\">\
+         <form method=\"get\" action=\"/continue\">\
+         <input type=\"hidden\" name=\"token\" value=\"{token}\">\
          <button type=\"submit\">I&#39;ve saved it — continue</button></form></div>",
         code = escape(recovery_code),
-        cont = escape(continue_url),
+        token = escape(continue_token),
     );
     page("Recovery code — OHD Identity", &body)
 }

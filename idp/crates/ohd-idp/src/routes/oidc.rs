@@ -507,8 +507,9 @@ pub async fn signup_submit(
         Ok(t) => t,
         Err(e) => return ApiError::from(e).into_response(),
     };
-    let continue_url = format!("/continue?token={}", urlencoding::encode(&token));
-    Html(html::recovery_page(&continue_url, &created.recovery_code)).into_response()
+    // The token rides as a hidden form field — recovery_page builds a GET
+    // form to /continue, and a GET form ignores any query on its action URL.
+    Html(html::recovery_page(&token, &created.recovery_code)).into_response()
 }
 
 /// `GET /continue` — the recovery-code page's "I saved it" button lands

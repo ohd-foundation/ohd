@@ -364,7 +364,8 @@ async fn signup_flow_creates_account_shows_recovery_code_and_continues() {
     let (status, _, page) = post_form(&h.router, "/signup", &body).await;
     assert_eq!(status, StatusCode::OK);
     assert!(page.contains("Save your recovery code"));
-    assert!(page.contains("/continue?token="));
+    assert!(page.contains("action=\"/continue\""));
+    assert!(page.contains("name=\"token\""));
 
     // The account now exists in the shared store.
     assert!(h
@@ -373,14 +374,16 @@ async fn signup_flow_creates_account_shows_recovery_code_and_continues() {
         .unwrap()
         .is_some());
 
-    // Follow the /continue link.
+    // Follow the flow as a browser would: a GET form submit to /continue
+    // carrying the hidden `token` field (the form action has no query).
     let cont_uri = {
-        let start = page.find("/continue?token=").unwrap();
+        let marker = "name=\"token\" value=\"";
+        let start = page.find(marker).unwrap() + marker.len();
         let rest = &page[start..];
         let end = rest.find('"').unwrap();
-        &rest[..end]
+        format!("/continue?token={}", &rest[..end])
     };
-    let (status, headers, _) = get(&h.router, cont_uri).await;
+    let (status, headers, _) = get(&h.router, &cont_uri).await;
     assert_eq!(status, StatusCode::FOUND);
     let location = headers.get("location").unwrap().to_str().unwrap();
     assert!(location.starts_with(redirect));
