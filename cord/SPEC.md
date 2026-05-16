@@ -131,10 +131,11 @@ public_url = "https://cord.ohd.dev"
 data_dir = "/var/lib/ohd-cord"
 
 [auth]
-# One or more OIDC providers. OHD Cloud points at OHD SaaS; a clinic points
-# at its own IdP. Discovery via the issuer's /.well-known.
+# One or more OIDC providers. OHD Cloud points at OHD Identity
+# (accounts.ohd.dev); a clinic points at its own IdP. Discovery via the
+# issuer's /.well-known/openid-configuration.
 providers = [
-  { id = "ohd", issuer = "https://api.ohd.dev", client_id = "...", client_secret_env = "OHD_CORD_OIDC_OHD_SECRET" },
+  { id = "ohd", issuer = "https://accounts.ohd.dev", client_id = "cord-web", client_secret_env = "OHD_CORD_OIDC_OHD_SECRET" },
 ]
 session_ttl_hours = 720          # 30 days
 session_jwt_secret_env = "OHD_CORD_SESSION_SECRET"

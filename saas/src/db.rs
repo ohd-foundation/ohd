@@ -10,6 +10,10 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 const MIGRATION: &str = include_str!("../migrations/001_initial.sql");
+/// Email/password credentials — added for OHD Identity (`ohd-idp`). The IdP
+/// also applies this `CREATE TABLE IF NOT EXISTS` on startup, so the table
+/// exists regardless of which service migrated the shared DB first.
+const MIGRATION_002: &str = include_str!("../migrations/002_email_credentials.sql");
 
 #[derive(Clone)]
 pub struct Db {
@@ -62,6 +66,7 @@ impl Db {
     pub fn migrate(&self) -> anyhow::Result<()> {
         let conn = self.pool.get()?;
         conn.execute_batch(MIGRATION)?;
+        conn.execute_batch(MIGRATION_002)?;
         Ok(())
     }
 

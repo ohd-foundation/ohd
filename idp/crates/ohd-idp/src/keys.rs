@@ -17,6 +17,8 @@
 use anyhow::{Context, Result};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
+use jsonwebtoken::EncodingKey;
+use rsa::pkcs1::EncodeRsaPrivateKey;
 use rsa::pkcs8::{DecodePrivateKey, EncodePrivateKey, EncodePublicKey, LineEnding};
 use rsa::traits::PublicKeyParts;
 use rsa::{RsaPrivateKey, RsaPublicKey};
@@ -119,6 +121,17 @@ impl SigningKey {
     /// The base64url RSA public exponent (`e`) for a JWK.
     pub fn jwk_exponent(&self) -> String {
         URL_SAFE_NO_PAD.encode(self.public.e().to_bytes_be())
+    }
+
+    /// A `jsonwebtoken` [`EncodingKey`] over the RSA private key, for
+    /// signing `id_token`s with RS256. Built from the PKCS#1 DER of the
+    /// private key — the form `jsonwebtoken` accepts.
+    pub fn encoding_key(&self) -> Result<EncodingKey> {
+        let der = self
+            .private
+            .to_pkcs1_der()
+            .context("encoding signing key to PKCS#1 DER")?;
+        Ok(EncodingKey::from_rsa_der(der.as_bytes()))
     }
 }
 

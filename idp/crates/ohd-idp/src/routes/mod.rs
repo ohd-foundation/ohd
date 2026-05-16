@@ -1,8 +1,9 @@
 //! HTTP route handlers.
 //!
-//! Phase 1 implements only the metadata + liveness surface:
-//! `/.well-known/openid-configuration`, `/jwks`, and `/healthz`. The
-//! `/authorize`, `/login`, `/token`, and `/userinfo` flows are later
-//! phases and are not routed yet.
+//! - [`meta`] — the metadata + liveness surface: OIDC discovery, `/jwks`,
+//!   `/healthz`.
+//! - [`oidc`] — Phase 2's OIDC authorization-code flow: `/authorize`, the
+//!   SSR login + sign-up UI, `/token`, `/userinfo`.
 
 pub mod meta;
+pub mod oidc;

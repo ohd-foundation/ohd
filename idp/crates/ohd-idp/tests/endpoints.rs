@@ -4,7 +4,7 @@
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
-use ohd_idp::{build_router, config, ClientRegistry, SigningKey};
+use ohd_idp::{build_router, config, AccountStore, ClientRegistry, IdpStore, SigningKey};
 use serde_json::Value;
 use tower::ServiceExt;
 
@@ -23,11 +23,14 @@ redirect_uris = ["https://connect.ohd.dev/auth/callback"]
 public = true
 "#;
 
-/// Build a router over the sample config and a fresh in-memory key.
+/// Build a router over the sample config, a fresh in-memory key, and
+/// in-memory stores.
 fn router() -> axum::Router {
     let cfg = config::from_str(SAMPLE).expect("config parses");
     let key = SigningKey::generate().expect("key generates");
-    build_router(cfg, key)
+    let accounts = AccountStore::in_memory().expect("account store");
+    let idp_store = IdpStore::in_memory().expect("idp store");
+    build_router(cfg, key, accounts, idp_store)
 }
 
 async fn get_json(router: axum::Router, path: &str) -> (StatusCode, Value) {
