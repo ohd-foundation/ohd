@@ -1,0 +1,5 @@
+# Keep build contexts small — none of the service Docker builds need
+# compiled artifacts or installed node deps; they rebuild from source.
+**/target
+**/node_modules
+cord/web/dist

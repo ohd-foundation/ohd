@@ -18,8 +18,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# cord is its own cargo workspace, standalone from the repo-root workspace.
+# cord is its own cargo workspace. cord-agent path-deps the shared
+# storage crates (ohd-relay-client, ohd-h3-helpers) and the cord-relay-e2e
+# workspace member path-deps the relay crate, so the build context needs
+# all three trees — `..//..` from cord/crates/* resolves to /src/.
 COPY cord /src/cord
+COPY storage /src/storage
+COPY relay /src/relay
 WORKDIR /src/cord
 RUN cargo build --release --bin cord-server
 
