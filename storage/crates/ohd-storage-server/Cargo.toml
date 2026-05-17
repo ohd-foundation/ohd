@@ -128,6 +128,10 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 # source_signing_e2e.rs needs the signing side (test-only).
 ed25519-dalek = { workspace = true, features = ["rand_core", "pkcs8", "pem"] }
 rand = { workspace = true }
+# remote_client_e2e.rs drives this in-process server through the
+# `RemoteOhdStorage` uniffi object — the remote-storage feature's Phase 1
+# integration test. Dev-only; no production dependency from server → bindings.
+ohd-storage-bindings = { path = "../ohd-storage-bindings" }
 
 # -----------------------------------------------------------------------------
 # Distribution packaging — cargo-deb (.deb) and cargo-generate-rpm (.rpm).

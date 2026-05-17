@@ -1,0 +1,65 @@
+[package]
+name = "ohd-storage-client"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "OHD Storage remote client — the OHDC ConnectRPC client used by the Android uniffi binding to talk to a remote ohd-storage-server."
+readme = "../../README.md"
+build = "build.rs"
+
+[lib]
+name = "ohd_storage_client"
+path = "src/lib.rs"
+
+# Reusable remote OHDC client. Phase 1 of the Android remote-storage feature:
+# `ohd-storage-bindings` wraps `OhdcRemoteClient` in a `RemoteOhdStorage`
+# uniffi object so OHD Connect can swap local↔remote behind one interface.
+#
+# The whole dependency tree is pure-Rust / ring-backed so the crate
+# cross-compiles for the `*-android` targets via `cargo ndk` exactly like
+# `ohd-relay-client` does — no aws-lc-sys / OpenSSL C build is dragged in.
+[dependencies]
+# Transport: connectrpc 0.4's Tower-based HTTP client. The `client` feature
+# brings the hyper HTTP/1.1 + HTTP/2 client; `client-tls` adds the
+# hyper-rustls HTTPS connector; `streaming` keeps the server-streaming
+# decoders (QueryEvents / AuditQuery / Export). connectrpc's default
+# features (`gzip` / `zstd` / `streaming`) stay on — gzip is pure-Rust
+# (`flate2` + `zlib-rs`) and `zstd` already cross-compiles for Android in
+# this workspace (ohd-storage-core links it).
+connectrpc = { version = "0.4", features = ["client", "client-tls", "streaming"] }
+# Pure-Rust Protobuf runtime. The generated `pb` message types use buffa's
+# owned + view representation. The `json` feature is required: connectrpc's
+# generated client emits `serde` bounds on every message (the codec layer
+# can negotiate JSON), so the message types must derive serde.
+buffa = { version = "0.5", features = ["json"] }
+buffa-types = { version = "0.5", features = ["json"] }
+# Pulled in because the connectrpc-generated client puts `serde` trait bounds
+# on the message types (JSON codec support).
+serde = { version = "1", features = ["derive"] }
+# Background runtime + the async RPC surface. The uniffi wrapper drives this
+# from a long-lived multi-thread runtime; the crate itself stays async.
+tokio = { version = "1", features = ["rt-multi-thread", "sync"] }
+http = { workspace = true }
+http-body = { workspace = true }
+# rustls is pinned to the `ring` crypto provider (vs the aws-lc-rs default)
+# so the Android cross-compile doesn't pull the aws-lc-sys C build. The
+# explicit dep makes feature unification across the workspace pick `ring`;
+# connectrpc's `client-tls` only declares a featureless `rustls` dep.
+rustls = { workspace = true }
+# Async TLS adapter, same `ring` pin.
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[build-dependencies]
+# Build-time codegen: connectrpc-build runs the vendored protoc to produce a
+# FileDescriptorSet, then emits buffa message types + the `OhdcServiceClient`
+# into `$OUT_DIR`. Same toolchain the server crate uses.
+connectrpc-build = "0.4"
+protoc-bin-vendored = "3"
+
+[dev-dependencies]
+tempfile = "3"

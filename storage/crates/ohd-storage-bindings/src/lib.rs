@@ -70,6 +70,17 @@ mod pyo3_module;
 // responder. Adds `#[uniffi::export]` items to the binding surface.
 mod remote_access;
 
+// Remote OHDC client (remote-storage feature Phase 1) — `RemoteOhdStorage`,
+// a uniffi object that talks to a remote `ohd-storage-server` over
+// ConnectRPC and returns the same DTOs as the local `OhdStorage`. Adds
+// `#[uniffi::export]` items to the binding surface.
+mod remote;
+
+// Re-export the remote-storage surface at the crate root so the generated
+// uniffi bindings (and in-workspace integration tests) see `RemoteOhdStorage`
+// / `WhoAmIDto` next to `OhdStorage`.
+pub use remote::{RemoteOhdStorage, WhoAmIDto};
+
 // Routes Rust panics to Android logcat — the default handler writes to
 // stderr, which Android discards.
 mod android_panic;

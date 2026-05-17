@@ -25,6 +25,11 @@ members = [
     # CORD. The default build is portable (no server-only deps); the hyper
     # HTTP/2 session bridge is gated behind the `tunnel-service` feature.
     "crates/ohd-relay-client",
+    # Remote OHDC client: the ConnectRPC client for a remote
+    # ohd-storage-server's OhdcService. Phase 1 of the Android remote-storage
+    # feature — `ohd-storage-bindings` wraps it in a `RemoteOhdStorage` uniffi
+    # object. Pure-Rust / ring-backed so it cross-compiles for Android.
+    "crates/ohd-storage-client",
 ]
 
 # OHD patch: openssl-src is forced to skip x86_64 assembly via a local

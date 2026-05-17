@@ -56,7 +56,13 @@ ohd-mcp-core = { path = "../ohd-mcp-core" }
 # binding drives it on a background tokio runtime so OHD Connect can serve a
 # remote consumer through the relay. All deps cross-compile for Android.
 ohd-relay-client = { path = "../ohd-relay-client", features = ["responder"] }
-# Background runtime for the responder + the registration HTTP call.
+# Remote OHDC client (remote-storage feature Phase 1). Hosts the
+# connectrpc-generated `OhdcServiceClient` + the async `OhdcRemoteClient`
+# that `RemoteOhdStorage` (src/remote.rs) wraps. Pure-Rust / ring-backed —
+# cross-compiles for Android exactly like `ohd-relay-client`.
+ohd-storage-client = { path = "../ohd-storage-client" }
+# Background runtime for the responder + the registration HTTP call + the
+# `RemoteOhdStorage` RPC runtime.
 tokio = { version = "1", features = ["rt-multi-thread", "sync"] }
 # Generates the storage's long-lived Ed25519 identity key (PKCS#8 DER).
 rcgen = { version = "0.13", default-features = false, features = ["pem", "ring"] }
