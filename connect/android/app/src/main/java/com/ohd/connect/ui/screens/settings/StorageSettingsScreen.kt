@@ -36,31 +36,34 @@ import com.ohd.connect.data.Auth
 import com.ohd.connect.ui.components.OhdButton
 import com.ohd.connect.ui.components.OhdTopBar
 import com.ohd.connect.ui.icons.OhdIcons
+import com.ohd.connect.ui.screens._shared.StorageOption
 import com.ohd.connect.ui.theme.OhdBody
 import com.ohd.connect.ui.theme.OhdColors
 
-/** Storage option per spec §4.4 — four exclusive choices. */
-enum class StorageOption(
-    internal val title: String,
-    internal val desc: String,
-) {
-    OnDevice(
-        title = "On this device",
-        desc = "Stored locally. No account, no network.",
-    ),
-    OhdCloud(
-        title = "OHD Cloud",
-        desc = "Synced across devices. Requires network.",
-    ),
-    SelfHosted(
-        title = "Self-hosted",
-        desc = "Your own server. Full control.",
-    ),
-    ProviderHosted(
-        title = "Provider hosted",
-        desc = "Via your insurer, employer or clinic.",
-    ),
-}
+/**
+ * Card title/description for a [StorageOption] — spec §4.4.
+ *
+ * These strings used to live on a second, settings-private `StorageOption`
+ * enum that paralleled `_shared.StorageOption`. The two enums shared the same
+ * four `name` values (so `Auth.{save,load}StorageOption` worked across both),
+ * but kept drifting. The enum is now unified on `_shared.StorageOption`; the
+ * presentation strings live here as a local mapping.
+ */
+private val StorageOption.title: String
+    get() = when (this) {
+        StorageOption.OnDevice -> "On this device"
+        StorageOption.OhdCloud -> "OHD Cloud"
+        StorageOption.SelfHosted -> "Self-hosted"
+        StorageOption.ProviderHosted -> "Provider hosted"
+    }
+
+private val StorageOption.desc: String
+    get() = when (this) {
+        StorageOption.OnDevice -> "Stored locally. No account, no network."
+        StorageOption.OhdCloud -> "Synced across devices. Requires network."
+        StorageOption.SelfHosted -> "Your own server. Full control."
+        StorageOption.ProviderHosted -> "Via your insurer, employer or clinic."
+    }
 
 /**
  * Storage & Data settings — reuses Configure Storage layout from Pencil

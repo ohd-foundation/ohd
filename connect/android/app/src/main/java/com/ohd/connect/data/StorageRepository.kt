@@ -1,12 +1,11 @@
 package com.ohd.connect.data
 
 import android.content.Context
+import com.ohd.connect.ui.screens._shared.StorageOption
 import java.io.File
 import uniffi.ohd_storage.AuditEntryDto
-import uniffi.ohd_storage.AuditFilterDto
 import uniffi.ohd_storage.CaseDetailDto
 import uniffi.ohd_storage.CaseDto
-import uniffi.ohd_storage.CaseStateDto
 import uniffi.ohd_storage.ChannelValueDto
 import uniffi.ohd_storage.CreateGrantInputDto
 import uniffi.ohd_storage.EmergencyConfigDto
@@ -17,13 +16,10 @@ import uniffi.ohd_storage.GrantDto
 import uniffi.ohd_storage.GrantEventTypeRuleDto
 import uniffi.ohd_storage.GrantSensitivityRuleDto
 import uniffi.ohd_storage.GrantTokenDto
-import uniffi.ohd_storage.GrantUpdateDto
-import uniffi.ohd_storage.ListGrantsFilterDto
 import uniffi.ohd_storage.OhdStorage
 import uniffi.ohd_storage.PendingEventDto
 import uniffi.ohd_storage.PutEventOutcomeDto
 import uniffi.ohd_storage.RemoteShareDto
-import uniffi.ohd_storage.RetroGrantInputDto
 import uniffi.ohd_storage.ShareResponderHandle
 import uniffi.ohd_storage.TrustedAuthorityDto
 import uniffi.ohd_storage.ValueKind
@@ -132,16 +128,28 @@ sealed interface PutEventOutcome {
 }
 
 /**
- * Repository facade over `OhdStorage`. Singleton — the underlying
- * `OhdStorage` Arc is thread-safe (every uniffi method serialises through
- * the storage core's mutex), so a single global instance is fine.
+ * Repository facade over a [StorageBackend]. Singleton — every backend
+ * implementation serialises its own concurrent access (the local backend
+ * goes through the storage core's mutex), so a single global instance is
+ * fine.
  *
  * Initialisation is two-step:
  *   1. [init] is called from `MainActivity.onCreate` with the app context.
  *   2. [openOrCreate] (or [open]) is called once the user has finished the
- *      setup screen.
+ *      setup screen — it constructs and selects the [StorageBackend].
  *
- * Repository methods that need the handle call [requireHandle], which
+ * Backend-strategy seam (Phase 0 of remote storage): every data operation
+ * delegates to a private [activeBackend] of type [StorageBackend]. Phase 0
+ * always selects a [LocalStorageBackend] (the `OnDevice` path) so the
+ * runtime behaviour is byte-for-byte equivalent to the pre-refactor code.
+ * Lifecycle (`init`, `open`, `openOrCreate`, `isOpen`, `isInitialised`,
+ * `close`, `identity`, `activeMode`, …) stays on this object.
+ *
+ * Phase 3 plugs a `RemoteStorageBackend` in by branching on
+ * [StorageOption] inside [openBackend] — see the comment there. No call
+ * site of `StorageRepository` changes.
+ *
+ * Repository methods that need a backend call [requireBackend], which
  * throws `IllegalStateException("Storage not opened…")` if the user
  * hasn't completed setup. Compose call sites all wrap in `runCatching`
  * so an error surfaces as `Result.failure` rather than a crash.
@@ -151,37 +159,33 @@ object StorageRepository {
     private var appContext: Context? = null
 
     /**
-     * The live uniffi handle. Populated by [openOrCreate] / [open].
+     * The live storage backend. Populated by [openOrCreate] / [open].
      * `null` until the Setup screen finishes — every method that needs
-     * it calls [requireHandle].
+     * it calls [requireBackend].
      */
-    private var handle: OhdStorage? = null
+    private var activeBackend: StorageBackend? = null
 
     fun init(context: Context) {
         appContext = context.applicationContext
     }
 
-    private fun requireHandle(): OhdStorage =
-        handle ?: error("Storage not opened — finish the Setup screen first.")
+    private fun requireBackend(): StorageBackend =
+        activeBackend ?: error("Storage not opened — finish the Setup screen first.")
 
     /**
-     * Run `block` against the open uniffi handle, wrapping the result in a
-     * [Result] so call sites stay compose-friendly.
+     * Delegate to the active [StorageBackend], folding a "not opened" error
+     * into `Result.failure` rather than letting it throw.
      *
-     * Replaces the `runCatching { requireHandle().…() }` shell that
-     * appeared at every uniffi call site before. Two upsides:
-     *
-     *   1. One place to evolve handle access (e.g. swap in a future
-     *      coroutine wrapper) without touching every method.
-     *   2. The body of each repository method shrinks to the actual
-     *      domain call + mappers, which makes the file readable end-to-end.
-     *
-     * The block runs synchronously on whatever thread Compose called from;
-     * uniffi's generated bindings already serialise through the storage
-     * core's mutex, so there's no thread-safety concern at this layer.
+     * Before the backend-strategy refactor each method wrapped a
+     * `requireHandle().…()` in `runCatching`; this helper preserves exactly
+     * that contract — `requireBackend()` throwing surfaces as a failed
+     * `Result`, and the backend's own `Result` is passed straight through.
      */
-    private inline fun <T> withStorage(block: OhdStorage.() -> T): Result<T> =
-        runCatching { requireHandle().block() }
+    private inline fun <T> withBackend(block: StorageBackend.() -> Result<T>): Result<T> =
+        runCatching { requireBackend() }.fold(
+            onSuccess = { it.block() },
+            onFailure = { Result.failure(it) },
+        )
 
     /**
      * Path of the per-user `data.db` file. Lives inside the app's internal
@@ -195,12 +199,44 @@ object StorageRepository {
 
     fun isInitialised(): Boolean = storageFile().exists()
 
-    /** True iff [openOrCreate] or [open] has populated a live handle in this process. */
-    fun isOpen(): Boolean = handle != null
+    /** True iff [openOrCreate] or [open] has selected a live backend in this process. */
+    fun isOpen(): Boolean = activeBackend != null
+
+    /**
+     * The persisted storage mode — backs the open-time backend selection.
+     * Defaults to [StorageOption.OnDevice] (first run / freshly-wiped cache).
+     * Phase 0 only ever acts on `OnDevice`; Phase 3 reads this in
+     * [openBackend] to pick local-vs-remote.
+     */
+    fun activeMode(): StorageOption {
+        val ctx = appContext ?: return StorageOption.OnDevice
+        val name = Auth.loadStorageOption(ctx, defaultName = StorageOption.OnDevice.name)
+        return StorageOption.entries.firstOrNull { it.name == name } ?: StorageOption.OnDevice
+    }
+
+    /**
+     * Construct the [StorageBackend] for the given uniffi handle.
+     *
+     * Phase 0 has exactly one backend — [LocalStorageBackend] (`OnDevice`).
+     * Phase 3 adds remote storage: branch on [activeMode] here, e.g.
+     *
+     * ```
+     * when (activeMode()) {
+     *     StorageOption.OnDevice -> LocalStorageBackend(handle)
+     *     StorageOption.OhdCloud,
+     *     StorageOption.SelfHosted,
+     *     StorageOption.ProviderHosted -> RemoteStorageBackend(...)
+     * }
+     * ```
+     *
+     * This is the single open-time selection point — no call site of
+     * `StorageRepository` ever sees which backend was chosen.
+     */
+    private fun openBackend(handle: OhdStorage): StorageBackend = LocalStorageBackend(handle)
 
     /**
      * First-launch path. Calls `OhdStorage.create(path, keyHex)` and
-     * issues a self-session token via `issueSelfSessionToken()`.
+     * selects a [StorageBackend] over the fresh handle.
      *
      * `keyHex` should be a 64-char hex string (32 bytes). The v0 scaffold
      * uses a stub key derived from a stub passphrase — see the comment
@@ -215,19 +251,19 @@ object StorageRepository {
      */
     fun openOrCreate(keyHex: String): Result<Unit> = runCatching {
         val path = storageFile().absolutePath
-        handle = OhdStorage.create(path, keyHex)
+        activeBackend = openBackend(OhdStorage.create(path, keyHex))
         Auth.recordStorageOpened(requireNotNull(appContext))
     }
 
     fun open(keyHex: String): Result<Unit> = runCatching {
         val path = storageFile().absolutePath
-        handle = OhdStorage.open(path, keyHex)
+        activeBackend = openBackend(OhdStorage.open(path, keyHex))
         Auth.recordStorageOpened(requireNotNull(appContext))
     }
 
     /** Mint a fresh self-session token and persist it via [Auth]. */
-    fun issueSelfSessionToken(): Result<String> = withStorage {
-        issueSelfSessionToken().also {
+    fun issueSelfSessionToken(): Result<String> = runCatching {
+        requireBackend().issueSelfSessionToken().getOrThrow().also {
             Auth.saveSelfSessionToken(requireNotNull(appContext), it)
         }
     }
@@ -244,13 +280,13 @@ object StorageRepository {
     fun identity(): Identity {
         val ctx = requireNotNull(appContext)
         val token = Auth.getSelfSessionToken(ctx)
-        val h = handle
+        val b = activeBackend
         return Identity(
             storagePath = storageFile().absolutePath,
-            userUlid = h?.userUlid() ?: "(storage not opened)",
+            userUlid = b?.userUlidOrNull() ?: "(storage not opened)",
             tokenTruncated = token?.let { it.take(10) + "…" + it.takeLast(4) },
-            formatVersion = h?.formatVersion() ?: "(storage not opened)",
-            protocolVersion = h?.protocolVersion() ?: "(storage not opened)",
+            formatVersion = b?.formatVersionOrNull() ?: "(storage not opened)",
+            protocolVersion = b?.protocolVersionOrNull() ?: "(storage not opened)",
         )
     }
 
@@ -259,13 +295,13 @@ object StorageRepository {
      * batch RPC to one-at-a-time for ergonomic Kotlin call sites; bulk
      * imports from Health Connect will use a future `putEvents` overload.
      */
-    fun putEvent(input: EventInput): Result<PutEventOutcome> = withStorage {
-        putEvent(input.toDto()).toDomain()
+    fun putEvent(input: EventInput): Result<PutEventOutcome> = withBackend {
+        putEvent(input)
     }
 
     /** Read recent events under self-session scope. */
-    fun queryEvents(filter: EventFilter): Result<List<OhdEvent>> = withStorage {
-        queryEvents(filter.toDto()).map { it.toDomain() }
+    fun queryEvents(filter: EventFilter): Result<List<OhdEvent>> = withBackend {
+        queryEvents(filter)
     }
 
     /**
@@ -274,16 +310,16 @@ object StorageRepository {
      * Channel-predicate / case-scope / grant filters are NOT applied — see
      * `core::events::count_events` in the Rust core for the contract.
      */
-    fun countEvents(filter: EventFilter): Result<Long> = withStorage {
-        countEvents(filter.toDto()).toLong()
+    fun countEvents(filter: EventFilter): Result<Long> = withBackend {
+        countEvents(filter)
     }
 
     /**
      * Soft-delete every event with `timestamp_ms < cutoffMs`. Used by the
      * free-tier 7-day retention worker. Returns the number of rows touched.
      */
-    fun softDeleteEventsBefore(cutoffMs: Long): Result<Long> = withStorage {
-        softDeleteEventsBefore(cutoffMs).toLong()
+    fun softDeleteEventsBefore(cutoffMs: Long): Result<Long> = withBackend {
+        softDeleteEventsBefore(cutoffMs)
     }
 
     // =========================================================================
@@ -291,11 +327,11 @@ object StorageRepository {
     // =========================================================================
 
     /** Tool catalog as JSON. Same payload the MCP server returns. */
-    fun listToolsJson(): Result<String> = withStorage { listTools() }
+    fun listToolsJson(): Result<String> = withBackend { listToolsJson() }
 
     /** Execute one tool. JSON in, JSON out. Errors come back as `{"error": …}`. */
-    fun executeToolJson(name: String, inputJson: String): Result<String> = withStorage {
-        executeTool(name, inputJson)
+    fun executeToolJson(name: String, inputJson: String): Result<String> = withBackend {
+        executeToolJson(name, inputJson)
     }
 
     // =========================================================================
@@ -322,7 +358,7 @@ object StorageRepository {
         relayOrigin: String,
         identityKeyHex: String,
         shareLabel: String?,
-    ): Result<RemoteShareDto> = withStorage {
+    ): Result<RemoteShareDto> = withBackend {
         registerRemoteShare(grantUlid, relayOrigin, identityKeyHex, shareLabel)
     }
 
@@ -338,7 +374,7 @@ object StorageRepository {
         relayTunnelUrl: String,
         identityKeyHex: String,
         allowInsecureDev: Boolean = false,
-    ): Result<ShareResponderHandle> = withStorage {
+    ): Result<ShareResponderHandle> = withBackend {
         startShareResponder(grantUlid, share, relayTunnelUrl, identityKeyHex, allowInsecureDev)
     }
 
@@ -360,31 +396,20 @@ object StorageRepository {
     // Grants — Grants.{ListGrants,CreateGrant,RevokeGrant,UpdateGrant}
     // =========================================================================
 
-    fun listGrants(includeRevoked: Boolean = false): Result<List<GrantSummary>> = withStorage {
-        val filter = ListGrantsFilterDto(
-            includeRevoked = includeRevoked,
-            includeExpired = false,
-            granteeKind = null,
-            limit = null,
-        )
-        listGrants(filter).map { it.toDomain() }
+    fun listGrants(includeRevoked: Boolean = false): Result<List<GrantSummary>> = withBackend {
+        listGrants(includeRevoked)
     }
 
-    fun createGrant(input: CreateGrantInput): Result<CreateGrantResult> = withStorage {
-        createGrant(input.toDto()).toDomain()
+    fun createGrant(input: CreateGrantInput): Result<CreateGrantResult> = withBackend {
+        createGrant(input)
     }
 
-    fun revokeGrant(grantUlid: String, reason: String? = null): Result<Long> = withStorage {
+    fun revokeGrant(grantUlid: String, reason: String? = null): Result<Long> = withBackend {
         revokeGrant(grantUlid, reason)
-        System.currentTimeMillis()
     }
 
-    fun updateGrant(grantUlid: String, label: String?, expiresAtMs: Long?): Result<Unit> = withStorage {
-        val update = GrantUpdateDto(
-            granteeLabel = label,
-            expiresAtMs = expiresAtMs,
-        )
-        updateGrant(grantUlid, update)
+    fun updateGrant(grantUlid: String, label: String?, expiresAtMs: Long?): Result<Unit> = withBackend {
+        updateGrant(grantUlid, label, expiresAtMs)
     }
 
     /**
@@ -393,7 +418,7 @@ object StorageRepository {
      * grant keeps every rule but its token is rejected at auth time.
      * Idempotent.
      */
-    fun setGrantSuspended(grantUlid: String, suspended: Boolean): Result<Unit> = withStorage {
+    fun setGrantSuspended(grantUlid: String, suspended: Boolean): Result<Unit> = withBackend {
         setGrantSuspended(grantUlid, suspended)
     }
 
@@ -402,96 +427,56 @@ object StorageRepository {
      * so we list with `includeRevoked` and pick the matching row — fine for
      * the share-detail screen where the row was just shown in the list.
      */
-    fun getGrant(grantUlid: String): Result<GrantSummary?> = withStorage {
-        val filter = ListGrantsFilterDto(
-            includeRevoked = true,
-            includeExpired = true,
-            granteeKind = null,
-            limit = null,
-        )
-        listGrants(filter).map { it.toDomain() }.firstOrNull { it.ulid == grantUlid }
+    fun getGrant(grantUlid: String): Result<GrantSummary?> = withBackend {
+        getGrant(grantUlid)
     }
 
     // =========================================================================
     // Pending — Pending.{ListPending,ApprovePending,RejectPending}
     // =========================================================================
 
-    fun listPending(@Suppress("UNUSED_PARAMETER") status: String = "pending"):
-            Result<List<PendingSummary>> = withStorage {
-        // The uniffi `list_pending()` already filters to `pending` status by
-        // default (see ohd-storage-bindings/src/lib.rs). The `status`
-        // parameter is reserved for a future overload that takes a filter.
-        listPending().map { it.toDomain() }
+    fun listPending(status: String = "pending"):
+            Result<List<PendingSummary>> = withBackend {
+        listPending(status)
     }
 
-    fun approvePending(pendingUlid: String, alsoTrustType: Boolean = false): Result<String> = withStorage {
+    fun approvePending(pendingUlid: String, alsoTrustType: Boolean = false): Result<String> = withBackend {
         approvePending(pendingUlid, alsoTrustType)
-        pendingUlid
     }
 
-    fun rejectPending(pendingUlid: String, reason: String? = null): Result<Long> = withStorage {
+    fun rejectPending(pendingUlid: String, reason: String? = null): Result<Long> = withBackend {
         rejectPending(pendingUlid, reason)
-        System.currentTimeMillis()
     }
 
     // =========================================================================
     // Cases — Cases.{ListCases,GetCase,ForceCloseCase,IssueRetrospectiveGrant}
     // =========================================================================
 
-    fun listCases(includeClosed: Boolean = true): Result<List<CaseSummary>> = withStorage {
-        // `null` state filter = open + closed; `Open` = open only.
-        val filter: CaseStateDto? = if (includeClosed) null else CaseStateDto.OPEN
-        listCases(filter).map { it.toDomain() }
+    fun listCases(includeClosed: Boolean = true): Result<List<CaseSummary>> = withBackend {
+        listCases(includeClosed)
     }
 
-    fun getCase(caseUlid: String): Result<CaseDetail> = withStorage {
-        getCase(caseUlid).toDomain()
+    fun getCase(caseUlid: String): Result<CaseDetail> = withBackend {
+        getCase(caseUlid)
     }
 
     fun forceCloseCase(
         caseUlid: String,
-        @Suppress("UNUSED_PARAMETER") reason: String? = null,
-    ): Result<Long> = withStorage {
-        // The uniffi `force_close_case` doesn't yet take a reason; the v1
-        // signature matches `close_case(case_id, None, false, None)`. Reason
-        // is reserved for the v1.x API that adds operator-side closeout
-        // notes.
-        forceCloseCase(caseUlid)
-        System.currentTimeMillis()
+        reason: String? = null,
+    ): Result<Long> = withBackend {
+        forceCloseCase(caseUlid, reason)
     }
 
-    fun issueRetrospectiveGrant(caseUlid: String, input: CreateGrantInput): Result<CreateGrantResult> = withStorage {
-        val req = RetroGrantInputDto(input = input.toDto())
-        issueRetrospectiveGrant(caseUlid, req).toDomain()
+    fun issueRetrospectiveGrant(caseUlid: String, input: CreateGrantInput): Result<CreateGrantResult> = withBackend {
+        issueRetrospectiveGrant(caseUlid, input)
     }
 
     // =========================================================================
     // Audit — Audit.AuditQuery
     // =========================================================================
 
-    fun auditQuery(filter: AuditFilter): Result<List<AuditEntry>> = withStorage {
-        // The uniffi filter accepts a single `action` string; the in-app
-        // filter exposes a multi-select op_kinds list. We pick the first
-        // for the first call and merge in-memory; if the list is empty we
-        // pass null (= no action filter). For typical UI usage all three
-        // kinds are selected so we pass null and merge nothing.
-        val kindsForServer = if (filter.opKindsIn.size == 1) filter.opKindsIn.first() else null
-        val dto = AuditFilterDto(
-            fromMs = filter.fromMs,
-            toMs = filter.toMs,
-            actorType = null,
-            action = kindsForServer,
-            result = null,
-            limit = filter.limit,
-        )
-        // Apply the multi-kind filter client-side because the uniffi
-        // surface only carries one action at a time. (The OHDC wire RPC
-        // accepts a list — pickup is a `actions_in: Vec<String>` field on
-        // `AuditFilterDto`.)
-        auditQuery(dto)
-            .map { it.toDomain() }
-            .filter { e -> filter.opKindsIn.isEmpty() || filter.opKindsIn.contains(e.opKind) }
-            .filter { e -> filter.grantUlid == null || e.actorType == "grant" }
+    fun auditQuery(filter: AuditFilter): Result<List<AuditEntry>> = withBackend {
+        auditQuery(filter)
     }
 
     /** Recent export history — backs the ExportScreen "recent exports" list. */
@@ -518,14 +503,12 @@ object StorageRepository {
     fun getEmergencyConfig(): Result<EmergencyConfig> = runCatching {
         val ctx = requireNotNull(appContext)
         val local = EmergencyConfig.load(ctx)
-        val h = handle
-        if (h == null) return@runCatching local
-        val remote = runCatching { h.getEmergencyConfig() }.getOrNull()
-        if (remote == null) return@runCatching local
-        // Storage's DTO becomes the truth as soon as the handle is open.
+        val backend = activeBackend ?: return@runCatching local
+        val remote = backend.getEmergencyConfig() ?: return@runCatching local
+        // Storage's DTO becomes the truth as soon as the backend is open.
         // Map the FFI shape back into the in-app model and replace the
         // local cache so subsequent cold reads stay consistent.
-        val merged = remote.toDomain(localFallback = local)
+        val merged = remote.dto.toDomain(localFallback = local)
         merged.save(ctx)
         merged
     }
@@ -533,8 +516,8 @@ object StorageRepository {
     fun setEmergencyConfig(cfg: EmergencyConfig): Result<Unit> = runCatching {
         val ctx = requireNotNull(appContext)
         cfg.save(ctx)
-        // Mirror the write to storage when the handle is open.
-        handle?.setEmergencyConfig(cfg.toDto())
+        // Mirror the write to storage when the backend is open.
+        activeBackend?.setEmergencyConfig(cfg)
     }
 
     // =========================================================================
@@ -544,19 +527,15 @@ object StorageRepository {
     /** Returns the absolute path of the freshly-written .ohd portable file. */
     fun exportAll(): Result<String> = runCatching {
         val ctx = requireNotNull(appContext)
-        val bytes = requireHandle().exportAll()
+        val bytes = requireBackend().exportAll().getOrThrow()
         val outDir = File(ctx.filesDir, "exports").apply { mkdirs() }
         val target = File(outDir, "ohd-export-${System.currentTimeMillis()}.ohd")
         target.writeBytes(bytes)
         target.absolutePath
     }
 
-    fun generateDoctorPdf(): Result<String> = runCatching {
-        // TODO: requires uniffi binding — handle.generateDoctorPdf() once
-        //       storage ships Export.GenerateDoctorPdf. Until then we render a
-        //       one-page summary client-side via Android's PdfDocument API in
-        //       ExportScreen.kt (which does the actual rendering).
-        throw UnsupportedOperationException("Doctor PDF: rendered client-side; see ExportScreen")
+    fun generateDoctorPdf(): Result<String> = withBackend {
+        generateDoctorPdf()
     }
 }
 
