@@ -215,28 +215,63 @@ object StorageRepository {
     }
 
     /**
-     * Construct the [StorageBackend] for the given uniffi handle.
+     * The single open-time backend-selection point.
      *
-     * Phase 0 has exactly one backend — [LocalStorageBackend] (`OnDevice`).
-     * Phase 3 adds remote storage: branch on [activeMode] here, e.g.
+     * Decides local-vs-remote from the persisted [StorageOption] and the
+     * presence of a self-session token:
      *
-     * ```
-     * when (activeMode()) {
-     *     StorageOption.OnDevice -> LocalStorageBackend(handle)
-     *     StorageOption.OhdCloud,
-     *     StorageOption.SelfHosted,
-     *     StorageOption.ProviderHosted -> RemoteStorageBackend(...)
-     * }
-     * ```
+     *  - **`OnDevice`** (or any remote option the user has not yet signed
+     *    into): construct a [LocalStorageBackend] over the local uniffi
+     *    `OhdStorage` handle — byte-for-byte today's behaviour. [localHandle]
+     *    is the freshly-opened local DB handle.
+     *  - **`OhdCloud` / `SelfHosted` / `ProviderHosted`** with both a
+     *    persisted storage URL and a self-session token: construct a
+     *    [RemoteStorageBackend] over `RemoteOhdStorage.connect(url, token)`.
+     *    Remote mode has no local `.ohd` file and no SQLCipher key, so
+     *    [localHandle] is `null` for that path.
      *
-     * This is the single open-time selection point — no call site of
-     * `StorageRepository` ever sees which backend was chosen.
+     * No call site of `StorageRepository` ever sees which backend was chosen.
      */
-    private fun openBackend(handle: OhdStorage): StorageBackend = LocalStorageBackend(handle)
+    private fun selectBackend(localHandle: OhdStorage?): StorageBackend {
+        val ctx = requireNotNull(appContext) { "StorageRepository.init() not called" }
+        val mode = activeMode()
+        if (mode != StorageOption.OnDevice) {
+            val url = Auth.loadStorageUrl(ctx, mode.name)
+            val token = Auth.getSelfSessionToken(ctx)
+            if (!url.isNullOrBlank() && !token.isNullOrEmpty()) {
+                // Building the object does not perform a network round-trip;
+                // the first RPC is what actually connects.
+                val remote = uniffi.ohd_storage.RemoteOhdStorage.connect(url, token)
+                return RemoteStorageBackend(ctx, remote)
+            }
+            // Fall through to local: the user picked a remote option but has
+            // not completed sign-in (no URL / no token). Keeps the app usable
+            // rather than dead-ending on the Setup screen.
+        }
+        return LocalStorageBackend(
+            requireNotNull(localHandle) {
+                "Local backend selected but no local storage handle was opened."
+            },
+        )
+    }
+
+    /** True when the persisted mode + sign-in state select the remote backend. */
+    fun isRemoteMode(): Boolean {
+        val ctx = appContext ?: return false
+        val mode = activeMode()
+        if (mode == StorageOption.OnDevice) return false
+        val url = Auth.loadStorageUrl(ctx, mode.name)
+        val token = Auth.getSelfSessionToken(ctx)
+        return !url.isNullOrBlank() && !token.isNullOrEmpty()
+    }
 
     /**
-     * First-launch path. Calls `OhdStorage.create(path, keyHex)` and
-     * selects a [StorageBackend] over the fresh handle.
+     * First-launch path.
+     *
+     * In on-device mode: calls `OhdStorage.create(path, keyHex)` and selects a
+     * [LocalStorageBackend] over the fresh handle. In remote mode there is no
+     * local `.ohd` file or key — the backend is built straight from the
+     * persisted storage URL + self-session token.
      *
      * `keyHex` should be a 64-char hex string (32 bytes). The v0 scaffold
      * uses a stub key derived from a stub passphrase — see the comment
@@ -250,14 +285,22 @@ object StorageRepository {
      *   document the whole flow as a TODO.
      */
     fun openOrCreate(keyHex: String): Result<Unit> = runCatching {
-        val path = storageFile().absolutePath
-        activeBackend = openBackend(OhdStorage.create(path, keyHex))
+        activeBackend = if (isRemoteMode()) {
+            selectBackend(localHandle = null)
+        } else {
+            val path = storageFile().absolutePath
+            selectBackend(localHandle = OhdStorage.create(path, keyHex))
+        }
         Auth.recordStorageOpened(requireNotNull(appContext))
     }
 
     fun open(keyHex: String): Result<Unit> = runCatching {
-        val path = storageFile().absolutePath
-        activeBackend = openBackend(OhdStorage.open(path, keyHex))
+        activeBackend = if (isRemoteMode()) {
+            selectBackend(localHandle = null)
+        } else {
+            val path = storageFile().absolutePath
+            selectBackend(localHandle = OhdStorage.open(path, keyHex))
+        }
         Auth.recordStorageOpened(requireNotNull(appContext))
     }
 
@@ -281,8 +324,16 @@ object StorageRepository {
         val ctx = requireNotNull(appContext)
         val token = Auth.getSelfSessionToken(ctx)
         val b = activeBackend
+        // Remote mode has no local `.ohd` file — surface the storage server
+        // URL instead, and resolve `user_ulid` from the backend's `whoami()`.
+        val remote = isRemoteMode()
+        val storagePath = if (remote) {
+            Auth.loadStorageUrl(ctx, activeMode().name) ?: "(remote storage)"
+        } else {
+            storageFile().absolutePath
+        }
         return Identity(
-            storagePath = storageFile().absolutePath,
+            storagePath = storagePath,
             userUlid = b?.userUlidOrNull() ?: "(storage not opened)",
             tokenTruncated = token?.let { it.take(10) + "…" + it.takeLast(4) },
             formatVersion = b?.formatVersionOrNull() ?: "(storage not opened)",

@@ -129,12 +129,22 @@ private fun OhdConnectApp(
         OnboardingStorageScreen(
             onClaimExistingAccount = { inClaim = true },
             onContinue = { selected ->
+                // The storage option must be persisted *before* opening so
+                // StorageRepository's open-time dispatch (which reads the
+                // persisted mode) selects the right backend.
+                Auth.saveStorageOption(ctx, selected.name)
+                // Remote mode: the OnboardingStorageScreen has already run the
+                // OIDC sign-in and persisted the storage URL + self-session
+                // token, so the backend is built straight from those — there
+                // is no local `.ohd` file or SQLCipher key, and no local
+                // self-session token to mint.
+                val remote = StorageRepository.isRemoteMode()
                 // TODO: real key derivation per spec/encryption.md.
                 //       For v0 we use a deterministic stub key so the
                 //       SQLCipher PRAGMA key is well-formed.
-                val stubKeyHex = "00".repeat(32)
+                val stubKeyHex = if (remote) "" else "00".repeat(32)
                 val openResult =
-                    if (StorageRepository.isInitialised()) {
+                    if (!remote && StorageRepository.isInitialised()) {
                         StorageRepository.open(stubKeyHex)
                     } else {
                         StorageRepository.openOrCreate(stubKeyHex)
@@ -142,11 +152,16 @@ private fun OhdConnectApp(
                 openResult
                     .onFailure { e -> setupError = "Storage open failed: ${e.message}" }
                     .onSuccess {
-                        StorageRepository.issueSelfSessionToken()
+                        // The self-session token is minted by the local core
+                        // (`issue_self_session_token`); in remote mode the
+                        // bearer token already arrived from the OIDC sign-in.
+                        val tokenResult =
+                            if (remote) Result.success("")
+                            else StorageRepository.issueSelfSessionToken()
+                        tokenResult
                             .onFailure { e -> setupError = "Token issue failed: ${e.message}" }
                             .onSuccess {
                                 Auth.markFirstRunDone(ctx)
-                                Auth.saveStorageOption(ctx, selected.name)
                                 // Mint the local OHD account + recovery
                                 // code on the very first successful setup.
                                 // Idempotent: a second call simply re-reads
@@ -170,11 +185,21 @@ private fun OhdConnectApp(
                                     // swallowed; the local mint already succeeded.
                                     com.ohd.connect.data.OhdSaasRegistrar.fireAndForget(ctx, acct)
                                 }
-                                com.ohd.connect.data.FreeTierRetentionScheduler.enable(ctx)
-                                if (selected != StorageOption.OnDevice) {
+                                // Free-tier retention enforcement is an
+                                // on-device-only concern — server-hosted plans
+                                // manage retention server-side. Skip it in
+                                // remote mode.
+                                if (!remote) {
+                                    com.ohd.connect.data.FreeTierRetentionScheduler.enable(ctx)
+                                }
+                                if (selected != StorageOption.OnDevice && !remote) {
+                                    // A remote option was picked but the OIDC
+                                    // sign-in did not complete (no URL/token) —
+                                    // we fell back to on-device storage.
                                     setupError =
-                                        "Cloud / self-hosted / provider hosting are coming soon — " +
-                                            "for now your data lives on this device."
+                                        "Sign-in didn't complete — for now your data " +
+                                            "lives on this device. Switch storage later " +
+                                            "from Settings."
                                 }
                                 inSetup = false
                             }
@@ -184,12 +209,17 @@ private fun OhdConnectApp(
             onErrorDismiss = { setupError = null },
         )
     } else {
-        // Cold-start path. The handle is non-null only when we just came
-        // from onboarding (same process). Otherwise the data file exists
-        // on disk and we need to reopen it.
+        // Cold-start path. The backend is non-null only when we just came
+        // from onboarding (same process). Otherwise we re-open:
+        //  - remote mode: build the RemoteStorageBackend straight from the
+        //    persisted storage URL + self-session token — there is no local
+        //    `.ohd` file or SQLCipher key.
+        //  - on-device mode: the data file exists on disk; reopen it with the
+        //    stub key (today's behaviour, byte-for-byte).
         val opened = remember {
             when {
                 StorageRepository.isOpen() -> Result.success(Unit)
+                StorageRepository.isRemoteMode() -> StorageRepository.open(keyHex = "")
                 StorageRepository.isInitialised() -> {
                     val stubKeyHex = "00".repeat(32)
                     StorageRepository.open(stubKeyHex)
@@ -197,17 +227,26 @@ private fun OhdConnectApp(
                 else -> Result.failure(IllegalStateException("Storage not initialised"))
             }
         }
-        opened.onFailure { /* TODO: route to passphrase reset */ }
+        opened.onFailure { /* TODO: route to passphrase reset / re-login */ }
+
+        // Health Connect sync + reminders + the share responder all assume
+        // the in-process local storage core (they call into `OhdStorage`
+        // directly or host a local relay tunnel). They are on-device-only:
+        // gate every cold-start hook to `OnDevice` mode so remote mode never
+        // schedules a worker that would dead-end against a remote backend.
+        val onDevice = !StorageRepository.isRemoteMode()
 
         // Apply the persisted Health-Connect auto-sync preference on every
         // cold start. Idempotent — WorkManager keeps the existing schedule
         // via `ExistingPeriodicWorkPolicy.KEEP`.
         LaunchedEffect(Unit) {
-            HealthConnectScheduler.applyPersistedPreference(ctx)
-            // Same shape for reminders — enable iff any of the three
-            // reminder toggles is on. The worker reads each toggle every
-            // tick so user changes don't need a reschedule.
-            RemindersScheduler.applyPersistedPreference(ctx)
+            if (onDevice) {
+                HealthConnectScheduler.applyPersistedPreference(ctx)
+                // Same shape for reminders — enable iff any of the three
+                // reminder toggles is on. The worker reads each toggle every
+                // tick so user changes don't need a reschedule.
+                RemindersScheduler.applyPersistedPreference(ctx)
+            }
         }
 
         // Resume every share the user left with remote access enabled
@@ -219,9 +258,12 @@ private fun OhdConnectApp(
         // open, so there is no cold-start race against the storage handle).
         LaunchedEffect(Unit) {
             kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                // The share responder hosts a *local* relay tunnel over the
+                // on-device storage core — there is no responder to resume in
+                // remote mode.
                 val hasRemoteShare = com.ohd.connect.data.Auth
                     .listRemoteShareGrantUlids(ctx).isNotEmpty()
-                if (hasRemoteShare) {
+                if (onDevice && hasRemoteShare) {
                     com.ohd.connect.data.ShareResponderService.start(ctx)
                 }
             }
@@ -240,7 +282,8 @@ private fun OhdConnectApp(
         LaunchedEffect(lifecycleOwner) {
             lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
                 while (true) {
-                    if (HealthConnectScheduler.isEnabled(ctx) &&
+                    if (onDevice &&
+                        HealthConnectScheduler.isEnabled(ctx) &&
                         StorageRepository.isOpen() &&
                         OhdHealthConnect.availability(ctx) ==
                             OhdHealthConnect.Availability.Installed

@@ -81,6 +81,18 @@ class ShareResponderService : Service() {
         // startForeground() within ~5 s of a startForegroundService() call.
         goForeground(buildNotification(applicationContext, connectionCount = 0))
 
+        // The share responder hosts a *local* relay tunnel over the on-device
+        // storage core. Remote storage mode has no local core and no local
+        // relay responder — stop cleanly rather than spinning a foreground
+        // service with nothing to host.
+        StorageRepository.init(applicationContext)
+        if (StorageRepository.isRemoteMode()) {
+            Log.i(TAG, "remote storage mode — no local share responder to host; stopping")
+            stopForegroundCompat()
+            stopSelf()
+            return START_NOT_STICKY
+        }
+
         // Cold start may have landed us here with no open storage handle.
         // Open it with the persisted stub key — the same path MainActivity
         // and ShareResponders.wake use — then resume the responders.

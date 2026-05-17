@@ -29,6 +29,14 @@ class HealthConnectSyncWorker(
 ) : CoroutineWorker(appContext, params) {
 
     override suspend fun doWork(): Result = runCatching {
+        // Health Connect sync writes through the on-device storage core.
+        // In remote storage mode there is no local core to ingest into —
+        // skip cleanly rather than retry forever.
+        StorageRepository.init(applicationContext)
+        if (StorageRepository.isRemoteMode()) {
+            Log.d(TAG, "remote storage mode — Health Connect sync off")
+            return@runCatching Result.success()
+        }
         if (!StorageRepository.isOpen()) {
             Log.d(TAG, "storage not open yet — retrying later")
             return@runCatching Result.retry()

@@ -32,6 +32,14 @@ class FreeTierRetentionWorker(
 ) : CoroutineWorker(ctx, params) {
 
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
+        // Retention enforcement soft-deletes rows from the on-device core.
+        // Server-hosted plans manage retention server-side, and the remote
+        // backend has no soft-delete RPC — skip cleanly in remote mode.
+        StorageRepository.init(applicationContext)
+        if (StorageRepository.isRemoteMode()) {
+            Log.i(TAG, "remote storage mode — retention enforcement off")
+            return@withContext Result.success()
+        }
         val account = OhdAccountStore.load(applicationContext)
         if (account == null) {
             Log.i(TAG, "no account yet; skipping")

@@ -50,6 +50,15 @@ class RemindersWorker(
     override suspend fun doWork(): Result = runCatching {
         val ctx = applicationContext
 
+        // Reminders read events from the on-device storage core. In remote
+        // storage mode the local core is absent — skip cleanly. (The reminder
+        // engine itself is an on-device-only feature for Phase 3.)
+        StorageRepository.init(ctx)
+        if (StorageRepository.isRemoteMode()) {
+            Log.d(TAG, "remote storage mode — reminders off")
+            return@runCatching Result.success()
+        }
+
         // The med check + daily-summary check both need to read events from
         // storage. If storage isn't open yet we ask WorkManager to retry —
         // the user is still onboarding or the handle hasn't been re-opened
