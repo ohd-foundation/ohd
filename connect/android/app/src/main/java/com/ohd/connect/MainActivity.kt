@@ -341,6 +341,46 @@ private fun OhdConnectShell(
             contentPadding = padding,
             snackbar = snackbar,
         )
+
+        // Phase 4 — terminal remote-auth failure surface. `SessionState`
+        // (an observable flag) flips when any remote storage call fails with
+        // a terminal `RemoteAuthException` ("session expired / revoked").
+        // We route the user back to the storage picker, which hosts the OIDC
+        // re-sign-in flow. Clearing the flag here means a fresh remote call
+        // re-raises it if the session is still bad.
+        if (com.ohd.connect.data.SessionState.reloginNeeded) {
+            androidx.compose.material3.AlertDialog(
+                onDismissRequest = { /* deliberate no-op — force a choice */ },
+                title = {
+                    androidx.compose.material3.Text("Your session expired")
+                },
+                text = {
+                    androidx.compose.material3.Text(
+                        "Your remote storage session has expired or was revoked. " +
+                            "Sign in again to keep using cloud storage.",
+                    )
+                },
+                confirmButton = {
+                    androidx.compose.material3.TextButton(
+                        onClick = {
+                            com.ohd.connect.data.SessionState.clear()
+                            navController.navigate(
+                                com.ohd.connect.ui.nav.OhdRoute.SettingsStorage.route,
+                            )
+                        },
+                    ) {
+                        androidx.compose.material3.Text("Sign in again")
+                    }
+                },
+                dismissButton = {
+                    androidx.compose.material3.TextButton(
+                        onClick = { com.ohd.connect.data.SessionState.clear() },
+                    ) {
+                        androidx.compose.material3.Text("Later")
+                    }
+                },
+            )
+        }
     }
 }
 

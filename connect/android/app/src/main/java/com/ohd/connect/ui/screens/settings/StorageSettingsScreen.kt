@@ -22,6 +22,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
@@ -35,7 +36,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ohd.connect.data.Auth
+import com.ohd.connect.data.StorageRepository
 import com.ohd.connect.ui.components.OhdButton
+import com.ohd.connect.ui.components.OhdButtonVariant
 import com.ohd.connect.ui.components.OhdTopBar
 import com.ohd.connect.ui.icons.OhdIcons
 import com.ohd.connect.ui.screens._shared.StorageOption
@@ -44,6 +47,9 @@ import com.ohd.connect.ui.screens._shared.StorageSignInResult
 import com.ohd.connect.ui.screens._shared.rememberStorageAuthLauncher
 import com.ohd.connect.ui.theme.OhdBody
 import com.ohd.connect.ui.theme.OhdColors
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * Card title/description for a [StorageOption] — spec §4.4.
@@ -94,6 +100,7 @@ fun StorageSettingsScreen(
 ) {
     val ctx = LocalContext.current
     val activity = ctx as? ComponentActivity
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
     // Bug #4: pre-select from the persisted onboarding choice rather than
     // hard-coded OnDevice. The persisted value is the enum `name`; map back
     // to this screen's StorageOption enum (parallel to `_shared.StorageOption`).
@@ -102,6 +109,27 @@ fun StorageSettingsScreen(
         StorageOption.entries.firstOrNull { it.name == persistedName } ?: selectedOption
     var localSelected by remember(persistedName) { mutableStateOf(persistedOption) }
     val effectiveSelected = localSelected
+
+    // Phase 4 — local SQLCipher stub key, mirroring MainActivity's open path.
+    // TODO: real key derivation per spec/encryption.md.
+    val localKeyHex = "00".repeat(32)
+
+    // Phase 4 — "Signed in as <identity>" surface. `StorageRepository.identity()`
+    // is backend-aware: in remote mode it returns the storage URL + the
+    // `whoami` identity (a network call), so resolve it off the main thread
+    // and only when the app is actually running against remote storage.
+    var remoteMode by remember { mutableStateOf(StorageRepository.isRemoteMode()) }
+    var signedInIdentity by remember { mutableStateOf<String?>(null) }
+    var signOutInFlight by remember { mutableStateOf(false) }
+    LaunchedEffect(remoteMode) {
+        signedInIdentity = if (remoteMode) {
+            withContext(Dispatchers.IO) {
+                runCatching { StorageRepository.identity().userUlid }.getOrNull()
+            }
+        } else {
+            null
+        }
+    }
 
     // Phase 2 — picker → OIDC sign-in. Selecting a remote option no longer
     // shows a "coming soon" toast; it expands a sign-in panel. On a
@@ -136,7 +164,22 @@ fun StorageSettingsScreen(
                 signedInOption = result.option
                 localSelected = result.option
                 onSelect(result.option)
-                onToast("Signed in to ${result.option.title}.")
+                // Phase 4 — live swap: the OIDC sign-in persisted the option +
+                // URL + token, so flip the in-process backend to remote without
+                // requiring an app restart.
+                scope.launch {
+                    val swap = withContext(Dispatchers.IO) {
+                        StorageRepository.switchTo(result.option, localKeyHex)
+                    }
+                    swap
+                        .onSuccess {
+                            remoteMode = StorageRepository.isRemoteMode()
+                            onToast("Signed in to ${result.option.title}.")
+                        }
+                        .onFailure { e ->
+                            signInError = "Switched sign-in but storage failed to open: ${e.message}"
+                        }
+                }
             }
             is StorageSignInResult.Failure -> {
                 signInError = result.message
@@ -147,12 +190,45 @@ fun StorageSettingsScreen(
         }
     }
 
+    // Phase 4 — sign out of remote storage and live-swap back to on-device.
+    val signOut: () -> Unit = {
+        if (!signOutInFlight) {
+            signOutInFlight = true
+            scope.launch {
+                val result = withContext(Dispatchers.IO) {
+                    StorageRepository.signOutToLocal(localKeyHex)
+                }
+                signOutInFlight = false
+                result
+                    .onSuccess {
+                        remoteMode = false
+                        signedInOption = null
+                        signedInIdentity = null
+                        localSelected = StorageOption.OnDevice
+                        onSelect(StorageOption.OnDevice)
+                        onToast("Signed out — your data is now on this device.")
+                    }
+                    .onFailure { e ->
+                        signInError = "Sign-out failed: ${e.message}"
+                    }
+            }
+        }
+    }
+
     val select: (StorageOption) -> Unit = { opt ->
         signInError = null
-        // On-device is always available with no login. Remote options just
-        // expand the card so the user can run the OIDC sign-in below.
-        localSelected = opt
-        onSelect(opt)
+        // Selecting on-device while signed into remote storage IS a sign-out:
+        // run the full sign-out + live swap rather than just expanding a card.
+        if (opt == StorageOption.OnDevice && remoteMode) {
+            localSelected = opt
+            signOut()
+        } else {
+            // On-device (when already local) is available with no login.
+            // Remote options just expand the card so the user can run the
+            // OIDC sign-in below.
+            localSelected = opt
+            onSelect(opt)
+        }
     }
 
     val startSignIn: (StorageOption, String) -> Unit = { opt, url ->
@@ -196,6 +272,19 @@ fun StorageSettingsScreen(
                 lineHeight = 19.5.sp,
                 color = OhdColors.Muted,
             )
+
+            // 2b. Phase 4 — active remote-storage surface. When the app is
+            // running against a remote `ohd-storage-server`, show the storage
+            // URL + "Signed in as <identity>" + a Sign out action. On-device
+            // mode keeps the unchanged four-card display below.
+            if (remoteMode) {
+                SignedInCard(
+                    storageUrl = Auth.loadStorageUrl(ctx, StorageRepository.activeMode().name),
+                    identity = signedInIdentity,
+                    signOutInFlight = signOutInFlight,
+                    onSignOut = signOut,
+                )
+            }
 
             // 3. Four option cards.
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -433,6 +522,75 @@ private fun ExpandedPanel(
                 errorMessage = signInError,
             )
         }
+    }
+}
+
+/**
+ * Phase 4 — "Signed in" surface for the active remote storage backend.
+ *
+ * Shown above the option cards when [StorageRepository.isRemoteMode] is
+ * `true`: the storage server URL, "Signed in as `<identity>`" (the remote
+ * `whoami` user ULID), and a "Sign out" action. Sign-out clears the local
+ * session, best-effort RP-logs-out of the AS, and live-swaps the app back to
+ * on-device storage — no restart.
+ */
+@Composable
+private fun SignedInCard(
+    storageUrl: String?,
+    identity: String?,
+    signOutInFlight: Boolean,
+    onSignOut: () -> Unit,
+) {
+    val shape = RoundedCornerShape(8.dp)
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(OhdColors.BgElevated, shape)
+            .border(BorderStroke(1.dp, OhdColors.Line), shape)
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Icon(
+                imageVector = OhdIcons.Cloud,
+                contentDescription = null,
+                tint = OhdColors.Success,
+                modifier = Modifier.size(18.dp),
+            )
+            Text(
+                text = "Connected to remote storage",
+                fontFamily = OhdBody,
+                fontWeight = FontWeight.W600,
+                fontSize = 14.sp,
+                color = OhdColors.Ink,
+            )
+        }
+        Text(
+            text = storageUrl ?: "(remote storage)",
+            fontFamily = OhdBody,
+            fontWeight = FontWeight.W400,
+            fontSize = 12.sp,
+            lineHeight = 18.sp,
+            color = OhdColors.Muted,
+        )
+        Text(
+            text = "Signed in as ${identity ?: "…"}",
+            fontFamily = OhdBody,
+            fontWeight = FontWeight.W500,
+            fontSize = 13.sp,
+            color = OhdColors.Ink,
+        )
+        OhdButton(
+            label = if (signOutInFlight) "Signing out…" else "Sign out",
+            onClick = onSignOut,
+            modifier = Modifier.fillMaxWidth(),
+            variant = OhdButtonVariant.Destructive,
+            enabled = !signOutInFlight,
+        )
     }
 }
 

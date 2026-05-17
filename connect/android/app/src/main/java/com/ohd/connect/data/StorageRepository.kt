@@ -185,7 +185,14 @@ object StorageRepository {
         runCatching { requireBackend() }.fold(
             onSuccess = { it.block() },
             onFailure = { Result.failure(it) },
-        )
+        ).onFailure { err ->
+            // Phase 4 — surface a terminal remote-auth failure app-wide. The
+            // remote backend maps a revoked/expired-unrefreshable session to
+            // a `RemoteAuthException`; `SessionState` flips a single flag the
+            // Compose shell observes to route the user back to sign-in. No
+            // call site has to special-case the error.
+            SessionState.reportFailure(err)
+        }
 
     /**
      * Path of the per-user `data.db` file. Lives inside the app's internal
@@ -339,6 +346,93 @@ object StorageRepository {
             formatVersion = b?.formatVersionOrNull() ?: "(storage not opened)",
             protocolVersion = b?.protocolVersionOrNull() ?: "(storage not opened)",
         )
+    }
+
+    // =========================================================================
+    // Phase 4 — session UX: sign-out + live storage switching.
+    // =========================================================================
+
+    /**
+     * Sign out of remote storage and land the user back on the on-device
+     * experience — the must-have half of the Phase 4 "Sign out" action.
+     *
+     * Steps, in order:
+     *  1. Best-effort RP-initiated logout against the storage AS
+     *     ([OidcManager.signOut]) — nudges the AS to drop its session cookie.
+     *     Failure here is swallowed; it never blocks the local sign-out.
+     *  2. Clear the persisted self-session token + refresh + AppAuth state
+     *     ([Auth.clearSelfSessionToken]).
+     *  3. Reset the persisted storage option to [StorageOption.OnDevice] so
+     *     the next open-time dispatch picks the local backend.
+     *  4. Re-open the **local** backend so the app keeps working without a
+     *     restart — a live hot-swap of [activeBackend].
+     *  5. Clear the app-wide [SessionState] re-login flag.
+     *
+     * [keyHex] is the local SQLCipher key (the v0 stub key). Returns the
+     * outcome of the local re-open; a failure leaves the persisted option as
+     * `OnDevice` but [activeBackend] possibly stale — the caller surfaces it.
+     */
+    fun signOutToLocal(keyHex: String): Result<Unit> = runCatching {
+        val ctx = requireNotNull(appContext) { "StorageRepository.init() not called" }
+        // 1. Best-effort RP-initiated logout against the AS we were using.
+        val mode = activeMode()
+        if (mode != StorageOption.OnDevice) {
+            Auth.loadStorageUrl(ctx, mode.name)?.let { url ->
+                runCatching { OidcManager.signOut(ctx, url) }
+            }
+        }
+        // 2. Drop the local session token + refresh + AppAuth state.
+        Auth.clearSelfSessionToken(ctx)
+        // 3. Persisted option back to on-device so dispatch picks local.
+        Auth.saveStorageOption(ctx, StorageOption.OnDevice.name)
+        // 4. Re-open the local backend so the app keeps working.
+        openLocalBackend(ctx, keyHex)
+        // 5. Clear the app-wide re-login banner.
+        SessionState.clear()
+    }
+
+    /**
+     * Switch the live storage backend after the user changed their storage
+     * option in Settings — no app restart required.
+     *
+     * The new [option] (and, for remote options, the storage URL + token)
+     * must already be persisted via [Auth] before this is called — the
+     * onboarding/settings OIDC flow does exactly that on a successful
+     * sign-in. This method just re-runs the open-time backend selection so
+     * the in-process [activeBackend] reflects the new choice.
+     *
+     *  - switching **to** a remote option: [isRemoteMode] is now `true`, so a
+     *    fresh [RemoteStorageBackend] is built from the persisted URL + token.
+     *  - switching **to** on-device: opens (or creates) the local `.ohd` file.
+     *
+     * [keyHex] is only used on the on-device path (the local SQLCipher key).
+     */
+    fun switchTo(option: StorageOption, keyHex: String): Result<Unit> = runCatching {
+        val ctx = requireNotNull(appContext) { "StorageRepository.init() not called" }
+        Auth.saveStorageOption(ctx, option.name)
+        if (isRemoteMode()) {
+            activeBackend = selectBackend(localHandle = null)
+            Auth.recordStorageOpened(ctx)
+        } else {
+            openLocalBackend(ctx, keyHex)
+        }
+        SessionState.clear()
+    }
+
+    /**
+     * Open (or create) the on-device storage file and select a
+     * [LocalStorageBackend] over it — shared by [signOutToLocal] and
+     * [switchTo]. Creates the file on first use, otherwise re-opens it.
+     */
+    private fun openLocalBackend(ctx: Context, keyHex: String) {
+        val path = storageFile().absolutePath
+        val handle = if (storageFile().exists()) {
+            OhdStorage.open(path, keyHex)
+        } else {
+            OhdStorage.create(path, keyHex)
+        }
+        activeBackend = LocalStorageBackend(handle)
+        Auth.recordStorageOpened(ctx)
     }
 
     /**

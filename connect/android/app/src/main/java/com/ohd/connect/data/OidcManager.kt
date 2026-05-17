@@ -254,6 +254,53 @@ object OidcManager {
     }
 
     /**
+     * Best-effort RP-initiated logout (OpenID Connect Session Management /
+     * RP-Initiated Logout) against the storage AS.
+     *
+     * Discovers the AS metadata for [storageUrl] and, if it advertises an
+     * `end_session_endpoint`, opens it in a Custom Tab so the AS can clear
+     * its own session cookie. This is **best-effort**: clearing the local
+     * session ([Auth.clearSelfSessionToken]) is the must-have and is the
+     * caller's responsibility; this call only nudges the AS. Discovery
+     * failure / a missing endpoint / a Custom-Tab launch failure are all
+     * swallowed — the caller does not block sign-out on the network.
+     *
+     * AppAuth has no first-class end-session helper across all versions, so
+     * we build the URL by hand: `<end_session_endpoint>` is opened directly.
+     * Most ASes accept a bare GET; the optional `id_token_hint` /
+     * `post_logout_redirect_uri` params are skipped because the app does not
+     * retain a parsed id_token and registers no logout redirect.
+     */
+    fun signOut(ctx: Context, storageUrl: String) {
+        val issuerUri = runCatching { Uri.parse(storageUrl.trim()) }.getOrNull() ?: return
+        runCatching {
+            AuthorizationServiceConfiguration.fetchFromIssuer(
+                issuerUri,
+            ) { serviceConfig: AuthorizationServiceConfiguration?, ex: AuthorizationException? ->
+                if (ex != null || serviceConfig == null) {
+                    Log.w(TAG, "sign-out discovery failed; local session already cleared", ex)
+                    return@fetchFromIssuer
+                }
+                val endSession = serviceConfig.discoveryDoc?.endSessionEndpoint
+                if (endSession == null) {
+                    Log.i(TAG, "AS exposes no end_session_endpoint — local logout only")
+                    return@fetchFromIssuer
+                }
+                runCatching {
+                    val intent = Intent(Intent.ACTION_VIEW, endSession).apply {
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    }
+                    ctx.startActivity(intent)
+                }.onFailure {
+                    Log.w(TAG, "could not open end_session_endpoint; local logout stands", it)
+                }
+            }
+        }.onFailure {
+            Log.w(TAG, "RP-initiated logout failed; local logout stands", it)
+        }
+    }
+
+    /**
      * Helper for callers that want a typed
      * [ActivityResultContracts.StartActivityForResult] launcher.
      */
