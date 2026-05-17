@@ -1,5 +1,6 @@
 package com.ohd.connect.ui.screens
 
+import androidx.activity.ComponentActivity
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -17,6 +18,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -34,6 +36,9 @@ import com.ohd.connect.ui.screens._shared.OnDeviceExpandedPanel
 import com.ohd.connect.ui.screens._shared.RetentionDialog
 import com.ohd.connect.ui.screens._shared.StorageOption
 import com.ohd.connect.ui.screens._shared.StorageOptionCard
+import com.ohd.connect.ui.screens._shared.StorageSignInPanel
+import com.ohd.connect.ui.screens._shared.StorageSignInResult
+import com.ohd.connect.ui.screens._shared.rememberStorageAuthLauncher
 import com.ohd.connect.ui.theme.OhdBody
 import com.ohd.connect.ui.theme.OhdColors
 import com.ohd.connect.ui.theme.OhdDisplay
@@ -59,6 +64,7 @@ fun OnboardingStorageScreen(
     onErrorDismiss: () -> Unit = {},
 ) {
     val ctx = LocalContext.current
+    val activity = ctx as? ComponentActivity
     // Seed selection from the persisted preference so re-entering onboarding
     // (e.g. user backed out before completing) shows their last pick rather
     // than always resetting to OnDevice (bug #4 — Storage settings out of
@@ -70,6 +76,47 @@ fun OnboardingStorageScreen(
 
     var retention by remember { mutableStateOf(Auth.loadRetentionLimits(ctx)) }
     var dialogOpen by remember { mutableStateOf(false) }
+
+    // Phase 2 — picker → OIDC sign-in. A non-`OnDevice` card expands a
+    // sign-in panel; a successful Custom-Tab return persists the token +
+    // URL + option and flips the card to a "Signed in" state.
+    var signedInOption by remember {
+        mutableStateOf(
+            StorageOption.entries.firstOrNull {
+                it != StorageOption.OnDevice && Auth.loadStorageUrl(ctx, it.name) != null
+            },
+        )
+    }
+    var signInError by remember { mutableStateOf<String?>(null) }
+    var inFlightOption by remember { mutableStateOf<StorageOption?>(null) }
+    val urlFields = remember {
+        mutableStateMapOf<StorageOption, String>().apply {
+            StorageOption.entries.forEach { opt ->
+                put(opt, Auth.loadStorageUrl(ctx, opt.name).orEmpty())
+            }
+        }
+    }
+
+    val authLauncher = if (activity != null) {
+        rememberStorageAuthLauncher(activity = activity) { result ->
+            inFlightOption = null
+            when (result) {
+                is StorageSignInResult.Success -> {
+                    signInError = null
+                    signedInOption = result.option
+                    selected = result.option
+                }
+                is StorageSignInResult.Failure -> {
+                    signInError = result.message
+                    // Leave the option as it was — fall back to the last
+                    // signed-in / on-device choice.
+                    selected = signedInOption ?: StorageOption.OnDevice
+                }
+            }
+        }
+    } else {
+        null
+    }
 
     if (dialogOpen) {
         RetentionDialog(
@@ -118,19 +165,42 @@ fun OnboardingStorageScreen(
         // Four option cards.
         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
             DefaultStorageOptions.forEach { display ->
+                val opt = display.option
                 StorageOptionCard(
                     display = display,
-                    selected = selected == display.option,
-                    onSelect = { selected = display.option },
-                    expandedContent = if (display.option == StorageOption.OnDevice) {
-                        {
-                            OnDeviceExpandedPanel(
-                                retention = retention,
-                                onClickLimit = { dialogOpen = true },
-                            )
+                    selected = selected == opt,
+                    onSelect = {
+                        signInError = null
+                        selected = opt
+                    },
+                    expandedContent = when {
+                        opt == StorageOption.OnDevice -> {
+                            {
+                                OnDeviceExpandedPanel(
+                                    retention = retention,
+                                    onClickLimit = { dialogOpen = true },
+                                )
+                            }
                         }
-                    } else {
-                        null
+                        // Remote options run the real OIDC sign-in (Phase 2).
+                        else -> {
+                            {
+                                StorageSignInPanel(
+                                    option = opt,
+                                    signedIn = signedInOption == opt,
+                                    signedInUrl = Auth.loadStorageUrl(ctx, opt.name),
+                                    inFlight = inFlightOption == opt,
+                                    urlValue = urlFields[opt].orEmpty(),
+                                    onUrlChange = { urlFields[opt] = it },
+                                    onSignIn = { url ->
+                                        signInError = null
+                                        inFlightOption = opt
+                                        authLauncher?.launch(opt, url)
+                                    },
+                                    errorMessage = signInError,
+                                )
+                            }
+                        }
                     },
                 )
             }

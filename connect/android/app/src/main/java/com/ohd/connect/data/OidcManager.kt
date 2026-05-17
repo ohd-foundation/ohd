@@ -182,6 +182,78 @@ object OidcManager {
     }
 
     /**
+     * Silently refresh the persisted `ohds_…` access token using the
+     * `ohdr_…` refresh token captured by the initial Code + PKCE exchange.
+     *
+     * Rehydrates AppAuth's [AuthState] from the JSON [Auth] persisted
+     * during [handleAuthResult], builds a token-refresh request via
+     * [AuthState.createTokenRefreshRequest], and performs it. On success the
+     * fresh tokens are written back through [Auth.signInWithOidc] — exactly
+     * the same persistence path as the initial exchange.
+     *
+     * Safe to call on the main thread; the AppAuth callback fires on the
+     * main looper. [onComplete] receives [Result.failure] when no AppAuth
+     * state is persisted yet or the AS rejects the refresh.
+     */
+    fun refreshAccessToken(
+        ctx: Context,
+        onComplete: (Result<Unit>) -> Unit,
+    ) {
+        val stateJson = Auth.appAuthStateJson(ctx)
+        if (stateJson.isNullOrEmpty()) {
+            onComplete(
+                Result.failure(IllegalStateException("OIDC refresh: no persisted AuthState")),
+            )
+            return
+        }
+        val state = runCatching { AuthState.jsonDeserialize(stateJson) }.getOrNull()
+        if (state == null) {
+            onComplete(
+                Result.failure(IllegalStateException("OIDC refresh: corrupt AuthState JSON")),
+            )
+            return
+        }
+        val refreshReq = runCatching { state.createTokenRefreshRequest() }.getOrNull()
+        if (refreshReq == null) {
+            onComplete(
+                Result.failure(IllegalStateException("OIDC refresh: no refresh token available")),
+            )
+            return
+        }
+        service(ctx).performTokenRequest(refreshReq) { tokenResp: TokenResponse?, tokEx: AuthorizationException? ->
+            if (tokEx != null || tokenResp == null) {
+                Log.w(TAG, "token refresh error", tokEx)
+                onComplete(
+                    Result.failure(
+                        IllegalStateException(
+                            tokEx?.errorDescription ?: tokEx?.message ?: "OIDC token refresh failed",
+                        ),
+                    ),
+                )
+                return@performTokenRequest
+            }
+            state.update(tokenResp, null as AuthorizationException?)
+            val accessToken = tokenResp.accessToken
+            if (accessToken.isNullOrEmpty()) {
+                onComplete(
+                    Result.failure(IllegalStateException("OIDC refresh response missing access_token")),
+                )
+                return@performTokenRequest
+            }
+            Auth.signInWithOidc(
+                ctx = ctx,
+                accessToken = accessToken,
+                // A refresh may or may not rotate the refresh token; fall
+                // back to the prior one when the AS doesn't return a new one.
+                refreshToken = tokenResp.refreshToken ?: Auth.refreshToken(ctx),
+                accessExpiresAtMs = tokenResp.accessTokenExpirationTime,
+                authStateJson = state.jsonSerializeString(),
+            )
+            onComplete(Result.success(Unit))
+        }
+    }
+
+    /**
      * Helper for callers that want a typed
      * [ActivityResultContracts.StartActivityForResult] launcher.
      */

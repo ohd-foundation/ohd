@@ -396,6 +396,41 @@ object Auth {
         prefs(ctx).getString(KEY_STORAGE_OPTION, null) ?: defaultName
 
     // =========================================================================
+    // Remote storage server URL (storage picker — Phase 2 OIDC login)
+    //
+    // When the user picks a non-`OnDevice` storage option and completes the
+    // OIDC sign-in (see `OidcManager`), the chosen storage server URL is
+    // persisted here so Phase 3's `RemoteStorageBackend` can be reconstructed
+    // at storage-open time. The URL is keyed per option (`OnDevice` needs
+    // none — it never writes a URL).
+    //
+    // Read by:  StorageSettingsScreen / OnboardingStorageScreen (show the
+    //           "Signed in" state + pre-fill the URL field on re-entry),
+    //           Phase 3 storage dispatch (build the remote backend).
+    // =========================================================================
+    private const val KEY_STORAGE_URL_PREFIX = "storage_url_v1_"
+
+    /**
+     * Persist the storage server URL the user signed into for a given
+     * storage option. Pass the [StorageOption] `name` as [optionName].
+     * Blank URLs clear the slot.
+     */
+    fun saveStorageUrl(ctx: Context, optionName: String, url: String) {
+        val k = KEY_STORAGE_URL_PREFIX + optionName
+        prefs(ctx).edit().apply {
+            if (url.isBlank()) remove(k) else putString(k, url.trim())
+        }.apply()
+    }
+
+    /**
+     * Load the persisted storage server URL for a given storage option, or
+     * `null` when the option has no URL (e.g. `OnDevice`, or a remote option
+     * the user has not yet signed into).
+     */
+    fun loadStorageUrl(ctx: Context, optionName: String): String? =
+        prefs(ctx).getString(KEY_STORAGE_URL_PREFIX + optionName, null)
+
+    // =========================================================================
     // CORD provider API keys + stub toggle
     //
     // Read/written by `ui/screens/settings/CordSettingsScreen.kt`. The three

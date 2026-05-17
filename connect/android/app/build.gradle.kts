@@ -58,6 +58,16 @@ android {
             "OHD_OIDC_REDIRECT",
             "\"${project.findProperty("ohd.connect.oidc.redirect") ?: "com.ohd.connect:/oidc-callback"}\"",
         )
+
+        // Fixed OHD Cloud storage URL. The "OHD Cloud" storage option in the
+        // picker treats this as the OAuth AS — the user signs in against it
+        // directly without typing a URL. Override per-deployment with
+        // `-Pohd.connect.cloud.storage_url=...`.
+        buildConfigField(
+            "String",
+            "OHD_CLOUD_STORAGE_URL",
+            "\"${project.findProperty("ohd.connect.cloud.storage_url") ?: "https://storage.ohd.dev"}\"",
+        )
     }
 
     buildTypes {

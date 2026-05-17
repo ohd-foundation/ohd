@@ -1,5 +1,6 @@
 package com.ohd.connect.ui.screens.settings
 
+import androidx.activity.ComponentActivity
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -22,6 +23,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -37,6 +39,9 @@ import com.ohd.connect.ui.components.OhdButton
 import com.ohd.connect.ui.components.OhdTopBar
 import com.ohd.connect.ui.icons.OhdIcons
 import com.ohd.connect.ui.screens._shared.StorageOption
+import com.ohd.connect.ui.screens._shared.StorageSignInPanel
+import com.ohd.connect.ui.screens._shared.StorageSignInResult
+import com.ohd.connect.ui.screens._shared.rememberStorageAuthLauncher
 import com.ohd.connect.ui.theme.OhdBody
 import com.ohd.connect.ui.theme.OhdColors
 
@@ -88,6 +93,7 @@ fun StorageSettingsScreen(
     onToast: (String) -> Unit = {},
 ) {
     val ctx = LocalContext.current
+    val activity = ctx as? ComponentActivity
     // Bug #4: pre-select from the persisted onboarding choice rather than
     // hard-coded OnDevice. The persisted value is the enum `name`; map back
     // to this screen's StorageOption enum (parallel to `_shared.StorageOption`).
@@ -96,17 +102,63 @@ fun StorageSettingsScreen(
         StorageOption.entries.firstOrNull { it.name == persistedName } ?: selectedOption
     var localSelected by remember(persistedName) { mutableStateOf(persistedOption) }
     val effectiveSelected = localSelected
-    val select: (StorageOption) -> Unit = {
-        // Switching away from the currently-active option is a v1.x feature.
-        // For now: show the "coming soon" notice the user already sees in
-        // onboarding, and snap the radio back to the persisted choice.
-        if (it != persistedOption) {
-            onToast("Switching storage is coming soon — your data stays on this device.")
-            localSelected = persistedOption
-        } else {
-            localSelected = it
+
+    // Phase 2 — picker → OIDC sign-in. Selecting a remote option no longer
+    // shows a "coming soon" toast; it expands a sign-in panel. On a
+    // successful Custom-Tab return the token + URL + option are persisted
+    // and the row shows a "Signed in" state.
+    var signedInOption by remember {
+        mutableStateOf(
+            StorageOption.entries.firstOrNull {
+                it != StorageOption.OnDevice && Auth.loadStorageUrl(ctx, it.name) != null
+            },
+        )
+    }
+    var signInError by remember { mutableStateOf<String?>(null) }
+    var inFlightOption by remember { mutableStateOf<StorageOption?>(null) }
+    // Editable URL fields for self/provider-hosted, pre-filled from any
+    // persisted URL so a re-sign-in doesn't make the user retype.
+    val urlFields = remember {
+        mutableStateMapOf<StorageOption, String>().apply {
+            StorageOption.entries.forEach { opt ->
+                put(opt, Auth.loadStorageUrl(ctx, opt.name).orEmpty())
+            }
         }
-        onSelect(localSelected)
+    }
+
+    val authLauncher = rememberStorageAuthLauncher(
+        activity = activity ?: return,
+    ) { result ->
+        inFlightOption = null
+        when (result) {
+            is StorageSignInResult.Success -> {
+                signInError = null
+                signedInOption = result.option
+                localSelected = result.option
+                onSelect(result.option)
+                onToast("Signed in to ${result.option.title}.")
+            }
+            is StorageSignInResult.Failure -> {
+                signInError = result.message
+                // Leave the option as it was — snap back to the last
+                // successfully-signed-in / on-device choice.
+                localSelected = signedInOption ?: StorageOption.OnDevice
+            }
+        }
+    }
+
+    val select: (StorageOption) -> Unit = { opt ->
+        signInError = null
+        // On-device is always available with no login. Remote options just
+        // expand the card so the user can run the OIDC sign-in below.
+        localSelected = opt
+        onSelect(opt)
+    }
+
+    val startSignIn: (StorageOption, String) -> Unit = { opt, url ->
+        signInError = null
+        inFlightOption = opt
+        authLauncher.launch(opt, url)
     }
 
     Column(
@@ -147,44 +199,42 @@ fun StorageSettingsScreen(
 
             // 3. Four option cards.
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                StorageOptionCard(
-                    option = StorageOption.OnDevice,
-                    icon = OhdIcons.Smartphone,
-                    selected = effectiveSelected == StorageOption.OnDevice,
-                    onClick = { select(StorageOption.OnDevice) },
+                val cardIcons = mapOf(
+                    StorageOption.OnDevice to OhdIcons.Smartphone,
+                    StorageOption.OhdCloud to OhdIcons.Cloud,
+                    StorageOption.SelfHosted to OhdIcons.Server,
+                    StorageOption.ProviderHosted to OhdIcons.Building2,
                 )
-                StorageOptionCard(
-                    option = StorageOption.OhdCloud,
-                    icon = OhdIcons.Cloud,
-                    selected = effectiveSelected == StorageOption.OhdCloud,
-                    onClick = { select(StorageOption.OhdCloud) },
-                )
-                StorageOptionCard(
-                    option = StorageOption.SelfHosted,
-                    icon = OhdIcons.Server,
-                    selected = effectiveSelected == StorageOption.SelfHosted,
-                    onClick = { select(StorageOption.SelfHosted) },
-                )
-                StorageOptionCard(
-                    option = StorageOption.ProviderHosted,
-                    icon = OhdIcons.Building2,
-                    selected = effectiveSelected == StorageOption.ProviderHosted,
-                    onClick = { select(StorageOption.ProviderHosted) },
-                )
+                StorageOption.entries.forEach { opt ->
+                    StorageOptionCard(
+                        option = opt,
+                        icon = cardIcons.getValue(opt),
+                        selected = effectiveSelected == opt,
+                        onClick = { select(opt) },
+                        signedIn = signedInOption == opt,
+                        signedInUrl = Auth.loadStorageUrl(ctx, opt.name),
+                        inFlight = inFlightOption == opt,
+                        signInError = if (effectiveSelected == opt) signInError else null,
+                        urlValue = urlFields[opt].orEmpty(),
+                        onUrlChange = { urlFields[opt] = it },
+                        onSignIn = { url -> startSignIn(opt, url) },
+                    )
+                }
             }
 
             // 4. Notice card.
             NoticeCard()
 
             // 5. Continue button. The Continue path doesn't migrate data —
-            // selection snap-back already happened in [select]. We surface a
-            // last reassurance toast if the user picked a non-active option,
-            // mirroring the onboarding "coming soon" notice.
+            // Phase 2 persists the chosen storage option + URL + token only
+            // when the OIDC sign-in actually completes. A remote option
+            // selected but not yet signed into is not committed, so Continue
+            // just leaves whatever was last persisted in place.
             OhdButton(
                 label = "Continue",
                 onClick = {
-                    if (localSelected != persistedOption) {
-                        onToast("Switching storage is coming soon — your data stays on this device.")
+                    if (localSelected != StorageOption.OnDevice && signedInOption != localSelected) {
+                        onToast("Sign in to ${localSelected.title} to switch storage.")
                     }
                     onContinue()
                 },
@@ -210,6 +260,13 @@ private fun StorageOptionCard(
     icon: ImageVector,
     selected: Boolean,
     onClick: () -> Unit,
+    signedIn: Boolean,
+    signedInUrl: String?,
+    inFlight: Boolean,
+    signInError: String?,
+    urlValue: String,
+    onUrlChange: (String) -> Unit,
+    onSignIn: (String) -> Unit,
 ) {
     val shape = RoundedCornerShape(12.dp)
     val borderColor = if (selected) OhdColors.Ink else OhdColors.Line
@@ -256,7 +313,16 @@ private fun StorageOptionCard(
         }
 
         if (selected) {
-            ExpandedPanel(option = option)
+            ExpandedPanel(
+                option = option,
+                signedIn = signedIn,
+                signedInUrl = signedInUrl,
+                inFlight = inFlight,
+                signInError = signInError,
+                urlValue = urlValue,
+                onUrlChange = onUrlChange,
+                onSignIn = onSignIn,
+            )
         }
     }
 }
@@ -301,7 +367,16 @@ private fun RadioDot(selected: Boolean) {
  * chip.
  */
 @Composable
-private fun ExpandedPanel(option: StorageOption) {
+private fun ExpandedPanel(
+    option: StorageOption,
+    signedIn: Boolean,
+    signedInUrl: String?,
+    inFlight: Boolean,
+    signInError: String?,
+    urlValue: String,
+    onUrlChange: (String) -> Unit,
+    onSignIn: (String) -> Unit,
+) {
     val explainer = when (option) {
         StorageOption.OnDevice ->
             "Data is saved as a single file on your device. The file grows as you log more entries — typically a few MB per year. You can set a retention limit below."
@@ -328,20 +403,35 @@ private fun ExpandedPanel(option: StorageOption) {
             lineHeight = 18.sp,
             color = OhdColors.Muted,
         )
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            Box(modifier = Modifier.weight(1f))
-            Text(
-                text = "Keep data for",
-                fontFamily = OhdBody,
-                fontWeight = FontWeight.W400,
-                fontSize = 13.sp,
-                color = OhdColors.Ink,
+        if (option == StorageOption.OnDevice) {
+            // On-device: unchanged retention-chip row.
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Box(modifier = Modifier.weight(1f))
+                Text(
+                    text = "Keep data for",
+                    fontFamily = OhdBody,
+                    fontWeight = FontWeight.W400,
+                    fontSize = 13.sp,
+                    color = OhdColors.Ink,
+                )
+                RetentionChip()
+            }
+        } else {
+            // Remote options: the real OIDC sign-in panel (Phase 2).
+            StorageSignInPanel(
+                option = option,
+                signedIn = signedIn,
+                signedInUrl = signedInUrl,
+                inFlight = inFlight,
+                urlValue = urlValue,
+                onUrlChange = onUrlChange,
+                onSignIn = onSignIn,
+                errorMessage = signInError,
             )
-            RetentionChip()
         }
     }
 }
