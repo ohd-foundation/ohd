@@ -55,6 +55,12 @@ struct IdTokenClaims<'a> {
     exp: i64,
     iat: i64,
     auth_time: i64,
+    /// Echoed from the OAuth client's `nonce` request param (OIDC Core
+    /// §3.1.3.7). An OIDC relying party (e.g. AppAuth) rejects the token
+    /// when this does not match what it sent. Omitted when the client did
+    /// not supply a nonce.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    nonce: Option<&'a str>,
 }
 
 /// Mint a signed id_token. Generates the active keypair if none exists.
@@ -65,6 +71,7 @@ pub fn mint_id_token(
     user_ulid: [u8; 16],
     now_ms: i64,
     ttl_ms: i64,
+    nonce: Option<&str>,
 ) -> Result<String> {
     let active = ensure_active_key(storage)?;
     let claims = IdTokenClaims {
@@ -74,6 +81,7 @@ pub fn mint_id_token(
         exp: (now_ms + ttl_ms) / 1000,
         iat: now_ms / 1000,
         auth_time: now_ms / 1000,
+        nonce: nonce.filter(|n| !n.is_empty()),
     };
     let mut header = Header::new(Algorithm::RS256);
     header.kid = Some(active.kid.clone());

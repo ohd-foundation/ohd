@@ -22,6 +22,14 @@ pub fn bootstrap(storage: &Storage) -> Result<()> {
 
 /// The DDL block. Identical to `migrations/012_oauth_state.sql`.
 const DDL: &str = r#"
+-- oauth_authorization_codes + oauth_pending_logins hold only transient,
+-- short-lived state (auth codes ~minutes, pending logins ~10 min). They are
+-- dropped + recreated on every start so additive schema changes (the
+-- client_nonce / nonce columns below) land on an already-deployed DB with no
+-- migration; at most a few seconds of in-flight OAuth flows are lost.
+DROP TABLE IF EXISTS oauth_authorization_codes;
+DROP TABLE IF EXISTS oauth_pending_logins;
+
 CREATE TABLE IF NOT EXISTS oauth_clients (
     id                 INTEGER PRIMARY KEY AUTOINCREMENT,
     client_id          TEXT NOT NULL UNIQUE,
@@ -58,6 +66,7 @@ CREATE TABLE IF NOT EXISTS oauth_authorization_codes (
     scope                 TEXT NOT NULL,
     code_challenge        TEXT NOT NULL,
     code_challenge_method TEXT NOT NULL,
+    nonce                 TEXT,                   -- the OHD client's OIDC `nonce`, echoed into the id_token
     issued_at_ms          INTEGER NOT NULL,
     expires_at_ms         INTEGER NOT NULL,
     used_at_ms            INTEGER
@@ -113,6 +122,7 @@ CREATE TABLE IF NOT EXISTS oauth_pending_logins (
     client_state          TEXT NOT NULL,          -- the OHD client's own `state`
     code_challenge        TEXT NOT NULL,          -- the OHD client's PKCE challenge
     code_challenge_method TEXT NOT NULL,
+    client_nonce          TEXT,                   -- the OHD client's OIDC `nonce`
     issued_at_ms          INTEGER NOT NULL,
     expires_at_ms         INTEGER NOT NULL,
     used_at_ms            INTEGER

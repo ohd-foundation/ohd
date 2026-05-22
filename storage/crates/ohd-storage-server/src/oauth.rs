@@ -224,6 +224,9 @@ struct AuthorizeQuery {
     state: Option<String>,
     code_challenge: Option<String>,
     code_challenge_method: Option<String>,
+    /// The OHD client's OIDC `nonce` — must be echoed into the issued
+    /// id_token's `nonce` claim or an OIDC relying party rejects the token.
+    nonce: Option<String>,
     /// Optional catalog key of a provider to use directly. When supplied (and
     /// valid) the AS skips its provider-picker page and 302s straight to that
     /// upstream provider — lets an OHD client deep-link "Sign in with OHD".
@@ -255,6 +258,8 @@ struct AuthorizePost {
     state: Option<String>,
     code_challenge: Option<String>,
     code_challenge_method: Option<String>,
+    /// The OHD client's OIDC `nonce` — echoed into the issued id_token.
+    nonce: Option<String>,
     /// User-pasted self-session token (the on-device / fast-path login UX).
     self_session_token: Option<String>,
     /// Catalog key of a configured upstream OIDC provider the user picked
@@ -271,6 +276,7 @@ async fn authorize_post(State(state): State<OauthState>, Form(f): Form<Authorize
         state: f.state,
         code_challenge: f.code_challenge,
         code_challenge_method: f.code_challenge_method,
+        nonce: f.nonce,
         provider: f.provider.clone(),
     };
     if let Err(resp) = validate_authorize_params(&state, &q) {
@@ -321,6 +327,7 @@ async fn authorize_post(State(state): State<OauthState>, Form(f): Form<Authorize
         q.scope.as_deref().unwrap_or(""),
         q.code_challenge.as_deref().unwrap_or(""),
         q.code_challenge_method.as_deref().unwrap_or(""),
+        q.nonce.as_deref().unwrap_or(""),
         q.state.as_deref().unwrap_or(""),
     )
 }
@@ -337,6 +344,7 @@ fn issue_downstream_code(
     scope: &str,
     code_challenge: &str,
     code_challenge_method: &str,
+    nonce: &str,
     client_state: &str,
 ) -> Response {
     let code = mint_random_token();
@@ -346,8 +354,9 @@ fn issue_downstream_code(
         conn.execute(
             "INSERT INTO oauth_authorization_codes
                 (code_hash, client_id, user_ulid, redirect_uri, scope,
-                 code_challenge, code_challenge_method, issued_at_ms, expires_at_ms, used_at_ms)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL)",
+                 code_challenge, code_challenge_method, nonce,
+                 issued_at_ms, expires_at_ms, used_at_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, NULL)",
             params![
                 code_hash,
                 client_id,
@@ -356,6 +365,7 @@ fn issue_downstream_code(
                 scope,
                 code_challenge,
                 code_challenge_method,
+                nonce,
                 now,
                 now + AUTH_CODE_TTL_S * 1000,
             ],
@@ -413,8 +423,9 @@ async fn begin_oidc_login(state: &OauthState, q: &AuthorizeQuery, provider_key: 
             "INSERT INTO oauth_pending_logins
                 (oidc_state, oidc_nonce, pkce_verifier, provider_key,
                  client_id, redirect_uri, scope, client_state,
-                 code_challenge, code_challenge_method, issued_at_ms, expires_at_ms, used_at_ms)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, NULL)",
+                 code_challenge, code_challenge_method, client_nonce,
+                 issued_at_ms, expires_at_ms, used_at_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, NULL)",
             params![
                 oidc_state,
                 oidc_nonce,
@@ -426,6 +437,7 @@ async fn begin_oidc_login(state: &OauthState, q: &AuthorizeQuery, provider_key: 
                 q.state.as_deref().unwrap_or(""),
                 q.code_challenge.as_deref().unwrap_or(""),
                 q.code_challenge_method.as_deref().unwrap_or(""),
+                q.nonce.as_deref().unwrap_or(""),
                 now,
                 now + PENDING_LOGIN_TTL_S * 1000,
             ],
@@ -535,6 +547,7 @@ async fn oidc_callback_handler(
         String,
         String,
         String,
+        String,
         i64,
         Option<i64>,
     );
@@ -542,7 +555,7 @@ async fn oidc_callback_handler(
         conn.query_row(
             "SELECT id, oidc_nonce, pkce_verifier, provider_key, client_id,
                     redirect_uri, scope, client_state, code_challenge,
-                    expires_at_ms, used_at_ms
+                    client_nonce, expires_at_ms, used_at_ms
                FROM oauth_pending_logins WHERE oidc_state = ?1",
             params![oidc_state],
             |r| {
@@ -558,6 +571,7 @@ async fn oidc_callback_handler(
                     r.get(8)?,
                     r.get(9)?,
                     r.get(10)?,
+                    r.get(11)?,
                 ))
             },
         )
@@ -591,6 +605,7 @@ async fn oidc_callback_handler(
         scope,
         client_state,
         code_challenge,
+        client_nonce,
         expires_at_ms,
         used_at_ms,
     ) = row;
@@ -719,6 +734,7 @@ async fn oidc_callback_handler(
         &scope,
         &code_challenge,
         "S256",
+        &client_nonce,
         &client_state,
     )
 }
@@ -1072,13 +1088,14 @@ fn token_grant_authorization_code(state: &OauthState, req: TokenRequest) -> Resp
         String,
         String,
         String,
+        Option<String>,
         i64,
         Option<i64>,
     );
     let row: Result<Option<Row>, _> = state.storage.with_conn(|conn| {
         conn.query_row(
             "SELECT id, client_id, user_ulid, redirect_uri, scope, code_challenge,
-                    expires_at_ms, used_at_ms
+                    nonce, expires_at_ms, used_at_ms
                FROM oauth_authorization_codes WHERE code_hash = ?1",
             params![code_hash],
             |r| {
@@ -1091,6 +1108,7 @@ fn token_grant_authorization_code(state: &OauthState, req: TokenRequest) -> Resp
                     r.get(5)?,
                     r.get(6)?,
                     r.get(7)?,
+                    r.get(8)?,
                 ))
             },
         )
@@ -1110,7 +1128,8 @@ fn token_grant_authorization_code(state: &OauthState, req: TokenRequest) -> Resp
             )
         }
     };
-    let (id, row_client, user_blob, row_redirect, scope, challenge, expires_at, used_at) = row;
+    let (id, row_client, user_blob, row_redirect, scope, challenge, code_nonce, expires_at, used_at) =
+        row;
     if used_at.is_some() {
         return oauth_error_response(
             StatusCode::BAD_REQUEST,
@@ -1174,7 +1193,7 @@ fn token_grant_authorization_code(state: &OauthState, req: TokenRequest) -> Resp
             )
         }
     };
-    issue_token_pair(state, &client_id, user_ulid, &scope, true)
+    issue_token_pair(state, &client_id, user_ulid, &scope, true, code_nonce.as_deref())
 }
 
 fn token_grant_refresh(state: &OauthState, req: TokenRequest) -> Response {
@@ -1274,7 +1293,7 @@ fn token_grant_refresh(state: &OauthState, req: TokenRequest) -> Response {
     };
     // We re-issue an access token (and a fresh id_token); the original
     // refresh_token stays alive (rotation is a v1.x deliverable).
-    issue_token_pair(state, &client_id, user_ulid, &scope, false)
+    issue_token_pair(state, &client_id, user_ulid, &scope, false, None)
 }
 
 fn token_grant_device_code(state: &OauthState, req: TokenRequest) -> Response {
@@ -1417,7 +1436,7 @@ fn token_grant_device_code(state: &OauthState, req: TokenRequest) -> Response {
             &e.to_string(),
         );
     }
-    issue_token_pair(state, &client_id, user_ulid, &scope, true)
+    issue_token_pair(state, &client_id, user_ulid, &scope, true, None)
 }
 
 fn issue_token_pair(
@@ -1426,6 +1445,7 @@ fn issue_token_pair(
     user_ulid: [u8; 16],
     scope: &str,
     issue_refresh: bool,
+    nonce: Option<&str>,
 ) -> Response {
     let now = ohd_storage_core::format::now_ms();
     let access_token = format!("ohds_{}", mint_random_token());
@@ -1496,6 +1516,7 @@ fn issue_token_pair(
         user_ulid,
         now,
         access_ttl_ms,
+        nonce,
     ) {
         Ok(t) => Some(t),
         Err(e) => {

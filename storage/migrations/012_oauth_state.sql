@@ -75,6 +75,7 @@ CREATE TABLE IF NOT EXISTS oauth_authorization_codes (
     scope                 TEXT NOT NULL,
     code_challenge        TEXT NOT NULL,
     code_challenge_method TEXT NOT NULL,
+    nonce                 TEXT,                   -- the OHD client's OIDC `nonce`, echoed into the id_token
     issued_at_ms          INTEGER NOT NULL,
     expires_at_ms         INTEGER NOT NULL,
     used_at_ms            INTEGER

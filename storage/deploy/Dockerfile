@@ -33,6 +33,9 @@ WORKDIR /src
 # manifests change less often than sources.
 COPY storage/Cargo.toml storage/Cargo.lock storage/rust-toolchain.toml \
      storage/buf.yaml storage/buf.gen.yaml ./
+# `[patch]` in Cargo.toml points `openssl-src` at this local vendored copy
+# (forces `no-asm` on aarch64). Must be copied in or the build can't resolve it.
+COPY storage/vendor-openssl-src ./vendor-openssl-src
 COPY storage/proto ./proto
 COPY storage/migrations ./migrations
 COPY storage/crates ./crates
