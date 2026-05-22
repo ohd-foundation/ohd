@@ -56,6 +56,14 @@ object OidcManager {
         val clientId: String,
         val redirectUri: String,
         val scope: String = "openid offline_access",
+        /**
+         * Extra query params appended to the AS `/authorize` request. The
+         * OHD Cloud path passes `provider=ohd_account` so the storage AS
+         * skips its in-browser provider-picker page and 302s straight to
+         * `accounts.ohd.dev` — the app already knows which provider the
+         * user chose, so the picker is redundant.
+         */
+        val additionalParams: Map<String, String> = emptyMap(),
     )
 
     @Volatile
@@ -99,6 +107,7 @@ object OidcManager {
                 Uri.parse(config.redirectUri),
             )
                 .setScope(config.scope)
+                .setAdditionalParameters(config.additionalParams)
                 .build()
             onIntent(service(ctx).getAuthorizationRequestIntent(req))
         }

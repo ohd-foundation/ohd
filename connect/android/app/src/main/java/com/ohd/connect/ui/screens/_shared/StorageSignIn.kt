@@ -54,27 +54,27 @@ sealed interface StorageSignInResult {
 }
 
 /**
- * Holder bundling the registered Custom-Tab launcher with the option +
- * URL of the sign-in currently in flight. [launch] kicks off discovery +
- * the Custom Tab; the result lands in the `onResult` passed to
+ * Holder bundling the registered Custom-Tab launcher. [launch] kicks off
+ * discovery + the Custom Tab; the result lands in the `onResult` passed to
  * [rememberStorageAuthLauncher].
+ *
+ * The in-flight (option, url) is persisted via [Auth.savePendingStorageSignIn]
+ * rather than held in memory: the Custom Tab backgrounds the app for the
+ * whole login, long enough for the OS to kill the activity/process, so the
+ * redirect must be attributable from disk after a cold recreation.
  */
 class StorageAuthLauncher internal constructor(
     private val activity: ComponentActivity,
     private val launcher: ActivityResultLauncher<Intent>,
     private val onError: (String) -> Unit,
 ) {
-    /** The (option, url) pair whose sign-in is currently being processed. */
-    internal var pending: Pair<StorageOption, String>? = null
-        private set
-
     /**
      * Begin the OIDC Code + PKCE flow for [option] against [storageUrl].
      * Opens the storage AS in a Custom Tab. The success/failure callback
      * registered with [rememberStorageAuthLauncher] fires on return.
      */
     fun launch(option: StorageOption, storageUrl: String) {
-        pending = option to storageUrl
+        Auth.savePendingStorageSignIn(activity, option.name, storageUrl)
         OidcManager.startAuthFlow(
             activity = activity,
             launcher = launcher,
@@ -82,9 +82,16 @@ class StorageAuthLauncher internal constructor(
                 storageUrl = storageUrl.trim(),
                 clientId = BuildConfig.OHD_OIDC_CLIENT_ID,
                 redirectUri = BuildConfig.OHD_OIDC_REDIRECT,
+                // OHD Cloud → tell the storage AS the provider up front so it
+                // skips its picker page and redirects straight to sign-in.
+                additionalParams = if (option == StorageOption.OhdCloud) {
+                    mapOf("provider" to "ohd_account")
+                } else {
+                    emptyMap()
+                },
             ),
             onError = { msg ->
-                pending = null
+                Auth.clearPendingStorageSignIn(activity)
                 onError(msg)
             },
         )
@@ -106,26 +113,29 @@ fun rememberStorageAuthLauncher(
     activity: ComponentActivity,
     onResult: (StorageSignInResult) -> Unit,
 ): StorageAuthLauncher {
-    // Mutable holder so the result callback can read the in-flight pair
-    // after the launcher itself is constructed.
-    val holderRef = androidx.compose.runtime.remember {
-        arrayOfNulls<StorageAuthLauncher>(1)
-    }
     val ctx = activity
     val launcher = androidx.activity.compose.rememberLauncherForActivityResult(
         androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult(),
     ) { result ->
-        val holder = holderRef[0]
-        val pending = holder?.pending
         OidcManager.handleAuthResult(ctx, result.data) { outcome ->
+            // The in-flight option/url is read from disk, not memory — the
+            // result may be redelivered to a freshly recreated activity
+            // whose Compose state was wiped while the Custom Tab was up.
+            val pending = Auth.loadPendingStorageSignIn(ctx)
             outcome
                 .onSuccess {
-                    if (pending != null) {
-                        val (option, url) = pending
+                    val option = pending
+                        ?.let { (name, _) ->
+                            StorageOption.entries.firstOrNull { it.name == name }
+                        }
+                    if (pending != null && option != null) {
+                        val url = pending.second
                         Auth.saveStorageUrl(ctx, option.name, url)
                         Auth.saveStorageOption(ctx, option.name)
+                        Auth.clearPendingStorageSignIn(ctx)
                         onResult(StorageSignInResult.Success(option, url))
                     } else {
+                        Auth.clearPendingStorageSignIn(ctx)
                         onResult(
                             StorageSignInResult.Failure(
                                 "Signed in, but the storage option was lost — please retry.",
@@ -134,20 +144,20 @@ fun rememberStorageAuthLauncher(
                     }
                 }
                 .onFailure {
+                    Auth.clearPendingStorageSignIn(ctx)
                     onResult(
                         StorageSignInResult.Failure(it.message ?: "Sign-in failed"),
                     )
                 }
         }
     }
-    val holder = androidx.compose.runtime.remember(launcher) {
+    return androidx.compose.runtime.remember(launcher) {
         StorageAuthLauncher(
             activity = activity,
             launcher = launcher,
             onError = { msg -> onResult(StorageSignInResult.Failure(msg)) },
-        ).also { holderRef[0] = it }
+        )
     }
-    return holder
 }
 
 /** True iff [option] is a remote (non-on-device) storage option. */

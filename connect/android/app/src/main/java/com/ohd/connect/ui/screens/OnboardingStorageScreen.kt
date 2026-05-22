@@ -72,7 +72,12 @@ fun OnboardingStorageScreen(
     val persistedDefaultName = Auth.loadStorageOption(ctx, defaultName = StorageOption.OnDevice.name)
     val persistedDefault = StorageOption.entries.firstOrNull { it.name == persistedDefaultName }
         ?: StorageOption.OnDevice
-    var selected by remember { mutableStateOf(persistedDefault) }
+    // A pending storage sign-in means an OIDC Custom-Tab round-trip is still
+    // resolving after the app was recreated mid-login — pre-select that
+    // option so the user sees their in-progress choice, not a blank restart.
+    val pendingSignInOption = Auth.loadPendingStorageSignIn(ctx)?.first
+        ?.let { name -> StorageOption.entries.firstOrNull { it.name == name } }
+    var selected by remember { mutableStateOf(pendingSignInOption ?: persistedDefault) }
 
     var retention by remember { mutableStateOf(Auth.loadRetentionLimits(ctx)) }
     var dialogOpen by remember { mutableStateOf(false) }
@@ -88,7 +93,9 @@ fun OnboardingStorageScreen(
         )
     }
     var signInError by remember { mutableStateOf<String?>(null) }
-    var inFlightOption by remember { mutableStateOf<StorageOption?>(null) }
+    // Seeded from a pending sign-in so a recreate mid-Custom-Tab shows the
+    // card as "completing sign-in" until the redirect result is redelivered.
+    var inFlightOption by remember { mutableStateOf(pendingSignInOption) }
     val urlFields = remember {
         mutableStateMapOf<StorageOption, String>().apply {
             StorageOption.entries.forEach { opt ->
@@ -105,6 +112,11 @@ fun OnboardingStorageScreen(
                     signInError = null
                     signedInOption = result.option
                     selected = result.option
+                    // The user already chose this option and has now signed
+                    // in — there is nothing left to decide on the picker, so
+                    // proceed straight into the app instead of dropping them
+                    // back on the storage screen to tap "Continue".
+                    onContinue(result.option)
                 }
                 is StorageSignInResult.Failure -> {
                     signInError = result.message

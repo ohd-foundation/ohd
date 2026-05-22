@@ -430,6 +430,42 @@ object Auth {
     fun loadStorageUrl(ctx: Context, optionName: String): String? =
         prefs(ctx).getString(KEY_STORAGE_URL_PREFIX + optionName, null)
 
+    // ---- In-flight storage sign-in ----------------------------------------
+    //
+    // The OIDC Custom-Tab round-trip backgrounds the app for as long as the
+    // user spends on the login page — long enough that the OS (Samsung One UI
+    // especially) routinely kills the activity / whole process. On return the
+    // Compose tree is rebuilt from scratch, so any in-memory "which option is
+    // being signed in" state is gone and the redirect can't be attributed.
+    // Persisting the in-flight (option, url) here makes the sign-in survive a
+    // recreation: the redirect handler reads it back from disk.
+    private const val KEY_PENDING_SIGNIN_OPTION = "pending_signin_option_v1"
+    private const val KEY_PENDING_SIGNIN_URL = "pending_signin_url_v1"
+
+    /** Record the storage sign-in launched into a Custom Tab. */
+    fun savePendingStorageSignIn(ctx: Context, optionName: String, url: String) {
+        prefs(ctx).edit()
+            .putString(KEY_PENDING_SIGNIN_OPTION, optionName)
+            .putString(KEY_PENDING_SIGNIN_URL, url)
+            .apply()
+    }
+
+    /** The in-flight storage sign-in `(optionName, url)`, or null if none. */
+    fun loadPendingStorageSignIn(ctx: Context): Pair<String, String>? {
+        val p = prefs(ctx)
+        val opt = p.getString(KEY_PENDING_SIGNIN_OPTION, null) ?: return null
+        val url = p.getString(KEY_PENDING_SIGNIN_URL, null) ?: return null
+        return opt to url
+    }
+
+    /** Clear the in-flight storage sign-in once the redirect is processed. */
+    fun clearPendingStorageSignIn(ctx: Context) {
+        prefs(ctx).edit()
+            .remove(KEY_PENDING_SIGNIN_OPTION)
+            .remove(KEY_PENDING_SIGNIN_URL)
+            .apply()
+    }
+
     // =========================================================================
     // CORD provider API keys + stub toggle
     //
