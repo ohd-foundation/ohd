@@ -444,6 +444,24 @@ impl RemoteOhdStorage {
         Ok(outcomes.into_iter().map(put_outcome_rc_to_dto).collect())
     }
 
+    /// Fetch the agent tool catalog from the remote server as a JSON
+    /// string. Same shape the local uniffi `list_tools()` returns, so the
+    /// Kotlin CORD chat can use the catalog identically regardless of
+    /// storage backend.
+    pub fn list_tools(&self) -> Result<String> {
+        Ok(self.runtime.block_on(self.client.list_tools())?)
+    }
+
+    /// Dispatch one agent tool. `input_json` is the JSON the tool expects
+    /// (per the catalog); the response is the JSON the tool produces, with
+    /// tool-domain failures encoded as `{"error":"…"}`. RPC transport /
+    /// auth failures bubble out as the normal `RemoteError` variants.
+    pub fn execute_tool(&self, name: String, input_json: String) -> Result<String> {
+        Ok(self
+            .runtime
+            .block_on(self.client.execute_tool(&name, &input_json))?)
+    }
+
     /// Bulk hard-delete events matching the filter (`DeleteEvents` RPC).
     /// All fields optional; an unfiltered call wipes ALL events owned by the
     /// authenticated identity. Returns the number of `events` rows removed

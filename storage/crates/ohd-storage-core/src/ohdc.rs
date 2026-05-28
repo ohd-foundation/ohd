@@ -122,6 +122,50 @@ fn is_error(r: &PutEventResult) -> bool {
     matches!(r, PutEventResult::Error { .. })
 }
 
+/// `OhdcService.CountEvents` — pure SQL `COUNT(*)` over the same predicates
+/// QueryEvents honours (time bounds, event-type allow/deny, include_deleted).
+/// Channel predicates and grant-scope intersections are NOT applied; v0 is
+/// self-session only, so the dashboard tile's "events today / week / year"
+/// number is always against the owner's full data. Always audited.
+pub fn count_events(
+    storage: &Storage,
+    token: &ResolvedToken,
+    filter: &EventFilter,
+) -> Result<i64> {
+    auth::check_kind_for_op(token, OhdcOp::CountEvents)?;
+    let mut count: i64 = 0;
+    let res = storage.with_conn(|conn| {
+        count = events::count_events(conn, filter)?;
+        Ok(())
+    });
+    let outcome = match &res {
+        Ok(()) => AuditResult::Success,
+        Err(_) => AuditResult::Error,
+    };
+    storage.with_conn(|conn| {
+        audit::append(
+            conn,
+            &AuditEntry {
+                ts_ms: audit::now_ms(),
+                actor_type: actor_type_for(token.kind),
+                auto_granted: false,
+                grant_id: token.grant_id,
+                action: "read".into(),
+                query_kind: Some("count_events".into()),
+                query_params_json: Some(serde_json::to_string(filter)?),
+                rows_returned: None,
+                rows_filtered: Some(count),
+                result: outcome,
+                reason: None,
+                caller_ip: None,
+                caller_ua: None,
+                delegated_for_user_ulid: None,
+            },
+        )
+    })?;
+    res.map(|_| count)
+}
+
 /// `OhdcService.DeleteEvents` — bulk hard-delete events matching `filter`.
 /// Self-session only; grant / device tokens are rejected by
 /// [`auth::check_kind_for_op`]. Returns the number of `events` rows removed

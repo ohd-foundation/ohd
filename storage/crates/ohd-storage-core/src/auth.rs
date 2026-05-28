@@ -289,8 +289,15 @@ pub enum OhdcOp {
     PutEvents,
     /// `OhdcService.DeleteEvents` (self-session only — destructive bulk wipe)
     DeleteEvents,
+    /// `OhdcService.ListTools` — read the agent tool catalog.
+    ListTools,
+    /// `OhdcService.ExecuteTool` — dispatch one agent tool (self-session
+    /// only for v0; grant-scoped dispatch lands with `dispatch_scoped`).
+    ExecuteTool,
     /// `OhdcService.QueryEvents`
     QueryEvents,
+    /// `OhdcService.CountEvents` (same authz matrix as QueryEvents).
+    CountEvents,
     /// `OhdcService.GetEventByUlid`
     GetEventByUlid,
     /// `OhdcService.WhoAmI`

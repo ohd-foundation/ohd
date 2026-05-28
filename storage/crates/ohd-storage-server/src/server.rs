@@ -1154,6 +1154,53 @@ impl OhdcService for OhdcAdapter {
         }
     }
 
+    // ---- ListTools / ExecuteTool (agent tool catalog) ---------------------
+
+    fn list_tools<'a>(
+        &'a self,
+        ctx: RequestContext,
+        _request: pb::OwnedListToolsRequestView,
+    ) -> impl std::future::Future<
+        Output = ServiceResult<impl connectrpc::Encodable<pb::ListToolsResponse> + Send + use<'a>>,
+    > + Send {
+        async move {
+            let token = require_token(self, &ctx)?;
+            ohd_auth::check_kind_for_op(&token, ohd_auth::OhdcOp::ListTools)
+                .map_err(error_to_connect)?;
+            // Same catalog the local uniffi list_tools() returns — JSON only,
+            // no per-tool schema travels on the wire.
+            let resp = pb::ListToolsResponse {
+                catalog_json: ohd_mcp_core::catalog_json(),
+                ..Default::default()
+            };
+            Ok(ConnectResponse::new(resp))
+        }
+    }
+
+    fn execute_tool<'a>(
+        &'a self,
+        ctx: RequestContext,
+        request: pb::OwnedExecuteToolRequestView,
+    ) -> impl std::future::Future<
+        Output = ServiceResult<impl connectrpc::Encodable<pb::ExecuteToolResponse> + Send + use<'a>>,
+    > + Send {
+        async move {
+            let token = require_token(self, &ctx)?;
+            ohd_auth::check_kind_for_op(&token, ohd_auth::OhdcOp::ExecuteTool)
+                .map_err(error_to_connect)?;
+            let req = request.to_owned_message();
+            // dispatch_json never throws — tool-domain errors are encoded as
+            // `{"error":"…"}` inside the output. RPC transport / auth are the
+            // only failure modes that bubble out of this handler.
+            let output = ohd_mcp_core::dispatch_json(&req.name, &req.input_json, &self.storage);
+            let resp = pb::ExecuteToolResponse {
+                output_json: output,
+                ..Default::default()
+            };
+            Ok(ConnectResponse::new(resp))
+        }
+    }
+
     // ---- QueryEvents (server-streaming) ----------------------------------
 
     fn query_events(
@@ -1181,6 +1228,32 @@ impl OhdcService for OhdcAdapter {
             let boxed: ServiceStream<pb::Event> = Box::pin(stream)
                 as Pin<Box<dyn Stream<Item = Result<pb::Event, ConnectError>> + Send>>;
             Ok(ConnectResponse::new(boxed))
+        }
+    }
+
+    // ---- CountEvents ------------------------------------------------------
+
+    fn count_events<'a>(
+        &'a self,
+        ctx: RequestContext,
+        request: pb::OwnedCountEventsRequestView,
+    ) -> impl std::future::Future<
+        Output = ServiceResult<impl connectrpc::Encodable<pb::CountEventsResponse> + Send + use<'a>>,
+    > + Send {
+        async move {
+            let token = require_token(self, &ctx)?;
+            let owned = request.to_owned_message();
+            let filter = match owned.filter.into_option() {
+                Some(f) => event_filter_pb_to_core(f)?,
+                None => ohd_events::EventFilter::default(),
+            };
+            let n = ohd_ohdc::count_events(&self.storage, &token, &filter)
+                .map_err(error_to_connect)?;
+            let resp = pb::CountEventsResponse {
+                count: n,
+                ..Default::default()
+            };
+            Ok(ConnectResponse::new(resp))
         }
     }
 

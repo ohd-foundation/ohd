@@ -284,8 +284,21 @@ service OhdcService {
   // scoped by time-range / event types; empty filter = wipe ALL.
   rpc DeleteEvents(DeleteEventsRequest) returns (DeleteEventsResponse);
 
+  // ---- Agent tools (MCP catalog) ----
+  // List the in-process MCP tool catalog as JSON, and dispatch a tool by
+  // name with a JSON input. Backed by `ohd-mcp-core`; the same catalog the
+  // on-device CORD chat sees locally. Self-session only — grant tokens get
+  // a scoped variant in a later iteration.
+  rpc ListTools(ListToolsRequest) returns (ListToolsResponse);
+  rpc ExecuteTool(ExecuteToolRequest) returns (ExecuteToolResponse);
+
   // ---- Reads ----
   rpc QueryEvents(QueryEventsRequest) returns (stream Event);
+  // SQL `COUNT(*)` over the same filter as `QueryEvents`, without the
+  // streaming-row response cap. Backs the home-screen event-count tile so
+  // year-range queries return a true count instead of the stream's page
+  // size.
+  rpc CountEvents(CountEventsRequest) returns (CountEventsResponse);
   rpc GetEventByUlid(GetEventByUlidRequest) returns (Event);
   rpc Aggregate(AggregateRequest) returns (AggregateResponse);
   rpc Correlate(CorrelateRequest) returns (CorrelateResponse);
@@ -367,6 +380,31 @@ message DeleteEventsResponse {
   int64 deleted_count = 1;
 }
 
+// `ListTools` / `ExecuteTool` carry pre-serialized JSON so the wire shape
+// doesn't grow per-tool — the catalog + each tool's I/O is defined in
+// `ohd-mcp-core`, and the same JSON shapes ride locally (uniffi) and
+// remotely (this RPC pair).
+message ListToolsRequest {}
+
+message ListToolsResponse {
+  // The catalog as one JSON array of tool descriptors. Same payload as
+  // `ohd_mcp_core::catalog_json()` and the local uniffi `list_tools()`.
+  string catalog_json = 1;
+}
+
+message ExecuteToolRequest {
+  // Tool name from the catalog (e.g. `query_events`).
+  string name = 1;
+  // Tool input as a JSON object. Per-tool schema lives in the catalog.
+  string input_json = 2;
+}
+
+message ExecuteToolResponse {
+  // Tool result as JSON. Errors are also JSON (`{"error":"…"}`); the RPC
+  // itself only fails for transport or authz, never for tool-domain errors.
+  string output_json = 1;
+}
+
 message PutEventResult {
   oneof outcome {
     PutEventCommitted committed = 1;
@@ -412,6 +450,18 @@ message AttachBlobResponse {
 
 message QueryEventsRequest {
   EventFilter filter = 1;
+}
+
+message CountEventsRequest {
+  // Same filter shape as QueryEvents. `limit` inside the filter is ignored
+  // by the server — this is an unbounded COUNT(*); use QueryEvents if you
+  // want capped row materialization.
+  EventFilter filter = 1;
+}
+
+message CountEventsResponse {
+  // Number of events matching the filter.
+  int64 count = 1;
 }
 
 message GetEventByUlidRequest {

@@ -334,6 +334,36 @@ impl OhdcRemoteClient {
             .collect())
     }
 
+    /// `ListTools` — fetch the agent tool catalog as a JSON string. Same
+    /// shape the local uniffi `list_tools()` returns; CORD on a remote-
+    /// storage device calls this so it can run tools against the cloud DB.
+    pub async fn list_tools(&self) -> Result<String> {
+        let req = pb::ListToolsRequest::default();
+        let resp = self
+            .client
+            .list_tools_with_options(req, self.auth_options())
+            .await
+            .map_err(map_connect_error)?;
+        Ok(resp.into_owned().catalog_json)
+    }
+
+    /// `ExecuteTool` — dispatch one tool by name. Tool-domain errors are
+    /// encoded as JSON inside the returned string; the RPC only fails for
+    /// transport / authz issues.
+    pub async fn execute_tool(&self, name: &str, input_json: &str) -> Result<String> {
+        let req = pb::ExecuteToolRequest {
+            name: name.to_string(),
+            input_json: input_json.to_string(),
+            ..Default::default()
+        };
+        let resp = self
+            .client
+            .execute_tool_with_options(req, self.auth_options())
+            .await
+            .map_err(map_connect_error)?;
+        Ok(resp.into_owned().output_json)
+    }
+
     /// `DeleteEvents` — bulk hard-delete events matching `filter`. Empty
     /// filter wipes ALL events owned by the authenticated identity. Returns
     /// the number of `events` rows removed (cascaded channels not counted).
@@ -379,9 +409,21 @@ impl OhdcRemoteClient {
     /// dedicated count RPC, so this drains `QueryEvents` and counts the
     /// rows — the same observable result the local `count_events` produces,
     /// at the cost of materialising the stream. The Home stat tile is the
-    /// only caller and its filters are time-bounded.
+    /// `CountEvents` — pure SQL `COUNT(*)` on the server. Honours the same
+    /// time / event-type / deleted predicates as `query_events` but is not
+    /// capped by the streaming-row page size, so the home-screen tile shows
+    /// a real count even when the user has millions of events.
     pub async fn count_events(&self, filter: EventFilter) -> Result<u64> {
-        Ok(self.query_events(filter).await?.len() as u64)
+        let req = pb::CountEventsRequest {
+            filter: ::buffa::MessageField::some(convert::event_filter_to_pb(filter)),
+            ..Default::default()
+        };
+        let resp = self
+            .client
+            .count_events_with_options(req, self.auth_options())
+            .await
+            .map_err(map_connect_error)?;
+        Ok(resp.into_owned().count.max(0) as u64)
     }
 
     // -------------------------------------------------------------------------
