@@ -13,12 +13,11 @@
      icon) and adb fire a specific intent directly. Standalone, works on
      Android 7.1+.
 
-  Today's content is the **Gemini-trigger proof point**: a single intent
-  that, however it's reached (capability matched by Gemini, shortcut
-  long-pressed in the launcher, or fired with adb), causes the app to drop
-  one `food.eaten` event tagged as a Gemini-trigger marker. Lets us verify
-  end-to-end that an external invocation reached the app, without needing
-  the real per-domain flows wired yet.
+  Today's content is a single **log_food** action — bounded but real (it
+  writes the actual food.eaten event Compose call sites would, just with
+  defaults when the invoker doesn't supply a parameter). Trigger via the
+  launcher long-press shortcut, adb, or Assistant / Gemini matching the
+  `actions.intent.CREATE_THING` BII.
 
   For the modern equivalent that fully replaces this — Gemini's App
   Functions API — see `spec/docs/future-implementations/gemini-app-functions.md`.
@@ -31,26 +30,34 @@
 
     <!-- Capability: maps the `actions.intent.CREATE_THING` BII (extensible
          "create a thing" Built-In Intent — closest match for "log
-         something") to our marker action. When Gemini resolves a user
-         utterance like "log a meal in OHD Connect" to this BII, it fires
-         the intent below. -->
+         something") to LOG_FOOD. Gemini extracts the food name into the
+         `thing.name` slot, which becomes our `name` intent extra.
+
+         No grams parameter at the BII level — CREATE_THING doesn't have a
+         "quantity" slot, so the handler defaults to 100 g when Gemini is
+         the trigger. adb + future custom BIIs can pass an explicit grams. -->
     <capability android:name="actions.intent.CREATE_THING">
         <intent
-            android:action="com.ohd.connect.action.GEMINI_TEST_MARKER"
+            android:action="com.ohd.connect.action.LOG_FOOD"
             android:targetPackage="com.ohd.connect"
-            android:targetClass="com.ohd.connect.MainActivity" />
+            android:targetClass="com.ohd.connect.MainActivity">
+            <parameter
+                android:name="thing.name"
+                android:key="name" />
+        </intent>
     </capability>
 
-    <!-- Static shortcut: a launcher long-press / adb entry-point that fires
-         the same intent. Useful for development + as a fallback that
-         doesn't depend on Gemini matching the capability. -->
+    <!-- Static shortcut: launcher long-press / adb entry point that fires
+         the same intent. With no extras supplied here, the handler uses
+         its defaults (`Quick log`, 100 g) so even the unparameterised path
+         lands a real food event. -->
     <shortcut
-        android:shortcutId="gemini_test_marker"
+        android:shortcutId="log_food_quick"
         android:enabled="true"
-        android:shortcutShortLabel="@string/shortcut_gemini_marker_short"
-        android:shortcutLongLabel="@string/shortcut_gemini_marker_long">
+        android:shortcutShortLabel="@string/shortcut_log_food_short"
+        android:shortcutLongLabel="@string/shortcut_log_food_long">
         <intent
-            android:action="com.ohd.connect.action.GEMINI_TEST_MARKER"
+            android:action="com.ohd.connect.action.LOG_FOOD"
             android:targetPackage="com.ohd.connect"
             android:targetClass="com.ohd.connect.MainActivity" />
         <categories android:name="android.shortcut.conversation" />

@@ -71,10 +71,22 @@ class MainActivity : ComponentActivity() {
 
         /**
          * Intent action fired by the App Shortcut + App Actions capability
-         * declared in `res/xml/shortcuts.xml`. The Gemini-trigger proof
-         * point — see [handleGeminiMarkerIntent].
+         * declared in `res/xml/shortcuts.xml`. Logs one `food.eaten` event
+         * with `name` / `grams` parsed from the intent extras (defaults
+         * applied when the invoker didn't supply them) — see
+         * [handleLogFoodIntent].
          */
-        const val ACTION_GEMINI_TEST_MARKER = "com.ohd.connect.action.GEMINI_TEST_MARKER"
+        const val ACTION_LOG_FOOD = "com.ohd.connect.action.LOG_FOOD"
+
+        /** Intent extra: food name as `String`. */
+        const val EXTRA_FOOD_NAME = "name"
+
+        /**
+         * Intent extra: amount in grams. Accepts `Double` / `Float` / `Int`,
+         * or a `String` that parses as a number — Gemini and `adb am --es`
+         * both pass primitives as strings.
+         */
+        const val EXTRA_FOOD_GRAMS = "grams"
     }
 
     /** Route the launching intent asked us to land on, if any. */
@@ -84,7 +96,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         StorageRepository.init(applicationContext)
         pendingRoute = intent?.getStringExtra(EXTRA_START_ROUTE)
-        handleGeminiMarkerIntent(intent)
+        handleLogFoodIntent(intent)
         setContent {
             OhdTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
@@ -106,27 +118,36 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         intent.getStringExtra(EXTRA_START_ROUTE)?.let { pendingRoute = it }
-        handleGeminiMarkerIntent(intent)
+        handleLogFoodIntent(intent)
     }
 
     /**
-     * Gemini / Assistant / Shortcut → app proof point. If [intent]'s action
-     * matches [ACTION_GEMINI_TEST_MARKER], drop one `food.eaten` event
-     * tagged `notes = "gemini:marker"` and `name = "Gemini test marker"`
-     * (zero kcal). Lets us verify externally-driven invocations end-to-end
-     * without the per-domain App Functions surface wired yet — `query_events`
-     * filtered to `event_type = food.eaten` and matching the marker notes
-     * shows whether (and when) Gemini reached the app.
+     * Gemini / Assistant / App Shortcut → log a food event. Parses
+     * [EXTRA_FOOD_NAME] (default "Quick log") and [EXTRA_FOOD_GRAMS]
+     * (default 100 g, accepts numeric or string extras) from [intent] and
+     * writes one `food.eaten` event with notes `gemini:log_food` so the
+     * provenance is queryable.
      *
-     * Best-effort: dispatched on a background thread so the activity
-     * launch isn't held up; any storage failure is logged and swallowed
-     * (this surface only fires for opt-in invocations).
+     * Trigger paths:
+     *  - launcher long-press → "Quick-log a food" shortcut (defaults only);
+     *  - adb: `am start -a com.ohd.connect.action.LOG_FOOD
+     *    -n com.ohd.connect/.MainActivity --es name "banana" --es grams 120`;
+     *  - Google Assistant / Gemini matching the
+     *    `actions.intent.CREATE_THING` capability declared in
+     *    `res/xml/shortcuts.xml` (`thing.name` → `name` extra).
+     *
+     * Best-effort: runs on a background thread so launch isn't held up;
+     * any storage failure is logged and swallowed (the surface only fires
+     * for opt-in invocations).
      */
-    private fun handleGeminiMarkerIntent(intent: Intent?) {
-        if (intent?.action != ACTION_GEMINI_TEST_MARKER) return
-        // Capture the invocation timestamp synchronously so the event row
-        // reflects when Gemini called, not when the IO thread happens to run.
+    private fun handleLogFoodIntent(intent: Intent?) {
+        if (intent?.action != ACTION_LOG_FOOD) return
+        // Capture invocation timestamp + extras synchronously so the row
+        // reflects when the invoker called, not when the IO thread runs.
         val ts = System.currentTimeMillis()
+        val name = intent.getStringExtra(EXTRA_FOOD_NAME)?.takeIf { it.isNotBlank() }
+            ?: "Quick log"
+        val grams = parseGramsExtra(intent) ?: 100.0
         Thread {
             runCatching {
                 StorageRepository.init(applicationContext)
@@ -136,25 +157,45 @@ class MainActivity : ComponentActivity() {
                     channels = listOf(
                         com.ohd.connect.data.EventChannelInput(
                             path = "name",
-                            scalar = com.ohd.connect.data.OhdScalar.Text("Gemini test marker"),
+                            scalar = com.ohd.connect.data.OhdScalar.Text(name),
                         ),
                         com.ohd.connect.data.EventChannelInput(
                             path = "grams",
-                            scalar = com.ohd.connect.data.OhdScalar.Real(0.0),
+                            scalar = com.ohd.connect.data.OhdScalar.Real(grams),
                         ),
                     ),
-                    notes = "gemini:marker",
+                    notes = "gemini:log_food",
                     topLevel = true,
                 )
                 val outcome = StorageRepository.putEvent(input).getOrNull()
                 android.util.Log.i(
                     "OhdConnect.Gemini",
-                    "marker intent → $outcome (action=${intent.action})",
+                    "log_food intent → $outcome (name=$name grams=$grams)",
                 )
             }.onFailure { e ->
-                android.util.Log.w("OhdConnect.Gemini", "marker write failed", e)
+                android.util.Log.w("OhdConnect.Gemini", "log_food write failed", e)
             }
         }.start()
+    }
+
+    /**
+     * Coerce the grams extra into a Double. Accepts numeric primitives or
+     * strings (`adb am --es` and Assistant always hand strings).
+     */
+    private fun parseGramsExtra(intent: Intent): Double? {
+        if (intent.hasExtra(EXTRA_FOOD_GRAMS)) {
+            // Try the most precise types first.
+            intent.extras?.let { b ->
+                b.getString(EXTRA_FOOD_GRAMS)?.toDoubleOrNull()?.let { return it }
+            }
+            val asDouble = intent.getDoubleExtra(EXTRA_FOOD_GRAMS, Double.NaN)
+            if (!asDouble.isNaN()) return asDouble
+            val asFloat = intent.getFloatExtra(EXTRA_FOOD_GRAMS, Float.NaN)
+            if (!asFloat.isNaN()) return asFloat.toDouble()
+            val asInt = intent.getIntExtra(EXTRA_FOOD_GRAMS, Int.MIN_VALUE)
+            if (asInt != Int.MIN_VALUE) return asInt.toDouble()
+        }
+        return null
     }
 }
 
