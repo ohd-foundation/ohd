@@ -427,6 +427,23 @@ impl RemoteOhdStorage {
         Ok(put_outcome_rc_to_dto(outcome))
     }
 
+    /// Write a batch of events in a single `PutEvents` RPC — one round trip
+    /// for the whole list instead of one per event. `atomic = true` asks the
+    /// server to commit all-or-nothing. Returns one outcome per input, in
+    /// order. The bulk path for Health Connect sync, importers, and
+    /// multi-event logs.
+    pub fn put_events(
+        &self,
+        inputs: Vec<EventInputDto>,
+        atomic: bool,
+    ) -> Result<Vec<PutEventOutcomeDto>> {
+        let core_inputs = inputs.into_iter().map(event_input_dto_to_rc).collect();
+        let outcomes = self
+            .runtime
+            .block_on(self.client.put_events(core_inputs, atomic))?;
+        Ok(outcomes.into_iter().map(put_outcome_rc_to_dto).collect())
+    }
+
     /// Read events under a filter (`QueryEvents` server-streaming RPC,
     /// collected into a `Vec`). Mirrors the local
     /// [`OhdStorage::query_events`](crate::OhdStorage::query_events).

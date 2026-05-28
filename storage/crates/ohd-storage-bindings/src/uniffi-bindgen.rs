@@ -1,14 +1,25 @@
 //! Standalone `uniffi-bindgen` binary.
 //!
 //! Generates Kotlin / Swift / Python source files from this crate's exposed
-//! uniffi metadata. Invoke as:
+//! uniffi metadata. From the workspace root invoke as:
 //!
 //! ```text
-//! cargo run --features cli --bin uniffi-bindgen -- generate \
-//!     --library target/release/libohd_storage_bindings.so \
+//! cargo run -p ohd-storage-bindings --features cli --bin uniffi-bindgen -- \
+//!     generate \
+//!     --library storage/target/debug/libohd_storage_bindings.so \
 //!     --language kotlin \
-//!     --out-dir ../../../connect/android/app/src/main/java/uniffi
+//!     --out-dir connect/android/app/src/main/java
 //! ```
+//!
+//! Two gotchas worth knowing:
+//!  - **Use the debug `.so`, not release.** The release profile strips the
+//!    uniffi metadata symbols `--library` mode reads, so a release-built
+//!    cdylib silently produces zero output (exit 0, no files written).
+//!    Build with `cargo build -p ohd-storage-bindings` (debug) first.
+//!  - **`--out-dir` is the Kotlin source root** (`.../java`), not the
+//!    `uniffi/` package directory. The bindgen appends `uniffi/<namespace>/`
+//!    itself, so pointing at `.../java/uniffi` writes a double-`uniffi/`
+//!    path that the app never sees.
 //!
 //! `--library` mode reads metadata directly out of the compiled cdylib,
 //! sidestepping the need for a separate `.udl` file (we use uniffi 0.28's

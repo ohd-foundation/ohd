@@ -163,7 +163,13 @@ fn map_connect_error(err: connectrpc::ConnectError) -> RemoteError {
             }
         }
         ErrorCode::NotFound => RemoteError::NotFound,
-        ErrorCode::Unavailable | ErrorCode::DeadlineExceeded => RemoteError::Transport { message },
+        ErrorCode::Unavailable | ErrorCode::DeadlineExceeded => {
+            // Surface the real transport cause (TLS handshake / DNS / connect
+            // refused / timeout) to logcat — the Android UI otherwise folds
+            // every Unavailable into a single generic "unreachable" string.
+            tracing::warn!(code = ?err.code, detail = %message, "remote RPC transport failure");
+            RemoteError::Transport { message }
+        }
         _ => RemoteError::Internal {
             code: if code.is_empty() {
                 format!("{:?}", err.code)
@@ -293,9 +299,26 @@ impl OhdcRemoteClient {
 
     /// `PutEvents` for a single event — mirrors the local `put_event`.
     pub async fn put_event(&self, input: EventInput) -> Result<PutEventOutcome> {
+        let results = self.put_events(vec![input], false).await?;
+        results.into_iter().next().ok_or_else(|| RemoteError::Internal {
+            code: "INTERNAL".to_string(),
+            message: "PutEvents returned no results".to_string(),
+        })
+    }
+
+    /// `PutEvents` for a batch — one RPC for the whole list, returning one
+    /// outcome per input in order. `atomic = true` asks the server to commit
+    /// all-or-nothing. This is the path bulk writers (Health Connect sync,
+    /// importers, multi-event logs) should use to avoid one round-trip per
+    /// event.
+    pub async fn put_events(
+        &self,
+        inputs: Vec<EventInput>,
+        atomic: bool,
+    ) -> Result<Vec<PutEventOutcome>> {
         let req = pb::PutEventsRequest {
-            events: vec![convert::event_input_to_pb(input)],
-            atomic: false,
+            events: inputs.into_iter().map(convert::event_input_to_pb).collect(),
+            atomic,
             ..Default::default()
         };
         let resp = self
@@ -303,14 +326,12 @@ impl OhdcRemoteClient {
             .put_events_with_options(req, self.auth_options())
             .await
             .map_err(map_connect_error)?;
-        let mut owned = resp.into_owned();
-        let first = owned.results.drain(..).next().ok_or_else(|| {
-            RemoteError::Internal {
-                code: "INTERNAL".to_string(),
-                message: "PutEvents returned no results".to_string(),
-            }
-        })?;
-        Ok(convert::put_event_result_from_pb(first))
+        let owned = resp.into_owned();
+        Ok(owned
+            .results
+            .into_iter()
+            .map(convert::put_event_result_from_pb)
+            .collect())
     }
 
     /// `QueryEvents` (server-streaming) — collected into a `Vec` so the
@@ -517,8 +538,16 @@ impl OhdcRemoteClient {
 
 /// Default rustls client config for `https://` endpoints: the Mozilla root
 /// store, ring crypto provider, no client auth.
+///
+/// Roots come from the bundled `webpki-roots` Mozilla set first — this is the
+/// only source that works on Android, where the OS trust store is *not* at the
+/// Linux file paths [`webpki_root_certs`] scans (so that path returns nothing
+/// and TLS to a public Caddy cert would otherwise fail with "unable to
+/// connect"). The OS-store scan is then layered on additively, so a
+/// server/desktop still trusts any private/enterprise roots it has installed.
 fn default_tls_config() -> Arc<rustls::ClientConfig> {
     let mut roots = rustls::RootCertStore::empty();
+    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
     for cert in webpki_root_certs() {
         // `add` parses the DER trust anchor; skip any cert the platform
         // bundle ships that rustls can't parse rather than failing the build.

@@ -1195,23 +1195,34 @@ impl OhdStorage {
             .map_err(Into::into)
     }
 
-    /// Write one event. The full batch RPC (`put_events`) is wrapped one-at-
-    /// a-time here because uniffi 0.28's record support over Vec<…>-of-records
-    /// is fine, but Kotlin call sites for "log a single thing" are more
-    /// readable when the API takes one at a time.
-    ///
-    /// For bulk imports, call this in a loop or wait for the future
-    /// `put_events_batch` deliverable.
+    /// Write one event. A single-element [`Self::put_events`]; kept as its own
+    /// method because Kotlin "log one thing" call sites read better.
     pub fn put_event(&self, input: EventInputDto) -> Result<PutEventOutcomeDto> {
-        let core_input = input.into_core()?;
+        let mut results = self.put_events(vec![input], false)?;
+        Ok(results.remove(0))
+    }
+
+    /// Write a batch of events in one transaction. `atomic = true` commits
+    /// all-or-nothing; `false` commits each independently (the default for
+    /// best-effort bulk imports). Returns one outcome per input, in order.
+    /// The bulk path for Health Connect sync, importers, and multi-event logs.
+    pub fn put_events(
+        &self,
+        inputs: Vec<EventInputDto>,
+        atomic: bool,
+    ) -> Result<Vec<PutEventOutcomeDto>> {
+        let core_inputs = inputs
+            .into_iter()
+            .map(|i| i.into_core())
+            .collect::<Result<Vec<_>>>()?;
         let envelope = self.inner.envelope_key().cloned();
-        let mut results = self
+        let results = self
             .inner
             .with_conn_mut(|conn| {
-                core::events::put_events(conn, &[core_input], None, false, envelope.as_ref())
+                core::events::put_events(conn, &core_inputs, None, atomic, envelope.as_ref())
             })
             .map_err(OhdError::from)?;
-        Ok(PutEventOutcomeDto::from_core(results.remove(0)))
+        Ok(results.into_iter().map(PutEventOutcomeDto::from_core).collect())
     }
 
     /// Read events under a filter. Returns the matching event rows in the

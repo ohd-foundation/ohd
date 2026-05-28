@@ -51,6 +51,11 @@ http-body = { workspace = true }
 rustls = { workspace = true }
 # Async TLS adapter, same `ring` pin.
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+# Bundled Mozilla CA roots. Required so TLS works on Android, where the OS
+# trust store is not at the Linux file paths the OS-store fallback scans —
+# without this the root store is empty and HTTPS to storage.ohd.dev (a public
+# Caddy/Let's Encrypt cert) fails with a connect error.
+webpki-roots = "1"
 thiserror = { workspace = true }
 tracing = { workspace = true }
 
