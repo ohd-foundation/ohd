@@ -90,6 +90,31 @@ pub async fn delete_one(
     Ok(Json(json!({ "ok": true })))
 }
 
+/// Body for `PATCH /v1/sources/:id` — only the UI label is editable.
+#[derive(Deserialize)]
+pub struct RenameBody {
+    pub label: String,
+}
+
+/// Rename a source's UI label. Doesn't touch credentials, endpoint, scope,
+/// or reachability — pure presentation. Trims whitespace; rejects empty.
+pub async fn rename(
+    user: CurrentUser,
+    State(app): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<RenameBody>,
+) -> ApiResult<Json<Value>> {
+    let label = body.label.trim();
+    if label.is_empty() {
+        return Err(ApiError::BadRequest("label cannot be empty".into()));
+    }
+    if label.len() > 200 {
+        return Err(ApiError::BadRequest("label too long (max 200 chars)".into()));
+    }
+    app.db.rename_source(&user.0, &id, label)?;
+    Ok(Json(json!({ "source": app.db.get_source(&user.0, &id)? })))
+}
+
 /// Re-probe reachability. A `direct` source gets a real HTTP probe; a
 /// `relay` source gets a real relay-tunnel reachability check — open the
 /// tunnel, complete the pinned inner-TLS handshake, run MCP `initialize`.

@@ -41,7 +41,9 @@ pub fn build_router(db: Db, config: Config) -> Router {
         .route("/v1/sources/connect", post(routes::sources::connect))
         .route(
             "/v1/sources/:id",
-            get(routes::sources::get_one).delete(routes::sources::delete_one),
+            get(routes::sources::get_one)
+                .patch(routes::sources::rename)
+                .delete(routes::sources::delete_one),
         )
         .route("/v1/sources/:id/refresh", post(routes::sources::refresh))
         .route("/v1/sources/:id/summary", get(routes::sources::summary))

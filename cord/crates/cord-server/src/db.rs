@@ -229,6 +229,22 @@ impl Db {
         Ok(())
     }
 
+    /// Rename a source. Pure presentation — no probe / scope / token bytes
+    /// change, just the UI label. 404s if the source doesn't belong to the
+    /// caller (the `WHERE cord_user_ulid` clause).
+    pub fn rename_source(&self, user: &str, id: &str, label: &str) -> ApiResult<()> {
+        let conn = self.pool.get()?;
+        let n = conn.execute(
+            "UPDATE data_sources SET label = ?1
+             WHERE cord_user_ulid = ?2 AND id = ?3",
+            params![label, user, id],
+        )?;
+        if n == 0 {
+            return Err(ApiError::NotFound);
+        }
+        Ok(())
+    }
+
     /// Update a source's reachability status; `ok = true` also stamps
     /// `last_ok_at`.
     pub fn set_source_status(&self, user: &str, id: &str, status: &str, ok: bool) -> ApiResult<()> {

@@ -21,6 +21,12 @@ export default function ConnectionPage() {
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
 
+  // Inline rename: clicking the header swaps `<h1>` for an `<input>` until
+  // the user blurs, presses Enter, or cancels with Escape. The server side
+  // is a PATCH on `/v1/sources/:id`; the change is presentation-only.
+  const [renaming, setRenaming] = useState(false);
+  const [draftLabel, setDraftLabel] = useState("");
+
   const [summary, setSummary] = useState<ConnectionSummary | null>(null);
   const [summaryLoading, setSummaryLoading] = useState(true);
 
@@ -85,6 +91,39 @@ export default function ConnectionPage() {
     }
   };
 
+  const onStartRename = () => {
+    if (!conn) return;
+    setDraftLabel(conn.label);
+    setRenaming(true);
+    setActionError(null);
+  };
+
+  const onCancelRename = () => {
+    setRenaming(false);
+    setDraftLabel("");
+  };
+
+  const onCommitRename = async () => {
+    if (!conn) return;
+    const next = draftLabel.trim();
+    if (!next || next === conn.label) {
+      onCancelRename();
+      return;
+    }
+    setBusy(true);
+    setActionError(null);
+    try {
+      await api.renameConnection(connId!, next);
+      await reload();
+      setRenaming(false);
+      setDraftLabel("");
+    } catch (e) {
+      setActionError(e instanceof ApiError ? e.message : "Rename failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const onDisconnect = async () => {
     if (!confirm("Disconnect this connection? The stored credential is wiped."))
       return;
@@ -104,12 +143,51 @@ export default function ConnectionPage() {
     <div className="page">
       <div className="page-head">
         <div>
-          <h1>{conn.label}</h1>
+          {renaming ? (
+            <div className="row" style={{ gap: 8, alignItems: "center" }}>
+              <input
+                autoFocus
+                value={draftLabel}
+                disabled={busy}
+                onChange={(e) => setDraftLabel(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") onCommitRename();
+                  else if (e.key === "Escape") onCancelRename();
+                }}
+                placeholder="Connection name"
+                maxLength={200}
+                style={{ fontSize: 22, fontWeight: 600, padding: "4px 8px" }}
+              />
+              <button
+                className="small"
+                disabled={busy || !draftLabel.trim()}
+                onClick={onCommitRename}
+              >
+                Save
+              </button>
+              <button className="small" disabled={busy} onClick={onCancelRename}>
+                Cancel
+              </button>
+            </div>
+          ) : (
+            <h1
+              onClick={onStartRename}
+              title="Click to rename"
+              style={{ cursor: "text" }}
+            >
+              {conn.label}
+            </h1>
+          )}
           <p>
             <StatusPill status={conn.status} /> {conn.kind} · {conn.endpoint}
           </p>
         </div>
         <div className="row">
+          {!renaming && (
+            <button className="small" disabled={busy} onClick={onStartRename}>
+              Rename
+            </button>
+          )}
           <button className="small" disabled={busy} onClick={onRefresh}>
             Refresh
           </button>

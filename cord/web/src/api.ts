@@ -202,6 +202,19 @@ export const api = {
     return request("POST", `/v1/sources/${encodeURIComponent(id)}/refresh`);
   },
 
+  /**
+   * Rename a connection's UI label. Pure presentation — doesn't change the
+   * stored credential, endpoint, scope, or reachability.
+   */
+  renameConnection(
+    id: string,
+    label: string,
+  ): Promise<{ source: Connection }> {
+    return request("PATCH", `/v1/sources/${encodeURIComponent(id)}`, {
+      label,
+    });
+  },
+
   connectionSummary(id: string): Promise<ConnectionSummary> {
     return request("GET", `/v1/sources/${encodeURIComponent(id)}/summary`);
   },
