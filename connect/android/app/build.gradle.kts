@@ -19,8 +19,8 @@ android {
         applicationId = "com.ohd.connect"
         minSdk = 29
         targetSdk = 34
-        versionCode = 59
-        versionName = "0.1.0-beta59"
+        versionCode = 60
+        versionName = "0.1.0-beta60"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         // The cdylibs Stage 1 (cargo-ndk) drops into
