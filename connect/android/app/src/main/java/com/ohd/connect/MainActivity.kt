@@ -68,6 +68,13 @@ class MainActivity : ComponentActivity() {
          * notification so tapping it opens the app on the Shares screen.
          */
         const val EXTRA_START_ROUTE = "com.ohd.connect.extra.START_ROUTE"
+
+        /**
+         * Intent action fired by the App Shortcut + App Actions capability
+         * declared in `res/xml/shortcuts.xml`. The Gemini-trigger proof
+         * point — see [handleGeminiMarkerIntent].
+         */
+        const val ACTION_GEMINI_TEST_MARKER = "com.ohd.connect.action.GEMINI_TEST_MARKER"
     }
 
     /** Route the launching intent asked us to land on, if any. */
@@ -77,6 +84,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         StorageRepository.init(applicationContext)
         pendingRoute = intent?.getStringExtra(EXTRA_START_ROUTE)
+        handleGeminiMarkerIntent(intent)
         setContent {
             OhdTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
@@ -98,6 +106,55 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         intent.getStringExtra(EXTRA_START_ROUTE)?.let { pendingRoute = it }
+        handleGeminiMarkerIntent(intent)
+    }
+
+    /**
+     * Gemini / Assistant / Shortcut → app proof point. If [intent]'s action
+     * matches [ACTION_GEMINI_TEST_MARKER], drop one `food.eaten` event
+     * tagged `notes = "gemini:marker"` and `name = "Gemini test marker"`
+     * (zero kcal). Lets us verify externally-driven invocations end-to-end
+     * without the per-domain App Functions surface wired yet — `query_events`
+     * filtered to `event_type = food.eaten` and matching the marker notes
+     * shows whether (and when) Gemini reached the app.
+     *
+     * Best-effort: dispatched on a background thread so the activity
+     * launch isn't held up; any storage failure is logged and swallowed
+     * (this surface only fires for opt-in invocations).
+     */
+    private fun handleGeminiMarkerIntent(intent: Intent?) {
+        if (intent?.action != ACTION_GEMINI_TEST_MARKER) return
+        // Capture the invocation timestamp synchronously so the event row
+        // reflects when Gemini called, not when the IO thread happens to run.
+        val ts = System.currentTimeMillis()
+        Thread {
+            runCatching {
+                StorageRepository.init(applicationContext)
+                val input = com.ohd.connect.data.EventInput(
+                    timestampMs = ts,
+                    eventType = "food.eaten",
+                    channels = listOf(
+                        com.ohd.connect.data.EventChannelInput(
+                            path = "name",
+                            scalar = com.ohd.connect.data.OhdScalar.Text("Gemini test marker"),
+                        ),
+                        com.ohd.connect.data.EventChannelInput(
+                            path = "grams",
+                            scalar = com.ohd.connect.data.OhdScalar.Real(0.0),
+                        ),
+                    ),
+                    notes = "gemini:marker",
+                    topLevel = true,
+                )
+                val outcome = StorageRepository.putEvent(input).getOrNull()
+                android.util.Log.i(
+                    "OhdConnect.Gemini",
+                    "marker intent → $outcome (action=${intent.action})",
+                )
+            }.onFailure { e ->
+                android.util.Log.w("OhdConnect.Gemini", "marker write failed", e)
+            }
+        }.start()
     }
 }
 

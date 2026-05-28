@@ -176,6 +176,28 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+
+            <!--
+                Gemini-trigger proof-point intent. Fired by:
+                  - the static `gemini_test_marker` shortcut (launcher
+                    long-press, adb shell `cmd shortcut start-shortcut …`);
+                  - Google Assistant / on-device Gemini via the
+                    `actions.intent.CREATE_THING` capability declared in
+                    `res/xml/shortcuts.xml`.
+                MainActivity.onCreate / onNewIntent detects the action and
+                drops one `food.eaten` event with `notes = "gemini:marker"`
+                so we can verify externally-driven invocations end-to-end
+                without the per-domain App Functions surface wired yet.
+            -->
+            <intent-filter>
+                <action android:name="com.ohd.connect.action.GEMINI_TEST_MARKER" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+
+            <!-- App Shortcuts + App Actions capability declarations. -->
+            <meta-data
+                android:name="android.app.shortcuts"
+                android:resource="@xml/shortcuts" />
         </activity>
 
         <!--

@@ -1,4 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">OHD Connect</string>
+
+    <!-- App Shortcuts / App Actions labels. The marker shortcut is the
+         Gemini-trigger proof point — see res/xml/shortcuts.xml. -->
+    <string name="shortcut_gemini_marker_short">Drop test marker</string>
+    <string name="shortcut_gemini_marker_long">Log a Gemini-trigger test marker (food.eaten with notes \"gemini:marker\")</string>
 </resources>
