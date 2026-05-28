@@ -39,6 +39,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ohd.connect.data.Auth
+import com.ohd.connect.data.OhdAccountStore
+import com.ohd.connect.data.Plan
 import com.ohd.connect.data.StorageRepository
 import com.ohd.connect.ui.components.OhdButton
 import com.ohd.connect.ui.components.OhdButtonVariant
@@ -293,6 +295,23 @@ fun StorageSettingsScreen(
                     identity = signedInIdentity,
                     signOutInFlight = signOutInFlight,
                     onSignOut = signOut,
+                )
+                // Plan tier (Free / Paid) with the server-side limits the
+                // SaaS layer enforces. Upgrade is a stub for now — points
+                // at the roadmap section until the real Stripe flow ships.
+                val account = remember {
+                    OhdAccountStore.load(ctx) ?: OhdAccountStore.mintFree(ctx)
+                }
+                PlanCard(
+                    plan = account.plan,
+                    onUpgrade = {
+                        ctx.startActivity(
+                            android.content.Intent(
+                                android.content.Intent.ACTION_VIEW,
+                                android.net.Uri.parse("https://ohd.dev/roadmap.html#payments"),
+                            ),
+                        )
+                    },
                 )
             }
 
@@ -656,6 +675,69 @@ private fun SignedInCard(
             variant = OhdButtonVariant.Destructive,
             enabled = !signOutInFlight,
         )
+    }
+}
+
+/**
+ * Card showing the user's SaaS plan tier and what it includes. Mirrors the
+ * limits in `saas/src/plans.rs::PlanInfo` so the displayed numbers match
+ * what the server will actually enforce. The "Upgrade" button is a stub
+ * pointing at the public roadmap until the Stripe checkout flow ships
+ * (`saas` route `POST /v1/account/plan/checkout` returns the same URL today).
+ */
+@Composable
+private fun PlanCard(
+    plan: Plan,
+    onUpgrade: () -> Unit,
+) {
+    val shape = RoundedCornerShape(8.dp)
+    val isFree = plan == Plan.Free
+    val planLabel = if (isFree) "Free" else "Paid"
+    val retention = if (isFree) "7-day retention" else "Unlimited retention"
+    val storage = if (isFree) "25 MB" else "5 GB"
+    val sync = if (isFree) "On-device sync only" else "Multi-device sync"
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(OhdColors.BgElevated, shape)
+            .border(BorderStroke(1.dp, OhdColors.Line), shape)
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Icon(
+                imageVector = OhdIcons.Sparkles,
+                contentDescription = null,
+                tint = OhdColors.Red,
+                modifier = Modifier.size(18.dp),
+            )
+            Text(
+                text = "Plan · $planLabel",
+                fontFamily = OhdBody,
+                fontWeight = FontWeight.W600,
+                fontSize = 14.sp,
+                color = OhdColors.Ink,
+            )
+        }
+        Text(
+            text = "$retention · $storage server-side · $sync",
+            fontFamily = OhdBody,
+            fontWeight = FontWeight.W400,
+            fontSize = 12.sp,
+            lineHeight = 18.sp,
+            color = OhdColors.Muted,
+        )
+        if (isFree) {
+            OhdButton(
+                label = "Upgrade",
+                onClick = onUpgrade,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
     }
 }
 
