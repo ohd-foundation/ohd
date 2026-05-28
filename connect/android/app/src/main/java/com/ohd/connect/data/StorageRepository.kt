@@ -435,13 +435,25 @@ object StorageRepository {
         Auth.recordStorageOpened(ctx)
     }
 
-    /**
-     * Append a single event. The bindings collapse the OHDC `put_events`
-     * batch RPC to one-at-a-time for ergonomic Kotlin call sites; bulk
-     * imports from Health Connect will use a future `putEvents` overload.
-     */
+    /** Append a single event. For bulk writes prefer [putEvents]. */
     fun putEvent(input: EventInput): Result<PutEventOutcome> = withBackend {
         putEvent(input)
+    }
+
+    /**
+     * Append a batch of events in one call. Against remote storage this is a
+     * single `PutEvents` RPC instead of one round-trip per event — the bulk
+     * path for Health Connect sync, importers, and multi-event logs. `atomic`
+     * (default false) asks the server to commit all-or-nothing. Returns one
+     * outcome per input, in order.
+     *
+     * Callers must dispatch off the main thread (network RPC in remote mode).
+     */
+    fun putEvents(
+        inputs: List<EventInput>,
+        atomic: Boolean = false,
+    ): Result<List<PutEventOutcome>> = withBackend {
+        putEvents(inputs, atomic)
     }
 
     /** Read recent events under self-session scope. */

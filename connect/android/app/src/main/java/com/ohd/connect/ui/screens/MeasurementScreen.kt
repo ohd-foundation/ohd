@@ -14,7 +14,11 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.ohd.connect.data.EventChannelInput
@@ -61,6 +65,10 @@ fun MeasurementScreen(
     preselectKind: QuickMeasureKind? = null,
 ) {
     var openSheetFor by remember { mutableStateOf<QuickMeasureKind?>(null) }
+
+    // putEvent is a blocking network RPC against the remote backend — run it
+    // off the main thread to avoid freezing the UI (ANR).
+    val scope = rememberCoroutineScope()
 
     // Honour the preselect arg exactly once. We key the LaunchedEffect on
     // `Unit` so re-entries from the back stack don't keep re-popping the
@@ -139,25 +147,29 @@ fun MeasurementScreen(
             onLog = { entry ->
                 val input = entry.toEventInput()
                 val summary = entry.toSnackbarSummary()
-                val result = StorageRepository.putEvent(input).getOrElse { e ->
-                    PutEventOutcome.Error(
-                        code = "INTERNAL",
-                        message = e.message ?: e::class.simpleName.orEmpty(),
-                    )
-                }
-                when (result) {
-                    is PutEventOutcome.Committed -> {
-                        onToast("Logged $summary")
-                        openSheetFor = null
+                scope.launch(Dispatchers.IO) {
+                    val result = StorageRepository.putEvent(input).getOrElse { e ->
+                        PutEventOutcome.Error(
+                            code = "INTERNAL",
+                            message = e.message ?: e::class.simpleName.orEmpty(),
+                        )
                     }
-                    is PutEventOutcome.Pending -> {
-                        onToast("Pending review · $summary")
-                        openSheetFor = null
-                    }
-                    is PutEventOutcome.Error -> {
-                        // Keep the sheet open so the user can retry without
-                        // re-typing the value.
-                        onToast("Couldn't log: ${result.message}")
+                    withContext(Dispatchers.Main) {
+                        when (result) {
+                            is PutEventOutcome.Committed -> {
+                                onToast("Logged $summary")
+                                openSheetFor = null
+                            }
+                            is PutEventOutcome.Pending -> {
+                                onToast("Pending review · $summary")
+                                openSheetFor = null
+                            }
+                            is PutEventOutcome.Error -> {
+                                // Keep the sheet open so the user can retry
+                                // without re-typing the value.
+                                onToast("Couldn't log: ${result.message}")
+                            }
+                        }
                     }
                 }
             },

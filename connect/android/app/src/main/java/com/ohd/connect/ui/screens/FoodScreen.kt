@@ -20,7 +20,11 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -101,6 +105,10 @@ fun FoodScreen(
         )
     }
     LaunchedEffect(refreshTick) {
+        // These queries hit storage; against the remote backend each is a
+        // blocking network RPC, so run them off the main thread. Compose
+        // snapshot state assignments below are thread-safe.
+        withContext(Dispatchers.IO) {
         val finishedFromMs = startOfTodayMs() - 86_400_000L
         val finishedEvents = StorageRepository
             .queryEvents(
@@ -194,8 +202,10 @@ fun FoodScreen(
             }
         todaysFoods = (eatenToday + finishedTodayCorrelated)
             .sortedByDescending { it.timestampMs }
+        }
     }
 
+    val scope = rememberCoroutineScope()
     val totals = remember(todaysIntakeChildren) { aggregateIntakeChildren(todaysIntakeChildren) }
 
     // Expansion state for FoodNutritionPanel — hoisted here so we can
@@ -258,18 +268,24 @@ fun FoodScreen(
                 FoodInProgressList(
                     items = inProgress,
                     onFinish = { entry ->
-                        val outcome = finishConsumption(entry)
-                        when (outcome) {
-                            is com.ohd.connect.data.PutEventOutcome.Committed -> {
-                                onToast("Finished ${entry.name}.")
-                                refreshTick++
-                            }
-                            is com.ohd.connect.data.PutEventOutcome.Pending -> {
-                                onToast("Pending review — finish ${entry.name}")
-                                refreshTick++
-                            }
-                            is com.ohd.connect.data.PutEventOutcome.Error -> {
-                                onToast("Couldn't finish: ${outcome.message}")
+                        // Off the main thread — finishConsumption blocks on a
+                        // network RPC against remote storage.
+                        scope.launch(Dispatchers.IO) {
+                            val outcome = finishConsumption(entry)
+                            withContext(Dispatchers.Main) {
+                                when (outcome) {
+                                    is com.ohd.connect.data.PutEventOutcome.Committed -> {
+                                        onToast("Finished ${entry.name}.")
+                                        refreshTick++
+                                    }
+                                    is com.ohd.connect.data.PutEventOutcome.Pending -> {
+                                        onToast("Pending review — finish ${entry.name}")
+                                        refreshTick++
+                                    }
+                                    is com.ohd.connect.data.PutEventOutcome.Error -> {
+                                        onToast("Couldn't finish: ${outcome.message}")
+                                    }
+                                }
                             }
                         }
                     },

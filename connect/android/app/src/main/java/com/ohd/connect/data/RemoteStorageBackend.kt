@@ -162,7 +162,12 @@ internal class RemoteStorageBackend(
             )
         }
         is OhdException.Internal -> if (err.code == "UNAVAILABLE") {
-            RemoteStorageException("Remote storage is unreachable — check your connection.")
+            // Include the underlying transport detail (TLS/DNS/connect) — the
+            // generic text alone hides the real cause when debugging on device.
+            Log.w(TAG, "remote transport UNAVAILABLE: ${err.message}")
+            RemoteStorageException(
+                "Remote storage is unreachable — ${err.message ?: "check your connection"}",
+            )
         } else {
             RemoteStorageException(err.message ?: "Remote storage error (${err.code}).")
         }
@@ -190,6 +195,13 @@ internal class RemoteStorageBackend(
 
     override fun putEvent(input: EventInput): Result<PutEventOutcome> = remoteCall {
         putEvent(input.toDto()).toDomain()
+    }
+
+    override fun putEvents(
+        inputs: List<EventInput>,
+        atomic: Boolean,
+    ): Result<List<PutEventOutcome>> = remoteCall {
+        putEvents(inputs.map { it.toDto() }, atomic).map { it.toDomain() }
     }
 
     override fun queryEvents(filter: EventFilter): Result<List<OhdEvent>> = remoteCall {

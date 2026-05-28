@@ -40,7 +40,9 @@ import androidx.compose.ui.unit.dp
 import com.ohd.connect.data.PendingSummary
 import com.ohd.connect.data.StorageRepository
 import com.ohd.connect.ui.theme.OhdConnectTheme
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * Pending review queue. Each row shows the submitter (grant label + ULID
@@ -84,12 +86,16 @@ fun PendingPane(contentPadding: PaddingValues) {
     val selected = remember { mutableStateMapOf<String, Boolean>() }
 
     LaunchedEffect(refreshTick) {
-        StorageRepository.listPending()
-            .onSuccess {
-                rows = it
-                error = null
-            }
-            .onFailure { error = "Couldn't load pending: ${it.message}" }
+        // listPending is a blocking network RPC against remote storage — run it
+        // off the main thread. Snapshot-state assignments are thread-safe.
+        withContext(Dispatchers.IO) {
+            StorageRepository.listPending()
+                .onSuccess {
+                    rows = it
+                    error = null
+                }
+                .onFailure { error = "Couldn't load pending: ${it.message}" }
+        }
     }
 
     val anySelected = selected.values.any { it }
@@ -100,7 +106,7 @@ fun PendingPane(contentPadding: PaddingValues) {
                 selectedCount = selected.values.count { it },
                 onApproveAll = {
                     val ids = selected.filterValues { it }.keys.toList()
-                    scope.launch {
+                    scope.launch(Dispatchers.IO) {
                         ids.forEach { StorageRepository.approvePending(it, alsoTrustType = false) }
                         selected.clear()
                         refreshTick++
@@ -108,7 +114,7 @@ fun PendingPane(contentPadding: PaddingValues) {
                 },
                 onRejectAll = {
                     val ids = selected.filterValues { it }.keys.toList()
-                    scope.launch {
+                    scope.launch(Dispatchers.IO) {
                         ids.forEach { StorageRepository.rejectPending(it, reason = null) }
                         selected.clear()
                         refreshTick++
@@ -143,13 +149,13 @@ fun PendingPane(contentPadding: PaddingValues) {
                                 selected[row.ulid] = !(selected[row.ulid] ?: false)
                             },
                             onApprove = { trust ->
-                                scope.launch {
+                                scope.launch(Dispatchers.IO) {
                                     StorageRepository.approvePending(row.ulid, alsoTrustType = trust)
                                     refreshTick++
                                 }
                             },
                             onReject = { reason ->
-                                scope.launch {
+                                scope.launch(Dispatchers.IO) {
                                     StorageRepository.rejectPending(row.ulid, reason = reason)
                                     refreshTick++
                                 }

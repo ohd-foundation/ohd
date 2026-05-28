@@ -21,7 +21,11 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -135,6 +139,10 @@ fun UrineStripScreen(
         mutableStateOf(Analytes.associate { it.analyte to it.defaultIndex })
     }
 
+    // putEvent is a blocking network RPC against the remote backend — run it
+    // off the main thread to avoid freezing the UI (ANR).
+    val scope = rememberCoroutineScope()
+
     // Persist + forward to the caller. Earlier versions of this screen
     // hoisted the persistence to NavGraph which only toasted a fake-success;
     // doing the `putEvent` here means the row actually lands in Recent
@@ -143,7 +151,8 @@ fun UrineStripScreen(
     // / pH / Protein / Leukocytes) using the analyte's value label
     // ("Negative", "7.0", "Trace", …) rather than the swatch index.
     fun persistAndForward() {
-        val channels = selections.mapNotNull { (analyte, idx) ->
+        val snapshot = selections
+        val channels = snapshot.mapNotNull { (analyte, idx) ->
             if (idx == null) return@mapNotNull null
             val spec = Analytes.first { it.analyte == analyte }
             val label = spec.valueLabels.getOrNull(idx) ?: return@mapNotNull null
@@ -152,14 +161,18 @@ fun UrineStripScreen(
                 scalar = OhdScalar.Text(label),
             )
         }
-        StorageRepository.putEvent(
-            EventInput(
-                timestampMs = System.currentTimeMillis(),
-                eventType = "measurement.urine_strip",
-                channels = channels,
-            ),
-        )
-        onLog(selections)
+        scope.launch(Dispatchers.IO) {
+            StorageRepository.putEvent(
+                EventInput(
+                    timestampMs = System.currentTimeMillis(),
+                    eventType = "measurement.urine_strip",
+                    channels = channels,
+                ),
+            )
+            withContext(Dispatchers.Main) {
+                onLog(snapshot)
+            }
+        }
     }
 
     Column(

@@ -50,7 +50,9 @@ import com.ohd.connect.data.ShareKind
 import com.ohd.connect.data.ShareRow
 import com.ohd.connect.data.StorageRepository
 import com.ohd.connect.ui.theme.OhdConnectTheme
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * Shares — first-class top-level tab.
@@ -88,19 +90,24 @@ fun SharesScreen(
     val scope = rememberCoroutineScope()
 
     LaunchedEffect(refreshTick) {
-        val emergencyCfg = StorageRepository.getEmergencyConfig()
-            .getOrDefault(EmergencyConfig())
-        StorageRepository.listGrants(includeRevoked = true)
-            .onSuccess { grants ->
-                // Emergency pinned first, then grant-backed shares by recency.
-                val grantRows = grants
-                    .filter { it.granteeKind != "emergency_authority" }
-                    .map { ShareRow.fromGrant(it) }
-                    .sortedByDescending { it.createdAtMs }
-                shares = listOf(ShareRow.emergency(emergencyCfg)) + grantRows
-                error = null
-            }
-            .onFailure { error = "Couldn't load shares: ${it.message}" }
+        // getEmergencyConfig + listGrants are blocking network RPCs against
+        // remote storage — run them off the main thread. Snapshot-state
+        // assignments below are thread-safe.
+        withContext(Dispatchers.IO) {
+            val emergencyCfg = StorageRepository.getEmergencyConfig()
+                .getOrDefault(EmergencyConfig())
+            StorageRepository.listGrants(includeRevoked = true)
+                .onSuccess { grants ->
+                    // Emergency pinned first, then grant-backed shares by recency.
+                    val grantRows = grants
+                        .filter { it.granteeKind != "emergency_authority" }
+                        .map { ShareRow.fromGrant(it) }
+                        .sortedByDescending { it.createdAtMs }
+                    shares = listOf(ShareRow.emergency(emergencyCfg)) + grantRows
+                    error = null
+                }
+                .onFailure { error = "Couldn't load shares: ${it.message}" }
+        }
     }
 
     Scaffold(
@@ -141,7 +148,7 @@ fun SharesScreen(
                                 share = share,
                                 onOpen = { onOpenShare(share.id) },
                                 onToggle = { wantEnabled ->
-                                    scope.launch {
+                                    scope.launch(Dispatchers.IO) {
                                         applyToggle(ctx, share, wantEnabled)
                                         refreshTick++
                                     }
@@ -162,15 +169,22 @@ fun SharesScreen(
             CreateShareSheet(
                 onSubmit = { tplId, label, purpose ->
                     val input = GrantTemplates.forTemplate(tplId, label, purpose)
-                    StorageRepository.createGrant(input).fold(
-                        onSuccess = { result ->
-                            lastToken = result.token
-                            refreshTick++
-                        },
-                        onFailure = { e -> error = "Create share failed: ${e.message}" },
-                    )
-                    scope.launch { sheetState.hide() }
-                        .invokeOnCompletion { showCreate = false }
+                    // createGrant is a blocking network RPC — run it off the
+                    // main thread, then apply UI state on the main dispatcher.
+                    scope.launch(Dispatchers.IO) {
+                        val result = StorageRepository.createGrant(input)
+                        withContext(Dispatchers.Main) {
+                            result.fold(
+                                onSuccess = { res ->
+                                    lastToken = res.token
+                                    refreshTick++
+                                },
+                                onFailure = { e -> error = "Create share failed: ${e.message}" },
+                            )
+                            sheetState.hide()
+                            showCreate = false
+                        }
+                    }
                 },
                 onCancel = {
                     scope.launch { sheetState.hide() }

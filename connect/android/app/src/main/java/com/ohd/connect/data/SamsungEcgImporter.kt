@@ -23,7 +23,7 @@ data class ImportResult(
  *
  * Reads the UTF-8 BOM-prefixed `key,value` header + one-float-per-line sample
  * body, then emits one `measurement.ecg_second` event per second of waveform
- * via [StorageRepository.putEvent]. Reimports are idempotent: the
+ * in batches via [StorageRepository.putEvents]. Reimports are idempotent: the
  * `correlation_id` channel is deterministic from `Created time`, so a second
  * pass over the same file is detected and skipped.
  */
@@ -31,6 +31,9 @@ object SamsungEcgImporter {
 
     private const val EVENT_TYPE = "measurement.ecg_second"
     private const val SOURCE_KIND = "samsung_health_monitor"
+
+    /** Per-second events buffered per batched `PutEvents` write. */
+    private const val PUT_BATCH_SIZE = 500
 
     /** Parsed header + raw mV samples for one strip. */
     data class StripMetadata(
@@ -134,7 +137,13 @@ object SamsungEcgImporter {
 
         val rate = meta.samplingRateHz.toInt().coerceAtLeast(1)
         val minTail = rate / 2
-        var emitted = 0
+
+        // Build one per-second event for the whole strip, then persist them in
+        // chunked `PutEvents` writes so remote storage sees a handful of RPCs
+        // instead of one round-trip per second of waveform. Error semantics are
+        // preserved: the first error outcome (or a thrown batch) returns
+        // immediately with the count emitted before it.
+        val events = mutableListOf<EventInput>()
         var idx = 0
         var secondIndex = 0
         while (idx < samples.size) {
@@ -143,30 +152,33 @@ object SamsungEcgImporter {
             if (count < minTail) break
             val chunk = FloatArray(count)
             System.arraycopy(samples, idx, chunk, 0, count)
-            val outcome = runInterruptible(Dispatchers.IO) {
-                StorageRepository.putEvent(buildEvent(meta, secondIndex, chunk))
-            }
-            outcome.fold(
-                onSuccess = { res ->
-                    when (res) {
-                        is PutEventOutcome.Error -> return ImportResult(
-                            secondsEmitted = emitted,
-                            skippedDuplicate = false,
-                            error = "put_event failed: ${res.code} ${res.message}",
-                        )
-                        else -> emitted++
-                    }
-                },
-                onFailure = { e ->
-                    return ImportResult(
-                        secondsEmitted = emitted,
-                        skippedDuplicate = false,
-                        error = e.message ?: e::class.simpleName.orEmpty(),
-                    )
-                },
-            )
+            events += buildEvent(meta, secondIndex, chunk)
             idx = end
             secondIndex++
+        }
+
+        var emitted = 0
+        for (batch in events.chunked(PUT_BATCH_SIZE)) {
+            val result = runInterruptible(Dispatchers.IO) {
+                StorageRepository.putEvents(batch, atomic = false)
+            }
+            val outcomes = result.getOrElse { e ->
+                return ImportResult(
+                    secondsEmitted = emitted,
+                    skippedDuplicate = false,
+                    error = e.message ?: e::class.simpleName.orEmpty(),
+                )
+            }
+            for (res in outcomes) {
+                when (res) {
+                    is PutEventOutcome.Error -> return ImportResult(
+                        secondsEmitted = emitted,
+                        skippedDuplicate = false,
+                        error = "put_event failed: ${res.code} ${res.message}",
+                    )
+                    else -> emitted++
+                }
+            }
         }
         return ImportResult(secondsEmitted = emitted, skippedDuplicate = false, error = null)
     }

@@ -25,6 +25,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
@@ -54,16 +56,21 @@ fun DashboardScreen(contentPadding: PaddingValues) {
     var refreshTick by remember { mutableStateOf(0) }
 
     LaunchedEffect(refreshTick) {
-        StorageRepository.queryEvents(EventFilter(limit = 50))
-            .onSuccess {
-                events = it
-                status = if (it.isEmpty()) {
-                    "No events yet. Log one from the Log tab."
-                } else {
-                    null
+        // queryEvents is synchronous and, against the remote backend, a
+        // blocking network RPC — run it off the main thread. Compose snapshot
+        // state assignments below are thread-safe.
+        withContext(Dispatchers.IO) {
+            StorageRepository.queryEvents(EventFilter(limit = 50))
+                .onSuccess {
+                    events = it
+                    status = if (it.isEmpty()) {
+                        "No events yet. Log one from the Log tab."
+                    } else {
+                        null
+                    }
                 }
-            }
-            .onFailure { status = "Query failed: ${it.message}" }
+                .onFailure { status = "Query failed: ${it.message}" }
+        }
     }
 
     Surface(modifier = Modifier.fillMaxSize()) {

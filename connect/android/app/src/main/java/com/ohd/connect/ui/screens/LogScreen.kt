@@ -39,7 +39,9 @@ import com.ohd.connect.data.EventInput
 import com.ohd.connect.data.OhdScalar
 import com.ohd.connect.data.PutEventOutcome
 import com.ohd.connect.data.StorageRepository
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * Log tab — quick-entry sheets for the four highest-frequency event types.
@@ -123,9 +125,17 @@ fun LogScreen(contentPadding: PaddingValues) {
             QuickEntrySheet(
                 kind = k,
                 onSubmit = { value, notes ->
-                    val outcome = submit(k, value, notes)
-                    lastResult = render(outcome)
-                    scope.launch { sheetState.hide() }.invokeOnCompletion { sheetKind = null }
+                    // submit() calls StorageRepository.putEvent, which against
+                    // the remote backend is a blocking network RPC — run it off
+                    // the main thread, then update UI / dismiss on Main.
+                    scope.launch(Dispatchers.IO) {
+                        val outcome = submit(k, value, notes)
+                        withContext(Dispatchers.Main) {
+                            lastResult = render(outcome)
+                            sheetState.hide()
+                            sheetKind = null
+                        }
+                    }
                 },
                 onCancel = {
                     scope.launch { sheetState.hide() }.invokeOnCompletion { sheetKind = null }

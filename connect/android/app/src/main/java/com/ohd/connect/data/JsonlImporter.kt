@@ -53,6 +53,9 @@ data class ImportSummary(val emitted: Int, val errors: Int, val firstError: Stri
  */
 object JsonlImporter {
 
+    /** Records buffered per batched `PutEvents` write. */
+    private const val PUT_BATCH_SIZE = 500
+
     sealed interface TimestampMode {
         data object NowForAllRecords : TimestampMode
         data class FromPath(val path: String) : TimestampMode
@@ -109,6 +112,40 @@ object JsonlImporter {
         var errors = 0
         var firstError: String? = null
 
+        // Buffer built events and flush in batches so remote storage sees one
+        // `PutEvents` RPC per [PUT_BATCH_SIZE] records rather than one per
+        // record. Per-record parse/coerce errors are still tallied as the line
+        // is read; only the storage-emission tallies move into [flush], folding
+        // the in-order outcomes exactly as the old per-event code did.
+        val pending = mutableListOf<EventInput>()
+
+        fun flush() {
+            if (pending.isEmpty()) return
+            val batch = pending.toList()
+            pending.clear()
+            StorageRepository.putEvents(batch, atomic = false)
+                .onSuccess { outcomes ->
+                    for (res in outcomes) {
+                        when (res) {
+                            is PutEventOutcome.Committed, is PutEventOutcome.Pending -> emitted++
+                            is PutEventOutcome.Error -> {
+                                errors++
+                                if (firstError == null) firstError = "${res.code}: ${res.message}"
+                            }
+                        }
+                    }
+                }
+                .onFailure { e ->
+                    // A thrown putEvents fails the whole batch — count each
+                    // buffered record as an error, as the per-event path did.
+                    val msg = e.message ?: e::class.simpleName.orEmpty()
+                    repeat(batch.size) {
+                        errors++
+                        if (firstError == null) firstError = msg
+                    }
+                }
+        }
+
         reader.useLines { lines ->
             for (raw in lines) {
                 val line = raw.trim()
@@ -134,33 +171,19 @@ object JsonlImporter {
                         continue
                     }
 
-                    val outcome = StorageRepository.putEvent(
-                        EventInput(
-                            timestampMs = tsMs,
-                            eventType = eventType,
-                            channels = channels,
-                            source = "import:jsonl",
-                        ),
+                    pending += EventInput(
+                        timestampMs = tsMs,
+                        eventType = eventType,
+                        channels = channels,
+                        source = "import:jsonl",
                     )
-                    outcome
-                        .onSuccess { res ->
-                            when (res) {
-                                is PutEventOutcome.Committed, is PutEventOutcome.Pending -> emitted++
-                                is PutEventOutcome.Error -> {
-                                    errors++
-                                    if (firstError == null) firstError = "${res.code}: ${res.message}"
-                                }
-                            }
-                        }
-                        .onFailure { e ->
-                            errors++
-                            if (firstError == null) firstError = e.message ?: e::class.simpleName.orEmpty()
-                        }
+                    if (pending.size >= PUT_BATCH_SIZE) flush()
                 } catch (e: Exception) {
                     errors++
                     if (firstError == null) firstError = e.message ?: e::class.simpleName.orEmpty()
                 }
             }
+            flush()
         }
         ImportSummary(emitted = emitted, errors = errors, firstError = firstError)
     }

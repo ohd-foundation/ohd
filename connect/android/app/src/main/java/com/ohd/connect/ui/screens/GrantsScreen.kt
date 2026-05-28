@@ -55,7 +55,9 @@ import com.ohd.connect.data.GrantSummary
 import com.ohd.connect.data.GrantTemplates
 import com.ohd.connect.data.StorageRepository
 import com.ohd.connect.ui.theme.OhdConnectTheme
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * Grants tab — real implementation.
@@ -80,12 +82,16 @@ fun GrantsScreen(contentPadding: PaddingValues) {
     val scope = rememberCoroutineScope()
 
     LaunchedEffect(refreshTick) {
-        StorageRepository.listGrants()
-            .onSuccess {
-                grants = it
-                error = null
-            }
-            .onFailure { error = "Couldn't load grants: ${it.message}" }
+        // listGrants is a blocking network RPC against remote storage — run it
+        // off the main thread. The snapshot-state assignments are thread-safe.
+        withContext(Dispatchers.IO) {
+            StorageRepository.listGrants()
+                .onSuccess {
+                    grants = it
+                    error = null
+                }
+                .onFailure { error = "Couldn't load grants: ${it.message}" }
+        }
     }
 
     Scaffold(
@@ -126,7 +132,7 @@ fun GrantsScreen(contentPadding: PaddingValues) {
                         grants = grants,
                         error = error,
                         onRevoke = { ulid, reason ->
-                            scope.launch {
+                            scope.launch(Dispatchers.IO) {
                                 StorageRepository.revokeGrant(ulid, reason)
                                 refreshTick++
                             }
@@ -146,26 +152,33 @@ fun GrantsScreen(contentPadding: PaddingValues) {
             CreateGrantSheet(
                 onSubmit = { tplId, label, purpose ->
                     val input = GrantTemplates.forTemplate(tplId, label, purpose)
-                    StorageRepository.createGrant(input).fold(
-                        onSuccess = { share ->
-                            lastShare = share
-                            refreshTick++
-                            android.util.Log.i(
-                                "OhdGrants",
-                                "createGrant ok: tpl=$tplId label=$label",
+                    // createGrant is a blocking network RPC — run it off the
+                    // main thread, then apply UI state on the main dispatcher.
+                    scope.launch(Dispatchers.IO) {
+                        val result = StorageRepository.createGrant(input)
+                        withContext(Dispatchers.Main) {
+                            result.fold(
+                                onSuccess = { share ->
+                                    lastShare = share
+                                    refreshTick++
+                                    android.util.Log.i(
+                                        "OhdGrants",
+                                        "createGrant ok: tpl=$tplId label=$label",
+                                    )
+                                },
+                                onFailure = { e ->
+                                    error = "Create grant failed: ${e.message ?: e.javaClass.simpleName}"
+                                    android.util.Log.e(
+                                        "OhdGrants",
+                                        "createGrant failed: tpl=$tplId label=$label",
+                                        e,
+                                    )
+                                },
                             )
-                        },
-                        onFailure = { e ->
-                            error = "Create grant failed: ${e.message ?: e.javaClass.simpleName}"
-                            android.util.Log.e(
-                                "OhdGrants",
-                                "createGrant failed: tpl=$tplId label=$label",
-                                e,
-                            )
-                        },
-                    )
-                    scope.launch { sheetState.hide() }
-                        .invokeOnCompletion { showCreate = false }
+                            sheetState.hide()
+                            showCreate = false
+                        }
+                    }
                 },
                 onCancel = {
                     scope.launch { sheetState.hide() }

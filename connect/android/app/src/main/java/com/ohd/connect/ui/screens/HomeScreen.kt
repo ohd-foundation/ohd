@@ -116,7 +116,12 @@ fun HomeScreen(
     LaunchedEffect(range, lifecycleOwner) {
         lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
             while (true) {
-                eventCount = countEventsSince(rangeStartMs(range))
+                // countEvents is synchronous and, against the remote backend, a
+                // blocking network RPC — run it off the main thread. The Compose
+                // snapshot state assignment is thread-safe.
+                eventCount = withContext(Dispatchers.IO) {
+                    countEventsSince(rangeStartMs(range))
+                }
                 delay(5_000L)
             }
         }

@@ -32,6 +32,14 @@ interface StorageBackend {
 
     fun putEvent(input: EventInput): Result<PutEventOutcome>
 
+    /**
+     * Append a batch of events in one call. Against remote storage this is a
+     * single `PutEvents` RPC instead of one round-trip per event; `atomic`
+     * asks the server to commit all-or-nothing. Returns one outcome per input,
+     * in order.
+     */
+    fun putEvents(inputs: List<EventInput>, atomic: Boolean): Result<List<PutEventOutcome>>
+
     fun queryEvents(filter: EventFilter): Result<List<OhdEvent>>
 
     fun countEvents(filter: EventFilter): Result<Long>

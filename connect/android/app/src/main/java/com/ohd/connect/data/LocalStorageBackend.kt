@@ -44,6 +44,13 @@ internal class LocalStorageBackend(
         putEvent(input.toDto()).toDomain()
     }
 
+    override fun putEvents(
+        inputs: List<EventInput>,
+        atomic: Boolean,
+    ): Result<List<PutEventOutcome>> = withStorage {
+        putEvents(inputs.map { it.toDto() }, atomic).map { it.toDomain() }
+    }
+
     override fun queryEvents(filter: EventFilter): Result<List<OhdEvent>> = withStorage {
         queryEvents(filter.toDto()).map { it.toDomain() }
     }

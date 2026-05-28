@@ -27,6 +27,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -43,6 +44,7 @@ import com.ohd.connect.data.HealthConnectPrefs
 import com.ohd.connect.data.HealthConnectScheduler
 import com.ohd.connect.data.OhdHealthConnect
 import com.ohd.connect.ui.components.OhdToggle
+import com.ohd.connect.data.SyncProgress
 import com.ohd.connect.data.SyncResult
 import com.ohd.connect.data.syncFromHealthConnect
 import com.ohd.connect.ui.components.OhdButton
@@ -94,6 +96,10 @@ fun HealthConnectSettingsScreen(
     var autoSyncEnabled by remember { mutableStateOf(HealthConnectScheduler.isEnabled(ctx)) }
     var lastResult by remember { mutableStateOf<SyncResult?>(null) }
     var snackbar by remember { mutableStateOf<String?>(null) }
+    // Live synced-event count, published by syncFromHealthConnect as it runs
+    // (covers both the manual "Sync now" and a background periodic sync
+    // observed while this screen is open).
+    val syncProgress by SyncProgress.state.collectAsState()
 
     // Refresh granted-permissions count when the screen first renders +
     // whenever availability flips (e.g. user installs Health Connect and
@@ -206,11 +212,19 @@ fun HealthConnectSettingsScreen(
                         enabled = availability == OhdHealthConnect.Availability.Installed && !syncing,
                         modifier = Modifier.weight(1f),
                     )
-                    if (syncing) {
+                    if (syncing || syncProgress.running) {
                         CircularProgressIndicator(
                             modifier = Modifier.size(20.dp),
                             color = OhdColors.Red,
                             strokeWidth = 2.dp,
+                        )
+                        Text(
+                            text = "${syncProgress.synced} event" +
+                                (if (syncProgress.synced == 1) "" else "s") + " synced",
+                            fontFamily = OhdBody,
+                            fontWeight = FontWeight.W500,
+                            fontSize = 13.sp,
+                            color = OhdColors.Muted,
                         )
                     }
                 }

@@ -27,6 +27,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import com.ohd.connect.data.EventFilter
 import com.ohd.connect.data.HEALTH_CONNECT_TYPES
 import com.ohd.connect.data.StorageRepository
@@ -65,11 +67,16 @@ fun ActivitiesSettingsScreen(
     // countEvents per type — they're SQL COUNT(*)s and cheap.
     val counts = remember { mutableStateMapOf<String, Long>() }
     LaunchedEffect(Unit) {
-        HEALTH_CONNECT_TYPES.forEach { (_, eventType) ->
-            val n = StorageRepository
-                .countEvents(EventFilter(eventTypesIn = listOf(eventType), limit = null))
-                .getOrNull() ?: 0L
-            counts[eventType] = n
+        // Each countEvents hits the backend; against remote storage that's a
+        // blocking network RPC, so run them off the main thread. The
+        // snapshot-state map writes below are thread-safe.
+        withContext(Dispatchers.IO) {
+            HEALTH_CONNECT_TYPES.forEach { (_, eventType) ->
+                val n = StorageRepository
+                    .countEvents(EventFilter(eventTypesIn = listOf(eventType), limit = null))
+                    .getOrNull() ?: 0L
+                counts[eventType] = n
+            }
         }
     }
 

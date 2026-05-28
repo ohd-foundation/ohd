@@ -143,6 +143,22 @@ suspend fun syncFromHealthConnect(
     forceHistorical: Boolean = false,
     untilMs: Long = System.currentTimeMillis(),
 ): SyncResult {
+    // Publish live progress for the duration so a UI open during the run can
+    // show "N events synced". `finally` guarantees the running flag clears on
+    // every exit path (early return, throw, normal completion).
+    SyncProgress.begin()
+    return try {
+        syncFromHealthConnectInner(ctx, forceHistorical, untilMs)
+    } finally {
+        SyncProgress.end()
+    }
+}
+
+private suspend fun syncFromHealthConnectInner(
+    ctx: Context,
+    forceHistorical: Boolean,
+    untilMs: Long,
+): SyncResult {
     val client = OhdHealthConnect.client(ctx) ?: return SyncResult(
         readByType = emptyMap(),
         ingested = 0,
@@ -150,6 +166,26 @@ suspend fun syncFromHealthConnect(
     )
 
     val ingest = IngestAccumulator()
+
+    // DIAGNOSTIC (remove once the permission issue is understood): record the
+    // actual granted-permission set at sync start, so a failing run shows
+    // exactly what Health Connect reports as held vs. requested. Surfaced in
+    // the sync error card and logcat (tag OhdHCSync).
+    val granted = runCatching { client.permissionController.getGrantedPermissions() }
+        .getOrElse { e -> ingest.errors.add("DIAG getGrantedPermissions threw: ${e.message}"); emptySet() }
+    val missing = OhdHealthConnect.PermissionsRead - granted
+    val shortName = { p: String -> p.substringAfterLast('.') }
+    android.util.Log.w(
+        "OhdHCSync",
+        "DIAG granted=${granted.size}/${OhdHealthConnect.PermissionsRead.size} " +
+            "grantedSet=${granted.map(shortName).sorted()} " +
+            "missing=${missing.map(shortName).sorted()}",
+    )
+    ingest.errors.add(
+        "DIAG granted ${granted.size}/${OhdHealthConnect.PermissionsRead.size}" +
+            (if (missing.isEmpty()) " (all requested perms held)" else "; MISSING: ${missing.map(shortName).sorted()}"),
+    )
+
     val storedToken = HealthConnectPrefs.changesToken(ctx)
         ?.takeUnless { forceHistorical }
 
@@ -159,6 +195,7 @@ suspend fun syncFromHealthConnect(
         // Changes API for every future run.
         if (forceHistorical) HealthConnectPrefs.clearChangesToken(ctx)
         historicalBackfill(client, ingest, untilMs)
+        flushPending(ingest)
         val token = acquireChangesToken(ctx, client, ingest)
         HealthConnectPrefs.setLastSyncMs(ctx, untilMs)
         return ingest.toResult(SyncMode.HistoricalBackfill, tokenAcquired = token != null)
@@ -176,11 +213,13 @@ suspend fun syncFromHealthConnect(
         HealthConnectPrefs.clearChangesToken(ctx)
         ingest.reset()
         historicalBackfill(client, ingest, untilMs)
+        flushPending(ingest)
         val token = acquireChangesToken(ctx, client, ingest)
         HealthConnectPrefs.setLastSyncMs(ctx, untilMs)
         return ingest.toResult(SyncMode.HistoricalBackfill, tokenAcquired = token != null)
     }
 
+    flushPending(ingest)
     HealthConnectPrefs.setLastSyncMs(ctx, untilMs)
     return ingest.toResult(
         SyncMode.Incremental,
@@ -322,12 +361,14 @@ private suspend fun <T : Record> readHistorical(
 
 /**
  * Map a single Health Connect [Record] to OHD [EventInput]s via
- * [RECORD_MAPPERS] and persist each through [StorageRepository.putEvent].
+ * [RECORD_MAPPERS] and **buffer** them for batched persistence. The buffer is
+ * drained by [flushPending] — once it reaches [PUT_BATCH_SIZE] here, and a
+ * final time at the end of the sync — so a multi-thousand-record backfill
+ * becomes a handful of `PutEvents` RPCs instead of one round-trip per event.
  *
- * `putEvent` is idempotent on `(source, sourceId)`, so a record delivered
- * by both the historical backfill and the first Changes-API page is
- * de-duplicated by storage — no extra bookkeeping here. Unknown record
- * types (mapper absent) are silently ignored.
+ * Writes are idempotent on `(source, sourceId)`, so a record delivered by
+ * both the historical backfill and the first Changes-API page is de-duplicated
+ * by storage. Unknown record types (mapper absent) are silently ignored.
  */
 private fun ingestRecord(record: Record, ingest: IngestAccumulator) {
     val mapper = RECORD_MAPPERS[record::class] ?: return
@@ -338,24 +379,41 @@ private fun ingestRecord(record: Record, ingest: IngestAccumulator) {
     for (input in events) {
         ingest.readByType[input.eventType] =
             (ingest.readByType[input.eventType] ?: 0) + 1
-        val res = StorageRepository.putEvent(input)
-        if (res.isSuccess) {
-            when (val o = res.getOrNull()) {
-                is PutEventOutcome.Committed,
-                is PutEventOutcome.Pending -> ingest.ingested++
-                is PutEventOutcome.Error -> ingest.errors.add(
-                    "${input.eventType}: storage error ${o.code}: ${o.message}",
-                )
-                null -> Unit
+        ingest.pending.add(input)
+    }
+    if (ingest.pending.size >= PUT_BATCH_SIZE) flushPending(ingest)
+}
+
+/**
+ * Persist the buffered events in one batched `PutEvents` write (best-effort,
+ * non-atomic — one bad record must not fail the whole batch), folding the
+ * per-event outcomes back into the accumulator's counters and publishing live
+ * progress. A no-op when the buffer is empty.
+ */
+private fun flushPending(ingest: IngestAccumulator) {
+    if (ingest.pending.isEmpty()) return
+    val batch = ingest.pending.toList()
+    ingest.pending.clear()
+    val res = StorageRepository.putEvents(batch, atomic = false)
+    if (res.isFailure) {
+        ingest.errors.add("putEvents threw — ${res.exceptionOrNull()?.message ?: "(null)"}")
+        return
+    }
+    for (o in res.getOrNull().orEmpty()) {
+        when (o) {
+            is PutEventOutcome.Committed,
+            is PutEventOutcome.Pending -> {
+                ingest.ingested++
+                SyncProgress.report(ingest.ingested)
             }
-        } else {
-            ingest.errors.add(
-                "${input.eventType}: putEvent threw " +
-                    (res.exceptionOrNull()?.message ?: "(null)"),
-            )
+            is PutEventOutcome.Error ->
+                ingest.errors.add("storage error ${o.code}: ${o.message}")
         }
     }
 }
+
+/** Number of events flushed per batched `PutEvents` write. */
+private const val PUT_BATCH_SIZE = 500
 
 /** Mutable scratch state threaded through one [syncFromHealthConnect] run. */
 private class IngestAccumulator {
@@ -365,9 +423,13 @@ private class IngestAccumulator {
     var changesProcessed: Int = 0
     var deletions: Int = 0
 
+    /** Events mapped from records but not yet written; drained by [flushPending]. */
+    val pending: MutableList<EventInput> = mutableListOf()
+
     /** Drop ingest counters before a post-expiry historical retry. */
     fun reset() {
         readByType.clear()
+        pending.clear()
         ingested = 0
         changesProcessed = 0
         deletions = 0

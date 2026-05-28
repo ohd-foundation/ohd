@@ -22,6 +22,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -30,6 +31,9 @@ import com.ohd.connect.BuildConfig
 import com.ohd.connect.data.Auth
 import com.ohd.connect.data.OidcManager
 import com.ohd.connect.data.StorageRepository
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * First-run setup screen.
@@ -52,6 +56,7 @@ import com.ohd.connect.data.StorageRepository
 fun SetupScreen(onSetupDone: () -> Unit) {
     val ctx = LocalContext.current
     val activity = ctx as? ComponentActivity
+    val scope = rememberCoroutineScope()
     var status by remember { mutableStateOf<String?>(null) }
     var inFlight by remember { mutableStateOf(false) }
 
@@ -118,24 +123,36 @@ fun SetupScreen(onSetupDone: () -> Unit) {
                         //       Stage 1's SQLCipher PRAGMA key is well-formed.
                         val stubKeyHex = "00".repeat(32)
 
-                        val openResult = StorageRepository.openOrCreate(stubKeyHex)
-                        openResult
-                            .onFailure { e ->
-                                status = "Storage open failed: ${e.message}"
-                                inFlight = false
-                            }
-                            .onSuccess {
-                                StorageRepository.issueSelfSessionToken()
-                                    .onFailure { e2 ->
-                                        status = "Token issue failed: ${e2.message}"
+                        // openOrCreate + issueSelfSessionToken open/connect the
+                        // backend; against remote storage these block on a
+                        // network RPC, so run them off the main thread. All UI
+                        // state + nav happens back on Main.
+                        scope.launch(Dispatchers.IO) {
+                            val openResult = StorageRepository.openOrCreate(stubKeyHex)
+                            openResult
+                                .onFailure { e ->
+                                    withContext(Dispatchers.Main) {
+                                        status = "Storage open failed: ${e.message}"
                                         inFlight = false
                                     }
-                                    .onSuccess {
-                                        Auth.markFirstRunDone(ctx)
-                                        inFlight = false
-                                        onSetupDone()
-                                    }
-                            }
+                                }
+                                .onSuccess {
+                                    StorageRepository.issueSelfSessionToken()
+                                        .onFailure { e2 ->
+                                            withContext(Dispatchers.Main) {
+                                                status = "Token issue failed: ${e2.message}"
+                                                inFlight = false
+                                            }
+                                        }
+                                        .onSuccess {
+                                            Auth.markFirstRunDone(ctx)
+                                            withContext(Dispatchers.Main) {
+                                                inFlight = false
+                                                onSetupDone()
+                                            }
+                                        }
+                                }
+                        }
                     },
                     enabled = !inFlight,
                     modifier = Modifier.fillMaxWidth(),

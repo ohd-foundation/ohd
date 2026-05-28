@@ -19,7 +19,11 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
@@ -90,6 +94,10 @@ fun MedicationScreen(
     // recently taken) when it isn't, which matches the brief's contract:
     // wrap in runCatching so storage-not-open during a test run is a no-op.
     LaunchedEffect(Unit) {
+        // queryEvents is a blocking network RPC against the remote backend, so
+        // run it off the main thread. The lastTakenAt snapshot-state map writes
+        // below are thread-safe.
+        withContext(Dispatchers.IO) {
         runCatching {
             StorageRepository.queryEvents(
                 EventFilter(
@@ -111,24 +119,35 @@ fun MedicationScreen(
                 lastTakenAt[name] = event.timestampMs
             }
         }
+        }
     }
+
+    // Coroutine scope for off-main-thread persistence — putEvent is a blocking
+    // network RPC against the remote backend.
+    val scope = rememberCoroutineScope()
 
     // Helper: persist a `medication.taken` event and mirror into the local
     // map. Storage failures (e.g. handle not open during tests) are
-    // swallowed — the optimistic UI update survives.
+    // swallowed — the optimistic UI update survives. The optimistic map write
+    // stays on the main thread for instant feedback; the blocking storage call
+    // is dispatched to IO.
     fun logTake(med: StubData.Medication, timestampMs: Long, dose: Double, unit: String) {
         lastTakenAt[med.name] = timestampMs
-        runCatching {
-            StorageRepository.putEvent(
-                medicationTakenInput(
-                    timestampMs = timestampMs,
-                    name = med.name,
-                    dose = dose,
-                    unit = unit,
-                ),
-            )
+        scope.launch(Dispatchers.IO) {
+            runCatching {
+                StorageRepository.putEvent(
+                    medicationTakenInput(
+                        timestampMs = timestampMs,
+                        name = med.name,
+                        dose = dose,
+                        unit = unit,
+                    ),
+                )
+            }
+            withContext(Dispatchers.Main) {
+                onLogMedication(med.name)
+            }
         }
-        onLogMedication(med.name)
     }
 
     Column(

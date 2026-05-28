@@ -19,7 +19,11 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
@@ -102,6 +106,8 @@ fun EditEventScreen(
             return@Column
         }
 
+        val scope = rememberCoroutineScope()
+
         // Local edit state, one entry per channel + a timestamp field.
         // We key the state to the ULID so navigation back into a different
         // event re-initialises cleanly.
@@ -142,18 +148,26 @@ fun EditEventScreen(
                         onError("Invalid time — use YYYY-MM-DD HH:MM")
                         return@TopBarAction
                     }
-                    val outcome = supersedeEvent(
-                        original = original,
-                        editedChannelTexts = edited.value,
-                        newTimestampMs = parsedTs,
-                    )
-                    when (outcome) {
-                        is SaveOutcome.Saved -> {
-                            onSaved("Saved correction. Original kept for audit.")
-                            onBack()
-                        }
-                        is SaveOutcome.Failed -> {
-                            onError(outcome.message)
+                    // supersedeEvent calls StorageRepository.putEvent (×2);
+                    // against the remote backend each is a blocking network
+                    // RPC — run off the main thread, then handle the outcome
+                    // (callbacks + navigation) on Main.
+                    scope.launch(Dispatchers.IO) {
+                        val outcome = supersedeEvent(
+                            original = original,
+                            editedChannelTexts = edited.value,
+                            newTimestampMs = parsedTs,
+                        )
+                        withContext(Dispatchers.Main) {
+                            when (outcome) {
+                                is SaveOutcome.Saved -> {
+                                    onSaved("Saved correction. Original kept for audit.")
+                                    onBack()
+                                }
+                                is SaveOutcome.Failed -> {
+                                    onError(outcome.message)
+                                }
+                            }
                         }
                     }
                 },
@@ -167,7 +181,12 @@ fun EditEventScreen(
         var nutritionChildren by remember(original.ulid) { mutableStateOf<List<OhdEvent>>(emptyList()) }
         var compositionChildren by remember(original.ulid) { mutableStateOf<List<OhdEvent>>(emptyList()) }
         LaunchedEffect(original.ulid) {
-            val (n, c) = loadCorrelatedChildren(original)
+            // loadCorrelatedChildren calls StorageRepository.queryEvents, a
+            // blocking network RPC against the remote backend — run it off the
+            // main thread. Compose snapshot state assignments are thread-safe.
+            val (n, c) = withContext(Dispatchers.IO) {
+                loadCorrelatedChildren(original)
+            }
             nutritionChildren = n
             compositionChildren = c
         }

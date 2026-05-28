@@ -31,7 +31,11 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -105,6 +109,10 @@ fun CustomFormFillScreen(
     val state = remember(formId) { FormFillState(spec.fields) }
     var showErrors by remember { mutableStateOf(false) }
 
+    // putEvent is a blocking network RPC against the remote backend — run it
+    // off the main thread to avoid freezing the UI (ANR).
+    val scope = rememberCoroutineScope()
+
     fun attemptSave() {
         val missing = spec.fields.filter { f ->
             f.required && state.isEmpty(f.path)
@@ -116,20 +124,24 @@ fun CustomFormFillScreen(
         }
         val channels = spec.fields.mapNotNull { f -> state.toChannel(f) }
         val formSlug = slugify(spec.name)
-        val outcome = StorageRepository.putEvent(
-            EventInput(
-                timestampMs = System.currentTimeMillis(),
-                eventType = "form.$formSlug",
-                channels = channels,
-            ),
-        )
-        outcome.fold(
-            onSuccess = {
-                onToast("Logged ${spec.name}")
-                onLogged()
-            },
-            onFailure = { e -> onToast("Failed to log: ${e.message ?: "unknown error"}") },
-        )
+        scope.launch(Dispatchers.IO) {
+            val outcome = StorageRepository.putEvent(
+                EventInput(
+                    timestampMs = System.currentTimeMillis(),
+                    eventType = "form.$formSlug",
+                    channels = channels,
+                ),
+            )
+            withContext(Dispatchers.Main) {
+                outcome.fold(
+                    onSuccess = {
+                        onToast("Logged ${spec.name}")
+                        onLogged()
+                    },
+                    onFailure = { e -> onToast("Failed to log: ${e.message ?: "unknown error"}") },
+                )
+            }
+        }
     }
 
     Column(

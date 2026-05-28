@@ -21,6 +21,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -31,6 +32,8 @@ import androidx.compose.ui.unit.dp
 import com.ohd.connect.BuildConfig
 import com.ohd.connect.data.StorageRepository
 import com.ohd.connect.ui.theme.MonoStyle
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /**
  * Settings tab — navigation root for the secondary surfaces:
@@ -89,7 +92,14 @@ private fun SettingsRoot(
     contentPadding: PaddingValues,
     onNavigate: (SettingsRoute) -> Unit,
 ) {
-    val identity = remember { StorageRepository.identity() }
+    // `StorageRepository.identity()` is backend-aware: in remote mode it
+    // resolves the storage URL + `whoami` over the network, so it's a blocking
+    // RPC. Resolve it off the main thread; render placeholders until it lands.
+    var identity by remember { mutableStateOf<StorageRepository.Identity?>(null) }
+    LaunchedEffect(Unit) {
+        val resolved = withContext(Dispatchers.IO) { StorageRepository.identity() }
+        identity = resolved
+    }
 
     Surface(modifier = Modifier.fillMaxSize()) {
         Column(
@@ -111,15 +121,15 @@ private fun SettingsRoot(
                 text = "Storage",
                 style = MaterialTheme.typography.titleMedium,
             )
-            SettingRow("Storage path", identity.storagePath, mono = true)
-            SettingRow("User ULID", identity.userUlid, mono = true)
+            SettingRow("Storage path", identity?.storagePath ?: "…", mono = true)
+            SettingRow("User ULID", identity?.userUlid ?: "…", mono = true)
             SettingRow(
                 label = "Self-session token",
-                value = identity.tokenTruncated ?: "(none — re-issue from setup)",
+                value = identity?.let { it.tokenTruncated ?: "(none — re-issue from setup)" } ?: "…",
                 mono = true,
             )
-            SettingRow("Format version", identity.formatVersion)
-            SettingRow("Protocol version", identity.protocolVersion)
+            SettingRow("Format version", identity?.formatVersion ?: "…")
+            SettingRow("Protocol version", identity?.protocolVersion ?: "…")
             SettingRow(
                 label = "App build",
                 value = "${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})",

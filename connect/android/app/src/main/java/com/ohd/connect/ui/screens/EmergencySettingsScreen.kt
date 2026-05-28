@@ -27,6 +27,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -44,7 +45,9 @@ import com.ohd.connect.data.NotificationCenter
 import com.ohd.connect.data.OhdScalar
 import com.ohd.connect.data.StorageRepository
 import com.ohd.connect.ui.theme.OhdConnectTheme
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * Emergency / Break-glass settings — patient side only. Mirrors
@@ -79,16 +82,23 @@ fun EmergencySettingsScreen(
     // could capture a snapshot of the delegated property's current value
     // and overwrite the user's most-recent toggle (bug #2 — feature toggle
     // "visual only").
-    val cfgState = remember {
-        mutableStateOf(
-            StorageRepository.getEmergencyConfig().getOrDefault(EmergencyConfig()),
-        )
+    // getEmergencyConfig touches the backend; against remote storage that's a
+    // blocking network RPC, so start from the in-memory default and resolve the
+    // persisted/remote config off the main thread on first composition.
+    val cfgState = remember { mutableStateOf(EmergencyConfig()) }
+    LaunchedEffect(Unit) {
+        val loaded = withContext(Dispatchers.IO) {
+            StorageRepository.getEmergencyConfig().getOrDefault(EmergencyConfig())
+        }
+        cfgState.value = loaded
     }
     val cfg = cfgState.value
     val update: ((EmergencyConfig) -> EmergencyConfig) -> Unit = { transform ->
         val next = transform(cfgState.value)
         cfgState.value = next
-        scope.launch { StorageRepository.setEmergencyConfig(next) }
+        // setEmergencyConfig mirrors to the backend (blocking RPC in remote
+        // mode) — keep it off the main thread.
+        scope.launch(Dispatchers.IO) { StorageRepository.setEmergencyConfig(next) }
     }
 
     var showResetDialog by remember { mutableStateOf(false) }
@@ -434,7 +444,7 @@ fun EmergencySettingsScreen(
             OutlinedButton(
                 enabled = !disabled,
                 onClick = {
-                    runTestEmergencyAlert(ctx, cfg, onToast)
+                    scope.launch { runTestEmergencyAlert(ctx, cfg, onToast) }
                 },
                 modifier = Modifier.fillMaxWidth(),
             ) { Text("Run test alert") }
@@ -459,7 +469,7 @@ fun EmergencySettingsScreen(
                 TextButton(onClick = {
                     val reset = EmergencyConfig()
                     cfgState.value = reset
-                    scope.launch { StorageRepository.setEmergencyConfig(reset) }
+                    scope.launch(Dispatchers.IO) { StorageRepository.setEmergencyConfig(reset) }
                     showResetDialog = false
                 }) { Text("Reset") }
             },
@@ -538,7 +548,7 @@ fun EmergencySettingsScreen(
  * Snackbar feedback is delegated to the caller via `onToast` (the activity
  * owns the SnackbarHost — see `OhdConnectShell`).
  */
-private fun runTestEmergencyAlert(
+private suspend fun runTestEmergencyAlert(
     ctx: android.content.Context,
     cfg: EmergencyConfig,
     onToast: (String) -> Unit,
@@ -572,17 +582,20 @@ private fun runTestEmergencyAlert(
     )
 
     // Audit log — events.put. Silent if storage isn't open or the event-type
-    // is unknown (migration 018 must include `emergency.test_run`).
-    StorageRepository.putEvent(
-        EventInput(
-            timestampMs = System.currentTimeMillis(),
-            eventType = "emergency.test_run",
-            channels = listOf(
-                EventChannelInput(path = "kind", scalar = OhdScalar.Text("test")),
+    // is unknown (migration 018 must include `emergency.test_run`). putEvent
+    // is a blocking network RPC in remote mode, so run it off the main thread.
+    withContext(Dispatchers.IO) {
+        StorageRepository.putEvent(
+            EventInput(
+                timestampMs = System.currentTimeMillis(),
+                eventType = "emergency.test_run",
+                channels = listOf(
+                    EventChannelInput(path = "kind", scalar = OhdScalar.Text("test")),
+                ),
+                notes = "Test alert via Emergency settings — local-only rehearsal",
             ),
-            notes = "Test alert via Emergency settings — local-only rehearsal",
-        ),
-    )
+        )
+    }
 
     onToast("Test alert fired. Check notifications + Recent Events.")
 }

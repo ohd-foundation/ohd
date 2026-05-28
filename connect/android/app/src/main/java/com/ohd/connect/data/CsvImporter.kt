@@ -20,8 +20,8 @@ import java.time.format.DateTimeFormatter
  *      surface the first five rows so the user can map columns.
  *   2. The user picks an `event_type`, a timestamp source, and per-column
  *      mappings; the screen calls [CsvImporter.import] which streams the
- *      file a second time, emitting one `EventInput` per data row via
- *      [StorageRepository.putEvent].
+ *      file a second time, building one `EventInput` per data row and
+ *      persisting them in batches via [StorageRepository.putEvents].
  *
  * The parser is RFC-4180-ish:
  *   - Auto-detects comma vs semicolon by sniffing the header line.
@@ -57,6 +57,9 @@ data class CsvColumnMapping(
 }
 
 object CsvImporter {
+
+    /** Rows buffered per batched `PutEvents` write. */
+    private const val PUT_BATCH_SIZE = 500
 
     sealed interface TimestampMode {
         data object NowForAllRows : TimestampMode
@@ -112,6 +115,37 @@ object CsvImporter {
             if (firstError == null) firstError = msg
         }
 
+        // Accumulate built events and flush them in batches so remote storage
+        // sees one `PutEvents` RPC per [PUT_BATCH_SIZE] rows instead of one per
+        // row. We track each buffered event's source row number in parallel so
+        // a storage rejection still surfaces the same "Row N: …" message the
+        // old per-row code produced; `putEvents` returns outcomes in input
+        // order, so the two lists stay aligned.
+        val pending = mutableListOf<EventInput>()
+        val pendingRows = mutableListOf<Int>()
+
+        fun flush() {
+            if (pending.isEmpty()) return
+            val batch = pending.toList()
+            val rows = pendingRows.toList()
+            pending.clear()
+            pendingRows.clear()
+            val outcomes = StorageRepository.putEvents(batch, atomic = false).getOrElse { e ->
+                // A thrown putEvents fails the whole batch — count each buffered
+                // row as an error, mirroring the per-event INTERNAL fallback.
+                val msg = e.message ?: "putEvents failed"
+                rows.forEach { recordError("Row $it: $msg") }
+                return
+            }
+            outcomes.forEachIndexed { i, outcome ->
+                when (outcome) {
+                    is PutEventOutcome.Committed -> emitted++
+                    is PutEventOutcome.Pending -> emitted++  // pending counts as accepted for import
+                    is PutEventOutcome.Error -> recordError("Row ${rows[i]}: ${outcome.message}")
+                }
+            }
+        }
+
         BufferedReader(InputStreamReader(stream, Charsets.UTF_8)).use { reader ->
             val tokens = Tokeniser.open(reader) ?: return@use
             val header = tokens.nextRow() ?: return@use
@@ -147,21 +181,16 @@ object CsvImporter {
                 }
                 if (rowFailed) continue
 
-                val input = EventInput(
+                pending += EventInput(
                     timestampMs = tsMs,
                     eventType = eventType,
                     channels = channels,
                     source = source,
                 )
-                val outcome = StorageRepository.putEvent(input).getOrElse { e ->
-                    PutEventOutcome.Error(code = "INTERNAL", message = e.message ?: "putEvent failed")
-                }
-                when (outcome) {
-                    is PutEventOutcome.Committed -> emitted++
-                    is PutEventOutcome.Pending -> emitted++  // pending counts as accepted for import
-                    is PutEventOutcome.Error -> recordError("Row $rowNumber: ${outcome.message}")
-                }
+                pendingRows += rowNumber
+                if (pending.size >= PUT_BATCH_SIZE) flush()
             }
+            flush()
         }
 
         ImportSummary(emitted = emitted, errors = errors, firstError = firstError)

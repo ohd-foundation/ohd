@@ -22,7 +22,11 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.SolidColor
@@ -124,6 +128,10 @@ fun SymptomLogScreen(
     var text by remember { mutableStateOf("") }
     var severity by remember { mutableStateOf(1) }      // band index, default = Mild
     var selectedSymptom by remember { mutableStateOf<String?>(null) }
+
+    // Persisting the symptom hits storage, which against the remote backend is
+    // a blocking network RPC — run it off the main thread to avoid an ANR.
+    val scope = rememberCoroutineScope()
 
     Column(
         modifier = modifier
@@ -290,12 +298,19 @@ fun SymptomLogScreen(
             OhdButton(
                 label = "Log symptom",
                 onClick = {
-                    persistAndForward(
-                        symptom = selectedSymptom,
-                        text = text,
-                        severityIndex = severity,
-                        onLog = onLog,
-                    )
+                    val sym = selectedSymptom
+                    val txt = text
+                    val sev = severity
+                    scope.launch(Dispatchers.IO) {
+                        val displayText = persistSymptom(
+                            symptom = sym,
+                            text = txt,
+                            severityIndex = sev,
+                        )
+                        withContext(Dispatchers.Main) {
+                            onLog(displayText, sev)
+                        }
+                    }
                 },
                 modifier = Modifier.fillMaxWidth(),
             )
@@ -304,21 +319,24 @@ fun SymptomLogScreen(
 }
 
 /**
- * Persist the symptom event then forward to [onLog] for navigation.
+ * Persist the symptom event and return the human-readable display text the
+ * caller forwards to `onLog` for navigation.
  *
  * The repository call is wrapped in `runCatching` (via [StorageRepository.putEvent]
- * which already returns a `Result`); on either success or failure we still
- * fire [onLog] so the NavGraph snackbar appears and the screen pops. This
- * matches the spec: "on failure show 'Saved locally — sync later' and
+ * which already returns a `Result`); on either success or failure the caller
+ * still fires `onLog` so the NavGraph snackbar appears and the screen pops.
+ * This matches the spec: "on failure show 'Saved locally — sync later' and
  * still pop", with the actual snackbar copy formatted by NavGraph from the
- * `text` + `severity` we pass through.
+ * `text` + `severity` passed through.
+ *
+ * Runs on a background dispatcher — `StorageRepository.putEvent` is a blocking
+ * network RPC against the remote backend.
  */
-private fun persistAndForward(
+private fun persistSymptom(
     symptom: String?,
     text: String,
     severityIndex: Int,
-    onLog: (text: String, severity: Int) -> Unit,
-) {
+): String {
     val step = PainScale.firstOrNull { it.index == severityIndex } ?: PainScale[1]
     val name: String? = symptom
     val displayText: String = when {
@@ -367,11 +385,11 @@ private fun persistAndForward(
         notes = text.trim().takeIf { it.isNotBlank() },
     )
 
-    // Fire-and-forget: success or failure, we still pop. The NavGraph
+    // Fire-and-forget: success or failure, the caller still pops. The NavGraph
     // snackbar formats the message from (displayText, severityIndex).
     StorageRepository.putEvent(input)
 
-    onLog(displayText, severityIndex)
+    return displayText
 }
 
 @Composable

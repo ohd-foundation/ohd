@@ -103,27 +103,32 @@ fun ShareDetailScreen(
     var reissuedToken by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(refreshTick) {
-        if (isEmergency) {
-            val cfg = StorageRepository.getEmergencyConfig()
-                .getOrDefault(EmergencyConfig())
-            share = ShareRow.emergency(cfg)
-        } else {
-            StorageRepository.getGrant(shareId)
-                .onSuccess { g ->
-                    if (g == null) {
-                        error = "Share not found."
-                    } else {
-                        share = ShareRow.fromGrant(g)
-                        error = null
+        // getEmergencyConfig / getGrant / auditQuery are blocking network RPCs
+        // against remote storage — run them off the main thread. Snapshot-state
+        // assignments below are thread-safe.
+        withContext(Dispatchers.IO) {
+            if (isEmergency) {
+                val cfg = StorageRepository.getEmergencyConfig()
+                    .getOrDefault(EmergencyConfig())
+                share = ShareRow.emergency(cfg)
+            } else {
+                StorageRepository.getGrant(shareId)
+                    .onSuccess { g ->
+                        if (g == null) {
+                            error = "Share not found."
+                        } else {
+                            share = ShareRow.fromGrant(g)
+                            error = null
+                        }
                     }
-                }
-                .onFailure { error = "Couldn't load share: ${it.message}" }
-            // Per-share audit — grant-actor audit rows. The uniffi audit
-            // filter scopes to actor type; finer per-grant scoping lands with
-            // the OHDC `grant_ulid` filter field.
-            StorageRepository.auditQuery(
-                AuditFilter(grantUlid = shareId, opKindsIn = emptyList(), limit = 50),
-            ).onSuccess { audit = it }
+                    .onFailure { error = "Couldn't load share: ${it.message}" }
+                // Per-share audit — grant-actor audit rows. The uniffi audit
+                // filter scopes to actor type; finer per-grant scoping lands with
+                // the OHDC `grant_ulid` filter field.
+                StorageRepository.auditQuery(
+                    AuditFilter(grantUlid = shareId, opKindsIn = emptyList(), limit = 50),
+                ).onSuccess { audit = it }
+            }
         }
     }
 
@@ -178,17 +183,20 @@ fun ShareDetailScreen(
                         if (g == null) {
                             onToast("Nothing to re-issue.")
                         } else {
-                            scope.launch {
-                                StorageRepository.createGrant(g.toCreateInput()).fold(
-                                    onSuccess = {
-                                        reissuedToken = it.token
-                                        onToast("Re-issued share link below.")
-                                        refreshTick++
-                                    },
-                                    onFailure = { e ->
-                                        onToast("Re-issue failed: ${e.message}")
-                                    },
-                                )
+                            scope.launch(Dispatchers.IO) {
+                                val result = StorageRepository.createGrant(g.toCreateInput())
+                                withContext(Dispatchers.Main) {
+                                    result.fold(
+                                        onSuccess = {
+                                            reissuedToken = it.token
+                                            onToast("Re-issued share link below.")
+                                            refreshTick++
+                                        },
+                                        onFailure = { e ->
+                                            onToast("Re-issue failed: ${e.message}")
+                                        },
+                                    )
+                                }
                             }
                         }
                     },
@@ -239,11 +247,13 @@ fun ShareDetailScreen(
             },
             confirmButton = {
                 TextButton(onClick = {
-                    scope.launch {
+                    scope.launch(Dispatchers.IO) {
                         StorageRepository.revokeGrant(shareId, null)
-                        showRevoke = false
-                        refreshTick++
-                        onToast("Share revoked.")
+                        withContext(Dispatchers.Main) {
+                            showRevoke = false
+                            refreshTick++
+                            onToast("Share revoked.")
+                        }
                     }
                 }) { Text("Revoke") }
             },
@@ -583,8 +593,14 @@ private fun ActivateRemoteAccessCard(
 
 @Composable
 private fun EmergencyExtrasCard(onEditEmergency: () -> Unit) {
-    val cfg = remember {
-        StorageRepository.getEmergencyConfig().getOrDefault(EmergencyConfig())
+    // getEmergencyConfig is a blocking network RPC against remote storage —
+    // load it off the main thread rather than inside `remember {}` (which runs
+    // during composition on the main dispatcher and would freeze the UI).
+    var cfg by remember { mutableStateOf(EmergencyConfig()) }
+    LaunchedEffect(Unit) {
+        cfg = withContext(Dispatchers.IO) {
+            StorageRepository.getEmergencyConfig().getOrDefault(EmergencyConfig())
+        }
     }
     DetailCard {
         Text("Break-glass settings", style = MaterialTheme.typography.titleMedium)

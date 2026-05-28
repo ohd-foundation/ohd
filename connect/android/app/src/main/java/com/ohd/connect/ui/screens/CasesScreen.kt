@@ -46,7 +46,9 @@ import com.ohd.connect.data.CreateGrantInput
 import com.ohd.connect.data.GrantTemplates
 import com.ohd.connect.data.StorageRepository
 import com.ohd.connect.ui.theme.OhdConnectTheme
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * Cases screen — surfaces active and closed cases per `connect/SPEC.md`
@@ -75,12 +77,16 @@ fun CasesScreen(contentPadding: PaddingValues) {
     val scope = rememberCoroutineScope()
 
     LaunchedEffect(refreshTick) {
-        StorageRepository.listCases(includeClosed = true)
-            .onSuccess {
-                cases = it
-                error = null
-            }
-            .onFailure { error = "Couldn't load cases: ${it.message}" }
+        // listCases is a blocking network RPC against remote storage — run it
+        // off the main thread. Snapshot-state assignments are thread-safe.
+        withContext(Dispatchers.IO) {
+            StorageRepository.listCases(includeClosed = true)
+                .onSuccess {
+                    cases = it
+                    error = null
+                }
+                .onFailure { error = "Couldn't load cases: ${it.message}" }
+        }
     }
 
     val active = cases.filter { it.endedAtMs == null }
@@ -114,7 +120,7 @@ fun CasesScreen(contentPadding: PaddingValues) {
                                 CaseCard(
                                     case = c,
                                     onForceClose = { reason ->
-                                        scope.launch {
+                                        scope.launch(Dispatchers.IO) {
                                             StorageRepository.forceCloseCase(c.ulid, reason)
                                             refreshTick++
                                         }
@@ -151,11 +157,16 @@ fun CasesScreen(contentPadding: PaddingValues) {
                 case = target,
                 onSubmit = { tplId, label, purpose ->
                     val input = GrantTemplates.forTemplate(tplId, label, purpose)
-                    scope.launch {
+                    scope.launch(Dispatchers.IO) {
+                        // issueRetrospectiveGrant is a blocking network RPC —
+                        // run it off the main thread, then apply UI state +
+                        // dismiss the sheet on the main dispatcher.
                         StorageRepository.issueRetrospectiveGrant(target.ulid, input)
-                        sheetState.hide()
-                        retroFor = null
-                        refreshTick++
+                        withContext(Dispatchers.Main) {
+                            sheetState.hide()
+                            retroFor = null
+                            refreshTick++
+                        }
                     }
                 },
                 onCancel = {
@@ -203,9 +214,13 @@ private fun CaseCard(
 
     LaunchedEffect(expanded, case.ulid) {
         if (expanded && detail == null) {
-            StorageRepository.getCase(case.ulid)
-                .onSuccess { detail = it; loadError = null }
-                .onFailure { loadError = "Couldn't load: ${it.message}" }
+            // getCase is a blocking network RPC against remote storage — run it
+            // off the main thread. Snapshot-state assignments are thread-safe.
+            withContext(Dispatchers.IO) {
+                StorageRepository.getCase(case.ulid)
+                    .onSuccess { detail = it; loadError = null }
+                    .onFailure { loadError = "Couldn't load: ${it.message}" }
+            }
         }
     }
 

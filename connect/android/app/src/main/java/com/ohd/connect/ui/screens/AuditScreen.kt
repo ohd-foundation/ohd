@@ -38,6 +38,8 @@ import com.ohd.connect.data.AuditEntry
 import com.ohd.connect.data.AuditFilter
 import com.ohd.connect.data.StorageRepository
 import com.ohd.connect.ui.theme.OhdConnectTheme
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -80,15 +82,20 @@ fun AuditScreen(contentPadding: PaddingValues) {
             TimeRange.LAST_30D -> now - 30L * 86_400_000L
             TimeRange.ALL -> null
         }
-        StorageRepository.auditQuery(
-            AuditFilter(
-                opKindsIn = opKinds,
-                fromMs = from,
-                limit = 500,
-            ),
-        )
-            .onSuccess { rows = it; error = null }
-            .onFailure { error = "Couldn't load audit: ${it.message}" }
+        // auditQuery is synchronous and, against the remote backend, a
+        // blocking network RPC — run it off the main thread. Compose snapshot
+        // state assignments are thread-safe.
+        withContext(Dispatchers.IO) {
+            StorageRepository.auditQuery(
+                AuditFilter(
+                    opKindsIn = opKinds,
+                    fromMs = from,
+                    limit = 500,
+                ),
+            )
+                .onSuccess { rows = it; error = null }
+                .onFailure { error = "Couldn't load audit: ${it.message}" }
+        }
     }
 
     Surface(modifier = Modifier.fillMaxSize()) {

@@ -23,7 +23,11 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
@@ -68,6 +72,10 @@ fun PainScoreScreen(
 ) {
     var location by remember { mutableStateOf("") }
     var severity by remember { mutableIntStateOf(0) }
+
+    // putEvent is a blocking network RPC against the remote backend — run it
+    // off the main thread to avoid freezing the UI (ANR).
+    val scope = rememberCoroutineScope()
 
     Column(
         modifier = modifier
@@ -140,27 +148,32 @@ fun PainScoreScreen(
             OhdButton(
                 label = "Log pain",
                 onClick = {
+                    val sev = severity
                     val input = painEventInput(
                         location = location.trim(),
-                        severity = severity,
+                        severity = sev,
                     )
-                    val outcome = StorageRepository.putEvent(input).getOrElse { e ->
-                        PutEventOutcome.Error(
-                            code = "INTERNAL",
-                            message = e.message ?: e::class.simpleName.orEmpty(),
-                        )
-                    }
-                    when (outcome) {
-                        is PutEventOutcome.Committed -> {
-                            onToast("Logged pain $severity/10")
-                            onLog()
+                    scope.launch(Dispatchers.IO) {
+                        val outcome = StorageRepository.putEvent(input).getOrElse { e ->
+                            PutEventOutcome.Error(
+                                code = "INTERNAL",
+                                message = e.message ?: e::class.simpleName.orEmpty(),
+                            )
                         }
-                        is PutEventOutcome.Pending -> {
-                            onToast("Pending review · pain $severity/10")
-                            onLog()
-                        }
-                        is PutEventOutcome.Error -> {
-                            onToast("Couldn't log: ${outcome.message}")
+                        withContext(Dispatchers.Main) {
+                            when (outcome) {
+                                is PutEventOutcome.Committed -> {
+                                    onToast("Logged pain $sev/10")
+                                    onLog()
+                                }
+                                is PutEventOutcome.Pending -> {
+                                    onToast("Pending review · pain $sev/10")
+                                    onLog()
+                                }
+                                is PutEventOutcome.Error -> {
+                                    onToast("Couldn't log: ${outcome.message}")
+                                }
+                            }
                         }
                     }
                 },

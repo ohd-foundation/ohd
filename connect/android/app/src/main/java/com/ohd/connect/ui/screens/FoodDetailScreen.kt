@@ -21,7 +21,11 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
@@ -81,18 +85,32 @@ fun FoodDetailScreen(
     val grams = currentGrams(item, selection)
     val macros = remember(grams) { computeMacros(item, grams) }
 
+    // Logging writes one parent event plus several child events. Against
+    // remote storage each is a blocking network RPC, so the whole batch must
+    // run off the main thread — otherwise the UI freezes (ANR) for the
+    // duration. `submitting` guards against a double-tap re-firing the batch.
+    val scope = rememberCoroutineScope()
+    var submitting by remember { mutableStateOf(false) }
+
     val onSubmit: () -> Unit = submit@{
         val g = grams ?: return@submit
-        val outcome = logFood(item, g, macros)
-        when (outcome) {
-            is PutEventOutcome.Committed -> {
-                onLogged("Logged ${formatGrams(g)} g ${item.name} — ${macros.kcal} kcal")
-            }
-            is PutEventOutcome.Pending -> {
-                onLogged("Pending review — ${item.name}")
-            }
-            is PutEventOutcome.Error -> {
-                onError("Couldn't log: ${outcome.message}")
+        if (submitting) return@submit
+        submitting = true
+        scope.launch(Dispatchers.IO) {
+            val outcome = logFood(item, g, macros)
+            withContext(Dispatchers.Main) {
+                submitting = false
+                when (outcome) {
+                    is PutEventOutcome.Committed -> {
+                        onLogged("Logged ${formatGrams(g)} g ${item.name} — ${macros.kcal} kcal")
+                    }
+                    is PutEventOutcome.Pending -> {
+                        onLogged("Pending review — ${item.name}")
+                    }
+                    is PutEventOutcome.Error -> {
+                        onError("Couldn't log: ${outcome.message}")
+                    }
+                }
             }
         }
     }
@@ -104,17 +122,24 @@ fun FoodDetailScreen(
     // matching `food.consumption_finished` can later close the pair.
     val onStart: () -> Unit = start@{
         val g = grams ?: return@start
+        if (submitting) return@start
+        submitting = true
         val correlationId = newCorrelationId()
-        val outcome = logFoodStarted(item, g, macros, correlationId)
-        when (outcome) {
-            is PutEventOutcome.Committed -> {
-                onLogged("Started ${item.name}. Tap 'Finish' on Food when done.")
-            }
-            is PutEventOutcome.Pending -> {
-                onLogged("Pending review — start ${item.name}")
-            }
-            is PutEventOutcome.Error -> {
-                onError("Couldn't start: ${outcome.message}")
+        scope.launch(Dispatchers.IO) {
+            val outcome = logFoodStarted(item, g, macros, correlationId)
+            withContext(Dispatchers.Main) {
+                submitting = false
+                when (outcome) {
+                    is PutEventOutcome.Committed -> {
+                        onLogged("Started ${item.name}. Tap 'Finish' on Food when done.")
+                    }
+                    is PutEventOutcome.Pending -> {
+                        onLogged("Pending review — start ${item.name}")
+                    }
+                    is PutEventOutcome.Error -> {
+                        onError("Couldn't start: ${outcome.message}")
+                    }
+                }
             }
         }
     }
@@ -200,19 +225,19 @@ fun FoodDetailScreen(
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 OhdButton(
-                    label = if (grams == null || grams <= 0.0) {
-                        "Enter an amount"
-                    } else {
-                        "Log ${formatGrams(grams)} g"
+                    label = when {
+                        submitting -> "Logging…"
+                        grams == null || grams <= 0.0 -> "Enter an amount"
+                        else -> "Log ${formatGrams(grams)} g"
                     },
                     onClick = onSubmit,
-                    enabled = grams != null && grams > 0.0,
+                    enabled = grams != null && grams > 0.0 && !submitting,
                     modifier = Modifier.weight(1f),
                 )
                 OhdButton(
                     label = "Start now",
                     onClick = onStart,
-                    enabled = grams != null && grams > 0.0,
+                    enabled = grams != null && grams > 0.0 && !submitting,
                     variant = OhdButtonVariant.Ghost,
                     modifier = Modifier.weight(1f),
                 )
@@ -657,16 +682,40 @@ private fun logFood(
         notes = item.brand?.let { "brand: $it" },
         topLevel = true,
     )
-    val parentOutcome = StorageRepository.putEvent(parent).getOrElse { e ->
+    return commitMeal(parent, item, macros, correlationId, now)
+}
+
+/**
+ * Persist a meal's parent event plus all of its intake + composition children
+ * in a single atomic [StorageRepository.putEvents] call — one network RPC, and
+ * all-or-nothing so a meal never half-lands. The parent is element 0 of the
+ * input list, so the first returned outcome is the parent's; that outcome
+ * decides the Committed / Pending / Error result, matching the old behavior
+ * where the children were fire-and-forget after a successful parent write.
+ */
+private fun commitMeal(
+    parent: EventInput,
+    item: FoodItem,
+    macros: ResolvedMacros,
+    correlationId: String,
+    now: Long,
+): PutEventOutcome {
+    val events = buildList {
+        add(parent)
+        addAll(intakeChildren(macros, correlationId, now))
+        addAll(compositionChildren(item, correlationId, now))
+    }
+    val outcomes = StorageRepository.putEvents(events, atomic = true).getOrElse { e ->
         return PutEventOutcome.Error(
             code = "INTERNAL",
             message = e.message ?: e::class.simpleName.orEmpty(),
         )
     }
-    if (parentOutcome is PutEventOutcome.Error) return parentOutcome
-    emitIntakeChildren(macros, correlationId, now)
-    emitCompositionChildren(item, correlationId, now)
-    return parentOutcome
+    // putEvents returns outcomes in input order, so index 0 is the parent.
+    return outcomes.firstOrNull() ?: PutEventOutcome.Error(
+        code = "INTERNAL",
+        message = "putEvents returned no outcomes",
+    )
 }
 
 /**
@@ -690,16 +739,7 @@ private fun logFoodStarted(
         notes = item.brand?.let { "brand: $it" },
         topLevel = true,
     )
-    val parentOutcome = StorageRepository.putEvent(parent).getOrElse { e ->
-        return PutEventOutcome.Error(
-            code = "INTERNAL",
-            message = e.message ?: e::class.simpleName.orEmpty(),
-        )
-    }
-    if (parentOutcome is PutEventOutcome.Error) return parentOutcome
-    emitIntakeChildren(macros, correlationId, now)
-    emitCompositionChildren(item, correlationId, now)
-    return parentOutcome
+    return commitMeal(parent, item, macros, correlationId, now)
 }
 
 /**
@@ -707,7 +747,7 @@ private fun logFoodStarted(
  *
  * Carries identity + composition only — name, grams, OFF tags, ingredients,
  * NOVA / Nutri-Score. Each nutrient (kcal, carbs, fat, caffeine, …) goes
- * out as its own `intake.<key>` child event (see [emitIntakeChildren])
+ * out as its own `intake.<key>` child event (see [intakeChildren])
  * keyed by [correlationId], so "carbs over time" can scan a single event
  * type. `eco_score` is omitted on purpose — the user doesn't track it.
  */
@@ -749,20 +789,23 @@ private fun parentFoodChannels(
 }
 
 /**
- * Emit one `intake.<nutrient>` event per non-zero nutrient resolved for
+ * Build one `intake.<nutrient>` event per non-zero nutrient resolved for
  * this serving. Children are flagged `topLevel = false` so they don't
  * clutter Recent / History but search queries that target a specific
  * intake type still find them. Pre-registered types live in migration 018;
  * novel nutriments auto-register via dynamic channel registration.
+ *
+ * Returns the events instead of writing them — the caller folds them into the
+ * single atomic [StorageRepository.putEvents] batch for the meal.
  */
-private fun emitIntakeChildren(
+private fun intakeChildren(
     macros: ResolvedMacros,
     correlationId: String,
     timestampMs: Long,
-) {
-    fun emit(eventType: String, value: Double, unit: String) {
+): List<EventInput> = buildList {
+    fun add(eventType: String, value: Double, unit: String) {
         if (value <= 0.0) return
-        StorageRepository.putEvent(
+        add(
             EventInput(
                 timestampMs = timestampMs,
                 eventType = eventType,
@@ -775,26 +818,26 @@ private fun emitIntakeChildren(
             ),
         )
     }
-    emit("intake.kcal", macros.kcal.toDouble(), "kcal")
-    emit("intake.carbs_g", macros.carbsG, "g")
-    emit("intake.protein_g", macros.proteinG, "g")
-    emit("intake.fat_g", macros.fatG, "g")
-    emit("intake.sugar_g", macros.sugarG, "g")
-    emit("intake.fiber_g", macros.fiberG, "g")
-    emit("intake.saturated_fat_g", macros.saturatedFatG, "g")
-    emit("intake.trans_fat_g", macros.transFatG, "g")
-    emit("intake.sodium_mg", macros.sodiumMg, "mg")
-    emit("intake.cholesterol_mg", macros.cholesterolMg, "mg")
-    emit("intake.potassium_mg", macros.potassiumMg, "mg")
-    emit("intake.calcium_mg", macros.calciumMg, "mg")
-    emit("intake.iron_mg", macros.ironMg, "mg")
-    emit("intake.vitamin_c_mg", macros.vitaminCMg, "mg")
-    emit("intake.vitamin_d_mcg", macros.vitaminDMcg, "mcg")
-    emit("intake.caffeine_mg", macros.caffeineMg, "mg")
+    add("intake.kcal", macros.kcal.toDouble(), "kcal")
+    add("intake.carbs_g", macros.carbsG, "g")
+    add("intake.protein_g", macros.proteinG, "g")
+    add("intake.fat_g", macros.fatG, "g")
+    add("intake.sugar_g", macros.sugarG, "g")
+    add("intake.fiber_g", macros.fiberG, "g")
+    add("intake.saturated_fat_g", macros.saturatedFatG, "g")
+    add("intake.trans_fat_g", macros.transFatG, "g")
+    add("intake.sodium_mg", macros.sodiumMg, "mg")
+    add("intake.cholesterol_mg", macros.cholesterolMg, "mg")
+    add("intake.potassium_mg", macros.potassiumMg, "mg")
+    add("intake.calcium_mg", macros.calciumMg, "mg")
+    add("intake.iron_mg", macros.ironMg, "mg")
+    add("intake.vitamin_c_mg", macros.vitaminCMg, "mg")
+    add("intake.vitamin_d_mcg", macros.vitaminDMcg, "mcg")
+    add("intake.caffeine_mg", macros.caffeineMg, "mg")
 }
 
 /**
- * Emit one child event per composition tag — allergens, traces, additives,
+ * Build one child event per composition tag — allergens, traces, additives,
  * labels, ingredients, ingredient-analysis (vegan / palm-oil-free / …).
  *
  * Pattern: `event_type = composition.<category>.<slug>`. Each event carries
@@ -803,19 +846,22 @@ private fun emitIntakeChildren(
  * (`composition.allergen.gluten`) — no JSON parsing, no scanning channel
  * lists. Dynamic channel registration handles the long tail of slugs as
  * they appear.
+ *
+ * Returns the events instead of writing them — the caller folds them into the
+ * single atomic [StorageRepository.putEvents] batch for the meal.
  */
-private fun emitCompositionChildren(
+private fun compositionChildren(
     item: FoodItem,
     correlationId: String,
     timestampMs: Long,
-) {
-    fun emit(category: String, slug: String) {
+): List<EventInput> = buildList {
+    fun add(category: String, slug: String) {
         if (slug.isBlank()) return
         val safeSlug = slug.lowercase()
             .replace(Regex("[^a-z0-9_]"), "_")
             .trim('_')
             .takeIf { it.isNotEmpty() } ?: return
-        StorageRepository.putEvent(
+        add(
             EventInput(
                 timestampMs = timestampMs,
                 eventType = "composition.$category.$safeSlug",
@@ -826,12 +872,12 @@ private fun emitCompositionChildren(
             ),
         )
     }
-    item.allergens.forEach { emit("allergen", it) }
-    item.traces.forEach { emit("trace", it) }
-    item.additives.forEach { emit("additive", it) }
-    item.labels.forEach { emit("label", it) }
-    item.ingredients.forEach { emit("ingredient", it) }
-    item.ingredientsAnalysis.forEach { emit("analysis", it) }
+    item.allergens.forEach { add("allergen", it) }
+    item.traces.forEach { add("trace", it) }
+    item.additives.forEach { add("additive", it) }
+    item.labels.forEach { add("label", it) }
+    item.ingredients.forEach { add("ingredient", it) }
+    item.ingredientsAnalysis.forEach { add("analysis", it) }
 }
 
 /**
