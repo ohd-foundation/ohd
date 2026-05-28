@@ -761,7 +761,13 @@ data class EventFilter(
     val eventTypesIn: List<String> = emptyList(),
     val eventTypesNotIn: List<String> = emptyList(),
     val includeDeleted: Boolean = false,
-    val limit: Long? = 50,
+    // Cap on rows returned by [StorageRepository.queryEvents]. Default
+    // matches the server's typical streaming-page size (~1000). Use a
+    // smaller value when the screen only renders a fixed list — e.g. the
+    // dashboard "recent 50" feed sets `limit = 50` explicitly. Do NOT use
+    // [limit] to bound a count; counts go through [StorageRepository.countEvents]
+    // which is unbounded.
+    val limit: Long? = 1000,
     /**
      * Default `All` matches the historical behaviour. UI surfaces that want
      * to hide derived rows (Recent, History list, home event count) pass

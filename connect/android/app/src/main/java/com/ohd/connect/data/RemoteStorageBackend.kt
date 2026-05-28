@@ -233,15 +233,16 @@ internal class RemoteStorageBackend(
     }
 
     // --- Agent tools ---------------------------------------------------------
+    //
+    // `listTools` / `executeTool` now ride the OHDC `ListTools` / `ExecuteTool`
+    // RPCs the server adds on top of `ohd-mcp-core`. Same JSON shape the
+    // local backend returns, so CORD-on-OHD-Cloud uses the catalog
+    // identically to CORD-on-device.
 
-    override fun listToolsJson(): Result<String> =
-        // `list_tools` / `execute_tool` run the in-process MCP core against
-        // the local DB. The remote server exposes its own MCP surface, but
-        // the OHDC client crate does not yet proxy it.
-        unsupportedRemote("Agent tools")
+    override fun listToolsJson(): Result<String> = remoteCall { listTools() }
 
     override fun executeToolJson(name: String, inputJson: String): Result<String> =
-        unsupportedRemote("Agent tools")
+        remoteCall { executeTool(name, inputJson) }
 
     // --- Remote access (CORD data-link share responder) ----------------------
 
