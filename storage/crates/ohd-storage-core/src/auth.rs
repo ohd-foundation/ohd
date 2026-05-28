@@ -287,6 +287,8 @@ pub fn resolve_token(conn: &Connection, bearer: &str) -> Result<ResolvedToken> {
 pub enum OhdcOp {
     /// `OhdcService.PutEvents`
     PutEvents,
+    /// `OhdcService.DeleteEvents` (self-session only — destructive bulk wipe)
+    DeleteEvents,
     /// `OhdcService.QueryEvents`
     QueryEvents,
     /// `OhdcService.GetEventByUlid`

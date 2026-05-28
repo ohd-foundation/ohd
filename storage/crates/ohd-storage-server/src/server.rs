@@ -38,7 +38,8 @@ use ohd_storage_core::{
     audit as ohd_audit,
     auth::{self as ohd_auth, ResolvedToken},
     events::{
-        self as ohd_events, EventInput as CoreEventInput, SampleBlockInput as CoreSampleBlockInput,
+        self as ohd_events, DeleteFilter as CoreDeleteFilter, EventInput as CoreEventInput,
+        SampleBlockInput as CoreSampleBlockInput,
     },
     grants::{GrantRow, GrantUpdate, NewGrant, RuleEffect},
     ohdc as ohd_ohdc,
@@ -1120,6 +1121,33 @@ impl OhdcService for OhdcAdapter {
                 results.iter().map(put_event_result_to_pb).collect();
             let resp = pb::PutEventsResponse {
                 results: pb_results,
+                ..Default::default()
+            };
+            Ok(ConnectResponse::new(resp))
+        }
+    }
+
+    // ---- DeleteEvents -----------------------------------------------------
+
+    fn delete_events<'a>(
+        &'a self,
+        ctx: RequestContext,
+        request: pb::OwnedDeleteEventsRequestView,
+    ) -> impl std::future::Future<
+        Output = ServiceResult<impl connectrpc::Encodable<pb::DeleteEventsResponse> + Send + use<'a>>,
+    > + Send {
+        async move {
+            let token = require_token(self, &ctx)?;
+            let req = request.to_owned_message();
+            let filter = CoreDeleteFilter {
+                from_ms: req.from_ms,
+                to_ms: req.to_ms,
+                event_types: req.event_types,
+            };
+            let deleted = ohd_ohdc::delete_events(&self.storage, &token, &filter)
+                .map_err(error_to_connect)?;
+            let resp = pb::DeleteEventsResponse {
+                deleted_count: deleted,
                 ..Default::default()
             };
             Ok(ConnectResponse::new(resp))

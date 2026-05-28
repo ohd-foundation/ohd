@@ -127,6 +127,18 @@ pub struct EventFilter {
     pub source_in: Vec<String>,
 }
 
+/// Filter for [`OhdcRemoteClient::delete_events`]. All fields optional; an
+/// empty filter wipes every event owned by the authenticated identity.
+#[derive(Debug, Clone, Default)]
+pub struct DeleteFilter {
+    /// Inclusive lower bound on `timestamp_ms`. `None` = no lower bound.
+    pub from_ms: Option<i64>,
+    /// Inclusive upper bound. `None` = no upper bound.
+    pub to_ms: Option<i64>,
+    /// Restrict to these event-type names. Empty = all types.
+    pub event_types: Vec<String>,
+}
+
 /// Filter for [`OhdcRemoteClient::list_grants`].
 #[derive(Debug, Clone, Default)]
 pub struct ListGrantsFilter {

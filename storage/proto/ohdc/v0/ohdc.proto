@@ -279,6 +279,10 @@ service OhdcService {
   // ---- Writes ----
   rpc PutEvents(PutEventsRequest) returns (PutEventsResponse);
   rpc AttachBlob(stream AttachBlobChunk) returns (AttachBlobResponse);
+  // Bulk hard-delete: removes events (and their channels/attachments)
+  // owned by the authenticated self-session identity. Optionally
+  // scoped by time-range / event types; empty filter = wipe ALL.
+  rpc DeleteEvents(DeleteEventsRequest) returns (DeleteEventsResponse);
 
   // ---- Reads ----
   rpc QueryEvents(QueryEventsRequest) returns (stream Event);
@@ -342,6 +346,25 @@ message PutEventsRequest {
 
 message PutEventsResponse {
   repeated PutEventResult results = 1;
+}
+
+// Bulk delete request. All fields optional; an empty request wipes every
+// event owned by the authenticated self-session identity. Self-session only;
+// grant-scoped callers are rejected with PERMISSION_DENIED.
+message DeleteEventsRequest {
+  // Inclusive lower bound, milliseconds since the unix epoch. Unset = no
+  // lower bound.
+  optional int64 from_ms = 1;
+  // Inclusive upper bound. Unset = no upper bound.
+  optional int64 to_ms = 2;
+  // Restrict to these event types (e.g. "food.eaten"). Empty = all types.
+  repeated string event_types = 3;
+}
+
+message DeleteEventsResponse {
+  // Number of `events` rows removed. Cascaded `event_channels` /
+  // attachments are not counted separately.
+  int64 deleted_count = 1;
 }
 
 message PutEventResult {

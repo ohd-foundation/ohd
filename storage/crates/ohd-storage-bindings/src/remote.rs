@@ -444,6 +444,25 @@ impl RemoteOhdStorage {
         Ok(outcomes.into_iter().map(put_outcome_rc_to_dto).collect())
     }
 
+    /// Bulk hard-delete events matching the filter (`DeleteEvents` RPC).
+    /// All fields optional; an unfiltered call wipes ALL events owned by the
+    /// authenticated identity. Returns the number of `events` rows removed
+    /// (cascaded channels not counted). Self-session only; grant tokens are
+    /// rejected server-side.
+    pub fn delete_events(
+        &self,
+        from_ms: Option<i64>,
+        to_ms: Option<i64>,
+        event_types: Vec<String>,
+    ) -> Result<u64> {
+        let filter = rc::DeleteFilter {
+            from_ms,
+            to_ms,
+            event_types,
+        };
+        Ok(self.runtime.block_on(self.client.delete_events(filter))?)
+    }
+
     /// Read events under a filter (`QueryEvents` server-streaming RPC,
     /// collected into a `Vec`). Mirrors the local
     /// [`OhdStorage::query_events`](crate::OhdStorage::query_events).

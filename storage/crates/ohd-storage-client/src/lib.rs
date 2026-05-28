@@ -334,6 +334,27 @@ impl OhdcRemoteClient {
             .collect())
     }
 
+    /// `DeleteEvents` — bulk hard-delete events matching `filter`. Empty
+    /// filter wipes ALL events owned by the authenticated identity. Returns
+    /// the number of `events` rows removed (cascaded channels not counted).
+    /// Self-session only on the server side; grant tokens get
+    /// `PermissionDenied`.
+    pub async fn delete_events(&self, filter: DeleteFilter) -> Result<u64> {
+        let req = pb::DeleteEventsRequest {
+            from_ms: filter.from_ms,
+            to_ms: filter.to_ms,
+            event_types: filter.event_types,
+            ..Default::default()
+        };
+        let resp = self
+            .client
+            .delete_events_with_options(req, self.auth_options())
+            .await
+            .map_err(map_connect_error)?;
+        let owned = resp.into_owned();
+        Ok(owned.deleted_count.max(0) as u64)
+    }
+
     /// `QueryEvents` (server-streaming) — collected into a `Vec` so the
     /// surface stays synchronous-shaped, exactly as the local `query_events`
     /// returns `Vec<Event>`.

@@ -314,6 +314,66 @@ pub fn soft_delete_events_before(conn: &Connection, cutoff_ms: i64) -> Result<i6
     Ok(updated as i64)
 }
 
+/// Filter for [`hard_delete_events`]. All fields optional; an empty filter
+/// deletes every row in the `events` table.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct DeleteFilter {
+    /// Inclusive lower bound on `timestamp_ms`. `None` = no lower bound.
+    pub from_ms: Option<i64>,
+    /// Inclusive upper bound on `timestamp_ms`. `None` = no upper bound.
+    pub to_ms: Option<i64>,
+    /// Restrict to these event-type names (e.g. `"food.eaten"`). Empty = all
+    /// types. Names that don't exist in `event_types` are silently ignored.
+    pub event_types: Vec<String>,
+}
+
+/// Hard-delete events matching `filter` from the connection. Returns the
+/// number of `events` rows removed. `event_channels` rows are removed via
+/// the foreign-key `ON DELETE CASCADE`; this is the "wipe my remote data"
+/// path, not the per-event soft-delete used elsewhere.
+///
+/// Self-session callers only — `ohdc::delete_events` enforces the token
+/// check; this function trusts its caller.
+pub fn hard_delete_events(conn: &Connection, filter: &DeleteFilter) -> Result<i64> {
+    // Build the SQL incrementally so unused predicates don't show up as
+    // `IS NULL`-driven full table scans on huge stores.
+    let mut clauses: Vec<String> = Vec::new();
+    let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+
+    if let Some(from) = filter.from_ms {
+        clauses.push("timestamp_ms >= ?".to_string());
+        params.push(Box::new(from));
+    }
+    if let Some(to) = filter.to_ms {
+        clauses.push("timestamp_ms <= ?".to_string());
+        params.push(Box::new(to));
+    }
+    if !filter.event_types.is_empty() {
+        // Resolve names → ids inline with a sub-query; SQLite handles the
+        // empty-id case by deleting zero rows.
+        let placeholders = std::iter::repeat("?")
+            .take(filter.event_types.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        clauses.push(format!(
+            "event_type_id IN (SELECT id FROM event_types WHERE name IN ({placeholders}))",
+        ));
+        for name in &filter.event_types {
+            params.push(Box::new(name.clone()));
+        }
+    }
+
+    let sql = if clauses.is_empty() {
+        "DELETE FROM events".to_string()
+    } else {
+        format!("DELETE FROM events WHERE {}", clauses.join(" AND "))
+    };
+
+    let param_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|b| b.as_ref()).collect();
+    let removed = conn.execute(&sql, param_refs.as_slice())?;
+    Ok(removed as i64)
+}
+
 /// One channel-value predicate. `op` is one of `eq`, `neq`, `gt`, `gte`,
 /// `lt`, `lte`. Reals support all six; ints/bool/text/enum support only
 /// `eq`/`neq`.

@@ -15,7 +15,8 @@ use crate::cases::{
     self, Case, CaseFilterRow, CaseReopenToken, CaseUpdate, ListCasesFilter, NewCase,
 };
 use crate::events::{
-    self, ChannelScalar, ChannelValue, Event, EventFilter, EventInput, GrantScope, PutEventResult,
+    self, ChannelScalar, ChannelValue, DeleteFilter, Event, EventFilter, EventInput, GrantScope,
+    PutEventResult,
 };
 use crate::grants::{self, GrantRow, GrantUpdate, ListGrantsFilter, NewGrant};
 use crate::pending::{self, ListPendingFilter, PendingRow, PendingStatus};
@@ -119,6 +120,50 @@ pub fn put_events(
 
 fn is_error(r: &PutEventResult) -> bool {
     matches!(r, PutEventResult::Error { .. })
+}
+
+/// `OhdcService.DeleteEvents` — bulk hard-delete events matching `filter`.
+/// Self-session only; grant / device tokens are rejected by
+/// [`auth::check_kind_for_op`]. Returns the number of `events` rows removed
+/// (cascaded `event_channels` are not counted separately). Always appends an
+/// audit row regardless of outcome.
+pub fn delete_events(
+    storage: &Storage,
+    token: &ResolvedToken,
+    filter: &DeleteFilter,
+) -> Result<i64> {
+    auth::check_kind_for_op(token, OhdcOp::DeleteEvents)?;
+    let mut deleted: i64 = 0;
+    let res = storage.with_conn_mut(|conn| {
+        deleted = events::hard_delete_events(conn, filter)?;
+        Ok(())
+    });
+    let outcome = match &res {
+        Ok(()) => AuditResult::Success,
+        Err(_) => AuditResult::Error,
+    };
+    storage.with_conn(|conn| {
+        audit::append(
+            conn,
+            &AuditEntry {
+                ts_ms: audit::now_ms(),
+                actor_type: actor_type_for(token.kind),
+                auto_granted: false,
+                grant_id: token.grant_id,
+                action: "delete".into(),
+                query_kind: Some("delete_events".into()),
+                query_params_json: Some(serde_json::to_string(filter)?),
+                rows_returned: None,
+                rows_filtered: Some(deleted),
+                result: outcome,
+                reason: None,
+                caller_ip: None,
+                caller_ua: None,
+                delegated_for_user_ulid: None,
+            },
+        )
+    })?;
+    res.map(|_| deleted)
 }
 
 fn grant_requires_approval(storage: &Storage, grant_id: i64) -> Result<bool> {
