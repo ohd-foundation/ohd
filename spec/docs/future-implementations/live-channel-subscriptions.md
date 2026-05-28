@@ -27,6 +27,16 @@ A home-screen **pulse widget**: instead of polling `QueryEvents` every N seconds
 - **Scope** — a subscription is bound to a grant's read scope (`ShareScope`); it streams only channels the grant permits, and a mid-life suspend/revoke ends the stream. Self-session (the owner) may subscribe to everything.
 - **Backpressure + lifecycle** — bounded buffering, single-use stream tokens, TTL'd subscriptions that the consumer renews; a dropped tunnel re-subscribes from a cursor so no sample is missed across a reconnect.
 
+### Write-driven fan-out: single vs bulk
+
+The write path already carries enough signal for the notification layer to default to sane fan-out, so the writer doesn't have to reason about subscribers and a backfill doesn't melt anyone's stream.
+
+- **Single-event write** — a `put_event` (OHDC `PutEvents` carrying one event) is an interactive, here-and-now write, so notify **every subscriber of that individual sample**. Fine-grained: each value pushed.
+- **Bulk write** — a `put_events` carrying many events with a **bulk flag** set is a backfill/import. By default, for a given metric/channel, push only **one final value** (e.g. the latest/aggregate sample for that channel in the batch) per subscriber — so a 17k-event Health Connect backfill does not fan out 17k pushes per subscriber.
+- **Subscriber opt-in** — a subscriber that genuinely wants **every** sample from a bulk write (not just the last) opts in at subscribe time via a per-subscription "all samples vs latest-only" preference. The choice lives with the consumer, not the writer — the writer never decides fan-out granularity for everyone.
+
+So: interactive writes default to per-sample push, bulk imports coalesce to latest-per-channel, and any subscriber can override toward all-samples. (Brainstorm — exact flag shape and the coalescing key live with the `PutEvents`/`Subscribe` design when this is picked up.)
+
 ## Cross-references
 
 - OHDC channels + event model — [`../design/storage-format.md`](../design/storage-format.md)
