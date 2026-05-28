@@ -219,6 +219,19 @@ internal class RemoteStorageBackend(
         // this is defensive — surface a clear failure rather than crash.
         unsupportedRemote("Retention sweep")
 
+    /**
+     * Hard-delete events on the remote server (`DeleteEvents` RPC). Empty
+     * filter wipes every event the signed-in identity owns. Returns the
+     * count of `events` rows removed.
+     */
+    fun deleteRemoteEvents(
+        fromMs: Long?,
+        toMs: Long?,
+        eventTypes: List<String>,
+    ): Result<Long> = remoteCall {
+        deleteEvents(fromMs, toMs, eventTypes).toLong()
+    }
+
     // --- Agent tools ---------------------------------------------------------
 
     override fun listToolsJson(): Result<String> =

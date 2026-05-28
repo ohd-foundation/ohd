@@ -19,8 +19,11 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -39,6 +42,7 @@ import com.ohd.connect.data.Auth
 import com.ohd.connect.data.StorageRepository
 import com.ohd.connect.ui.components.OhdButton
 import com.ohd.connect.ui.components.OhdButtonVariant
+import com.ohd.connect.ui.components.OhdSectionHeader
 import com.ohd.connect.ui.components.OhdTopBar
 import com.ohd.connect.ui.icons.OhdIcons
 import com.ohd.connect.ui.screens._shared.StorageOption
@@ -215,6 +219,12 @@ fun StorageSettingsScreen(
         }
     }
 
+    // Phase 4 — "Danger zone" state. Tracks the confirm-dialog visibility
+    // and the in-flight delete so the button can be disabled + relabeled
+    // while the network call runs.
+    var showDeleteDialog by remember { mutableStateOf(false) }
+    var deleting by remember { mutableStateOf(false) }
+
     val select: (StorageOption) -> Unit = { opt ->
         signInError = null
         // Selecting on-device while signed into remote storage IS a sign-out:
@@ -329,7 +339,62 @@ fun StorageSettingsScreen(
                 },
                 modifier = Modifier.fillMaxWidth(),
             )
+
+            // 6. Danger zone — hard-wipe of every event the signed-in identity
+            // owns on the remote server. Only meaningful in remote-storage
+            // mode; on-device users wipe by uninstalling the app.
+            if (remoteMode) {
+                OhdSectionHeader(text = "Danger zone")
+                OhdButton(
+                    label = if (deleting) "Deleting…" else "Delete all my remote data",
+                    onClick = { showDeleteDialog = true },
+                    modifier = Modifier.fillMaxWidth(),
+                    variant = OhdButtonVariant.Destructive,
+                    enabled = !deleting,
+                )
+            }
         }
+    }
+
+    if (showDeleteDialog) {
+        AlertDialog(
+            onDismissRequest = { if (!deleting) showDeleteDialog = false },
+            title = { Text("Delete all remote data?") },
+            text = {
+                Text(
+                    "This hard-deletes every event the signed-in identity owns on the remote server. " +
+                        "It cannot be undone. Only events and channels are wiped — grants, cases and " +
+                        "audit logs are NOT removed.",
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = !deleting,
+                    colors = ButtonDefaults.textButtonColors(contentColor = OhdColors.Red),
+                    onClick = {
+                        showDeleteDialog = false
+                        deleting = true
+                        // Storage call blocks on a remote RPC — off the main
+                        // thread, marshal the result back for the toast.
+                        scope.launch(Dispatchers.IO) {
+                            val res = StorageRepository.deleteRemoteEvents()
+                            withContext(Dispatchers.Main) {
+                                deleting = false
+                                res
+                                    .onSuccess { count -> onToast("Deleted $count events") }
+                                    .onFailure { e -> onToast("Couldn't delete: ${e.message}") }
+                            }
+                        }
+                    },
+                ) { Text("Delete everything") }
+            },
+            dismissButton = {
+                TextButton(
+                    enabled = !deleting,
+                    onClick = { showDeleteDialog = false },
+                ) { Text("Cancel") }
+            },
+        )
     }
 }
 

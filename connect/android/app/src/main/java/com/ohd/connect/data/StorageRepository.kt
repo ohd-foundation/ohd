@@ -479,6 +479,30 @@ object StorageRepository {
         softDeleteEventsBefore(cutoffMs)
     }
 
+    /**
+     * Hard-delete events on **remote** storage (OHD Cloud / self-hosted). All
+     * filters optional; an unfiltered call wipes every event the signed-in
+     * identity owns. Returns the number of `events` rows removed; cascaded
+     * channels are not counted separately. On-device mode returns a clear
+     * `Result.failure` — on-device users wipe by uninstalling.
+     */
+    fun deleteRemoteEvents(
+        fromMs: Long? = null,
+        toMs: Long? = null,
+        eventTypes: List<String> = emptyList(),
+    ): Result<Long> {
+        val backend = activeBackend
+        if (backend !is RemoteStorageBackend) {
+            return Result.failure(
+                IllegalStateException(
+                    "Deleting remote data is only available on OHD Cloud / self-hosted; " +
+                        "on-device storage wipes by uninstalling the app.",
+                ),
+            )
+        }
+        return backend.deleteRemoteEvents(fromMs, toMs, eventTypes)
+    }
+
     // =========================================================================
     // Agent tools (CORD + future MCP) — thin shim over ohd-mcp-core.
     // =========================================================================
