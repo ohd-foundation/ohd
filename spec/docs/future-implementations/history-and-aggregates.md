@@ -35,28 +35,46 @@ displayed under it**:
 Year keeps existing as a range — useful for the macro stats — even though
 nobody scrolls a list of a year's events.
 
-## History tab — filter-first
+## History split — log search vs aggregates
 
-Replace the segmented Today / Week / Month / Year strip with:
+The day / week / month / year selector was carried over from the Home
+tab by inertia — it makes sense for stat tiles but **not for a flat
+event list**. "Show me a year of events" isn't a useful surface; "show
+me a year of glucose values as a chart" is. So History splits into two
+distinct surfaces:
 
-- A **date range picker** at the top. Default = today; the user can drag
-  the lower / upper bound to any custom window (week, month, year,
-  arbitrary).
-- An **event-type filter** below — the chip set is driven by the
-  `ListEventTypes(filter)` RPC (returns `{name, count}` pairs scoped to
-  the chosen date range). Cheap on the server (`SELECT event_type,
-  COUNT(*) FROM events WHERE … GROUP BY event_type`). Replaces the
-  10 000-row client-side scan in `RecentEventsScreen` today.
-- A **paged event list** for the active filter. Small page (~100 rows)
-  with a "Load more" trigger at the bottom — no more pre-fetching 10 000
-  rows just to render the first screen.
+### 1. Event log (search the log by date / range)
 
-When **exactly one event type** is selected and the channel structure is
-chartable (single real value over time, e.g. `measurement.heart_rate`,
-`measurement.blood_glucose`, `intake.kcal`), the screen renders a chart of
-that channel over the chosen range *above* the list. The list stays
-below so the user can drill into individual rows. This is where the
-"visualization" the user mentioned lives.
+A flat list of individual events. The unit is one event row.
+
+- Default to **a single day**, today.
+- Future: extend to an arbitrary `from–to` range so the user can search
+  the log over any span ("show me everything between Mar 1 and Mar 14
+  last year"). The list always paginates; the goal is to *find* a
+  specific event, not to see trends.
+- The `ListEventTypes(filter)` chip set still applies — pick a type to
+  scope the list further.
+- This is the entry point for an existing event the user wants to
+  inspect or edit (the `findEventByUlid` lookup is what drives that
+  flow today).
+
+### 2. Aggregates / visualizations (the chart view)
+
+A separate screen, **not** an event list — the unit here is one chart /
+one aggregate tile.
+
+- Keeps the day / week / month / year / custom selector (it's what
+  aggregates need).
+- Per-channel charts (heart rate over time, glucose trend, cycling
+  distance) computed via the existing `Aggregate` RPC with a bucket
+  appropriate to the range.
+- Lifts the existing food panel logic (FoodScreen's "Today" macros
+  panel) into a reusable component so the same kcal/macros aggregation
+  shows on this surface bucketed per day in week+ views.
+
+These two surfaces eventually split into separate routes / tabs. For now
+the simpler-of-the-two — the log search — replaces today's History;
+the aggregate view is its own follow-up pass.
 
 ## Food tab — per-day aggregate above the row list
 

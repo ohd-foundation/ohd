@@ -22,8 +22,15 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.DatePicker
+import androidx.compose.material3.DatePickerDialog
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
+import androidx.compose.material3.rememberDatePickerState
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import com.ohd.connect.ui.components.OhdButton
+import com.ohd.connect.ui.components.OhdButtonVariant
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -50,8 +57,9 @@ import com.ohd.connect.data.StorageRepository
 import com.ohd.connect.ui.components.OhdDivider
 import com.ohd.connect.ui.components.OhdListItem
 import com.ohd.connect.ui.components.OhdSectionHeader
-import com.ohd.connect.ui.components.OhdSegmentedTimeRange
 import com.ohd.connect.ui.components.OhdTopBar
+// Kept for the chart helpers below — those move with the chart code to the
+// future aggregate surface where day/week/month/year still makes sense.
 import com.ohd.connect.ui.components.TimeRange
 import com.ohd.connect.ui.icons.EventVisual
 import com.ohd.connect.ui.icons.OhdIcons
@@ -86,9 +94,14 @@ fun RecentEventsScreen(
     onBack: () -> Unit,
     onEdit: (ulid: String) -> Unit = {},
 ) {
-    // Selected time range (Day/Week/Month — Year is mapped to Month) and the
-    // active event-type filter ("All" when null).
-    var range by remember { mutableStateOf(TimeRange.Today) }
+    // The History log is a flat list of individual events — its natural
+    // scope is one day. (The day/week/month/year selector belongs in the
+    // future aggregate / chart surface, where the unit is a chart, not a
+    // row; see spec/docs/future-implementations/history-and-aggregates.md.)
+    // `dayStartMs` is local-midnight of the selected day; the range is
+    // [dayStartMs, dayStartMs + 24h - 1ms].
+    var dayStartMs by remember { mutableLongStateOf(startOfTodayLocal()) }
+    var datePickerOpen by remember { mutableStateOf(false) }
     var selectedType by remember { mutableStateOf<String?>(null) }
 
     var events by remember { mutableStateOf<List<OhdEvent>>(emptyList()) }
@@ -112,18 +125,21 @@ fun RecentEventsScreen(
     // still surfaces the right number.
     val listLimit = 500L
 
-    // Re-query whenever the range or the type filter changes. Two parallel
-    // server-side calls: chip set via `listEventTypes` (GROUP BY, cheap),
-    // and the event list scoped to the selected type. Both honour the
-    // active time range.
-    LaunchedEffect(range, selectedType) {
-        val fromMs = rangeStartMs(range)
+    // Re-query whenever the selected day or the type filter changes. Two
+    // parallel server-side calls: chip set via `listEventTypes` (GROUP BY,
+    // cheap), and the event list scoped to the selected type. Both honour
+    // the active day [from = midnight, to = next-midnight - 1ms].
+    LaunchedEffect(dayStartMs, selectedType) {
+        val fromMs = dayStartMs
+        val toMs = dayStartMs + DAY_MS - 1
         val chipFilter = EventFilter(
             fromMs = fromMs,
+            toMs = toMs,
             visibility = EventVisibility.TopLevelOnly,
         )
         val listFilter = EventFilter(
             fromMs = fromMs,
+            toMs = toMs,
             eventTypesIn = selectedType?.let { listOf(it) } ?: emptyList(),
             limit = listLimit,
             visibility = EventVisibility.TopLevelOnly,
@@ -172,7 +188,13 @@ fun RecentEventsScreen(
                 .padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 4.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            OhdSegmentedTimeRange(selected = range, onSelect = { range = it })
+            DayPickerBar(
+                dayStartMs = dayStartMs,
+                onPrev = { dayStartMs -= DAY_MS },
+                onNext = { dayStartMs += DAY_MS },
+                onPick = { datePickerOpen = true },
+                onToday = { dayStartMs = startOfTodayLocal() },
+            )
 
             Row(
                 modifier = Modifier
@@ -195,17 +217,10 @@ fun RecentEventsScreen(
             }
         }
 
-        // ---- Optional chart (single scalar type selected) ----------------
-        val numericPoints = remember(events, selectedType) {
-            if (selectedType != null) numericSeries(events) else emptyList()
-        }
-        if (selectedType != null && numericPoints.isNotEmpty()) {
-            EventChart(
-                points = numericPoints,
-                range = range,
-                rangeStart = rangeStartMs(range),
-            )
-        }
+        // Charts (per-channel visualization) belong on the future aggregate
+        // surface where the unit is one chart, not one event row. The History
+        // log stays a flat searchable list — see
+        // spec/docs/future-implementations/history-and-aggregates.md.
 
         OhdSectionHeader(
             if (selectedType != null) humanizeEventType(selectedType!!).uppercase(Locale.getDefault())
@@ -269,13 +284,13 @@ fun RecentEventsScreen(
                 }
             }
         } else {
-            // Range/filter combination has no matching events.
+            // Day / filter combination has no matching events.
             Box(
                 modifier = Modifier.fillMaxSize(),
                 contentAlignment = Alignment.TopCenter,
             ) {
                 Text(
-                    text = "No entries in this range.",
+                    text = "No entries on this day.",
                     fontFamily = OhdBody,
                     fontWeight = FontWeight.W400,
                     fontSize = 13.sp,
@@ -285,12 +300,145 @@ fun RecentEventsScreen(
             }
         }
     }
+
+    if (datePickerOpen) {
+        DayPickerDialog(
+            initialDayStartMs = dayStartMs,
+            onDismiss = { datePickerOpen = false },
+            onPick = { picked ->
+                dayStartMs = picked
+                datePickerOpen = false
+            },
+        )
+    }
+}
+
+/**
+ * Material3 [DatePicker] in a modal dialog. Persists the picked day as
+ * `local-midnight` epoch millis so the surrounding query can use
+ * `[from, from + 24h - 1ms]` cleanly.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun DayPickerDialog(
+    initialDayStartMs: Long,
+    onDismiss: () -> Unit,
+    onPick: (Long) -> Unit,
+) {
+    val state = rememberDatePickerState(initialSelectedDateMillis = initialDayStartMs)
+    DatePickerDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = {
+            TextButton(onClick = {
+                val sel = state.selectedDateMillis
+                if (sel != null) {
+                    // DatePicker hands us UTC-midnight; normalise to local-
+                    // midnight so the range matches what the user expects.
+                    val utc = java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone("UTC"))
+                    utc.timeInMillis = sel
+                    val local = Calendar.getInstance()
+                    local.set(
+                        utc.get(Calendar.YEAR),
+                        utc.get(Calendar.MONTH),
+                        utc.get(Calendar.DAY_OF_MONTH),
+                        0, 0, 0,
+                    )
+                    local.set(Calendar.MILLISECOND, 0)
+                    onPick(local.timeInMillis)
+                } else {
+                    onDismiss()
+                }
+            }) { Text("OK") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    ) {
+        DatePicker(state = state)
+    }
 }
 
 /** Compact thousands separator for chip-count badges. Mirrors HomeScreen's. */
 private fun formatCount(n: Long): String = when {
     n < 1000 -> n.toString()
     else -> "%,d".format(n)
+}
+
+/** One day in milliseconds. */
+private const val DAY_MS: Long = 24L * 60L * 60L * 1000L
+
+/** Local-midnight (00:00) of today, in epoch millis. */
+private fun startOfTodayLocal(): Long {
+    val cal = Calendar.getInstance()
+    cal.set(Calendar.HOUR_OF_DAY, 0)
+    cal.set(Calendar.MINUTE, 0)
+    cal.set(Calendar.SECOND, 0)
+    cal.set(Calendar.MILLISECOND, 0)
+    return cal.timeInMillis
+}
+
+/**
+ * Pretty label for the day-picker pill. "Today" / "Yesterday" / "Tomorrow"
+ * for adjacent days; otherwise a localised day-of-week + medium date
+ * (e.g. "Wed, Jun 1").
+ */
+private fun formatDayLabel(dayStartMs: Long): String {
+    val todayStart = startOfTodayLocal()
+    return when (dayStartMs) {
+        todayStart -> "Today"
+        todayStart - DAY_MS -> "Yesterday"
+        todayStart + DAY_MS -> "Tomorrow"
+        else -> {
+            val fmt = java.text.SimpleDateFormat("EEE, MMM d", Locale.getDefault())
+            fmt.format(java.util.Date(dayStartMs))
+        }
+    }
+}
+
+/**
+ * Day-picker bar: `[ < ]   [ <day pill> ]   [ > ]   [ Today ]`. The pill
+ * opens the system date picker; the arrows shift by ±1 day. Replaces the
+ * day/week/month/year segmented control on History — that selector lives
+ * on the future aggregate surface where the unit is a chart, not a row.
+ */
+@Composable
+private fun DayPickerBar(
+    dayStartMs: Long,
+    onPrev: () -> Unit,
+    onNext: () -> Unit,
+    onPick: () -> Unit,
+    onToday: () -> Unit,
+) {
+    val isToday = dayStartMs == startOfTodayLocal()
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        OhdButton(
+            label = "‹",
+            onClick = onPrev,
+            variant = OhdButtonVariant.Ghost,
+        )
+        Box(modifier = Modifier.weight(1f)) {
+            OhdButton(
+                label = formatDayLabel(dayStartMs),
+                onClick = onPick,
+                variant = OhdButtonVariant.Secondary,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+        OhdButton(
+            label = "›",
+            onClick = onNext,
+            variant = OhdButtonVariant.Ghost,
+        )
+        if (!isToday) {
+            OhdButton(
+                label = "Today",
+                onClick = onToday,
+                variant = OhdButtonVariant.Ghost,
+            )
+        }
+    }
 }
 
 /** Start-of-range timestamp (ms), local timezone. Year folds into Month. */
