@@ -49,6 +49,7 @@ import com.ohd.connect.ui.screens.EditEventScreen
 import com.ohd.connect.ui.screens.EmergencySettingsScreen
 import com.ohd.connect.ui.screens.findEventByUlid
 import com.ohd.connect.ui.screens.ExportScreen
+import com.ohd.connect.ui.screens.FoodCreateScreen
 import com.ohd.connect.ui.screens.FoodDetailScreen
 import androidx.compose.ui.platform.LocalContext
 import com.ohd.connect.data.BarcodeScanner
@@ -123,6 +124,21 @@ sealed class OhdRoute(val route: String) {
         const val PATTERN = "log/food/search?prefill={prefill}"
         fun withPrefill(value: String): String =
             "log/food/search?prefill=${java.net.URLEncoder.encode(value, "UTF-8")}"
+    }
+
+    /**
+     * Create-a-food form. Optional `?prefill=` lets the search screen
+     * carry the user's current query (the food they couldn't find) into
+     * the form's Name field, so they don't have to re-type it.
+     */
+    data object LogFoodCreate : OhdRoute("log/food/create") {
+        const val PATTERN = "log/food/create?prefill={prefill}"
+        fun withPrefill(value: String?): String =
+            if (value.isNullOrBlank()) {
+                "log/food/create"
+            } else {
+                "log/food/create?prefill=${java.net.URLEncoder.encode(value, "UTF-8")}"
+            }
     }
 
     /**
@@ -573,7 +589,32 @@ fun OhdNavHost(
                 onPickFood = { item ->
                     navController.navigate(OhdRoute.FoodDetail.forName(item.name))
                 },
+                onCreateCustom = { seed ->
+                    navController.navigate(OhdRoute.LogFoodCreate.withPrefill(seed))
+                },
                 initialQuery = prefill,
+                contentPadding = contentPadding,
+            )
+        }
+        composable(
+            route = OhdRoute.LogFoodCreate.PATTERN,
+            arguments = listOf(
+                navArgument("prefill") {
+                    type = NavType.StringType
+                    defaultValue = ""
+                    nullable = false
+                },
+            ),
+        ) { entry ->
+            val rawPrefill = entry.arguments?.getString("prefill").orEmpty()
+            val prefill = runCatching {
+                java.net.URLDecoder.decode(rawPrefill, "UTF-8")
+            }.getOrDefault(rawPrefill).ifEmpty { null }
+            FoodCreateScreen(
+                prefill = prefill,
+                onBack = { navController.popBackStack() },
+                onSaved = { summary -> toast(summary) },
+                onError = { msg -> toast(msg) },
                 contentPadding = contentPadding,
             )
         }
@@ -590,7 +631,8 @@ fun OhdNavHost(
             val decoded = runCatching {
                 java.net.URLDecoder.decode(raw, "UTF-8")
             }.getOrDefault(raw)
-            val item = foodByName(decoded)
+            val ctx = LocalContext.current
+            val item = foodByName(decoded, ctx)
             if (item == null) {
                 // Defensive — should never trigger in practice because the
                 // route is only built from `FoodItem.name`. Pop back so the

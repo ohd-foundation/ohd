@@ -29,8 +29,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.ohd.connect.data.CustomFoodStore
 import com.ohd.connect.data.EventFilter
 import com.ohd.connect.data.OhdEvent
 import com.ohd.connect.data.OpenFoodFacts
@@ -82,12 +84,19 @@ fun FoodSearchScreen(
     onBack: () -> Unit,
     onScanReturn: () -> Unit,
     onPickFood: (FoodItem) -> Unit,
+    onCreateCustom: (prefill: String?) -> Unit,
     contentPadding: PaddingValues = PaddingValues(0.dp),
     modifier: Modifier = Modifier,
     initialQuery: String = "",
 ) {
+    val ctx = LocalContext.current
     var query by remember { mutableStateOf(initialQuery) }
-    val results = remember(query) { searchFoodDictionary(query) }
+    // Recompute on every recomposition: when this screen is popped-to after
+    // the create flow, the user's just-saved row needs to surface immediately.
+    val customResults = CustomFoodStore.search(ctx, query)
+    val dictionaryResults = remember(query) { searchFoodDictionary(query) }
+    // Custom-first so the user's own foods rank ahead of the built-in dictionary.
+    val results = customResults + dictionaryResults
 
     // Remote OFF lookup state — see [RemoteLookupState] kdoc.
     var remoteResults by remember { mutableStateOf<List<FoodItem>>(emptyList()) }
@@ -270,7 +279,9 @@ fun FoodSearchScreen(
                 }
             }
 
-            // Local in-app dictionary section.
+            // Local results — custom foods (newest-first) merged ahead of the
+            // built-in dictionary. The merge happens in [results] so a single
+            // tap path covers both sources.
             item(key = "local-header") {
                 OhdSectionHeader(text = "RESULTS")
             }
@@ -287,6 +298,24 @@ fun FoodSearchScreen(
                 if (index < results.lastIndex) {
                     OhdDivider()
                 }
+            }
+            // Divider above the create-custom row only when there are results
+            // above it; otherwise the empty-state CTA stands alone under the
+            // RESULTS header.
+            if (results.isNotEmpty()) {
+                item(key = "create-custom-divider") { OhdDivider() }
+            }
+            item(key = "create-custom") {
+                OhdListItem(
+                    primary = "+ Create custom food",
+                    secondary = if (query.trim().isNotEmpty()) {
+                        "Add \"${query.trim()}\" by hand"
+                    } else {
+                        "Type in nutrition per 100 g"
+                    },
+                    meta = "›",
+                    onClick = { onCreateCustom(query.trim().ifEmpty { null }) },
+                )
             }
         }
     }

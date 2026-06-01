@@ -1,5 +1,7 @@
 package com.ohd.connect.ui.screens
 
+import android.content.Context
+import com.ohd.connect.data.CustomFoodStore
 import com.ohd.connect.data.OpenFoodFacts
 
 /**
@@ -283,8 +285,11 @@ fun searchFoodDictionary(query: String): List<FoodItem> {
 /**
  * Look up a single dictionary entry by exact name (case-sensitive). Falls
  * back to [OpenFoodFacts.cache] so items resolved over the network during
- * search are still findable from [FoodDetailScreen] after navigation.
+ * search are still findable from [FoodDetailScreen] after navigation, then
+ * to [CustomFoodStore] when a [ctx] is supplied so the user's hand-created
+ * foods open into [FoodDetailScreen] the same way dictionary items do.
  */
-fun foodByName(name: String): FoodItem? =
+fun foodByName(name: String, ctx: Context? = null): FoodItem? =
     FoodDictionary.firstOrNull { it.name == name }
         ?: OpenFoodFacts.cache.values.firstOrNull { it.name == name }
+        ?: ctx?.let { CustomFoodStore.all(it).firstOrNull { f -> f.name == name } }
