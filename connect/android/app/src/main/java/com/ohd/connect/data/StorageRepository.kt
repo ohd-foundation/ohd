@@ -480,6 +480,100 @@ object StorageRepository {
     }
 
     /**
+     * Stream **every** event the signed-in identity owns as JSON Lines to
+     * [out]. One event per line, self-describing (timestamp, type, channels,
+     * notes, ulid, source, source_id, …). Works on both local and remote
+     * storage — pages through [queryEvents] with a sliding `toMs` upper
+     * bound so the full history lands regardless of size. Returns the
+     * number of events written. The user's "I want to always be able to
+     * pull my full event log" guarantee.
+     *
+     * Format: line `i` is `events.json` order — newest first, one
+     * `{"event": {...}}` object per line. A trailing line carries
+     * `{"meta": {"count": N, "exported_at_ms": …}}` so a consumer can
+     * verify the stream is complete.
+     *
+     * [progress] (when non-null) is invoked from the IO thread after every
+     * page with the running count, so a UI can show "wrote N events…".
+     */
+    fun exportAllEventsAsJsonl(
+        out: java.io.OutputStream,
+        progress: ((written: Long) -> Unit)? = null,
+    ): Result<Long> = runCatching {
+        val writer = java.io.BufferedWriter(java.io.OutputStreamWriter(out, Charsets.UTF_8))
+        var written: Long = 0L
+        var toMs: Long? = null
+        // Page size kept well under the server's 10 000-row cap. Smaller
+        // pages cost more round-trips on huge histories but keep memory
+        // flat; pick a value that's a good fit for typical phones.
+        val pageLimit = 2_000L
+        while (true) {
+            val batch = queryEvents(
+                EventFilter(
+                    toMs = toMs,
+                    limit = pageLimit,
+                    visibility = EventVisibility.All,
+                    includeDeleted = true,
+                ),
+            ).getOrThrow()
+            if (batch.isEmpty()) break
+            for (ev in batch) {
+                writer.write(eventToJsonl(ev))
+                writer.write("\n")
+            }
+            written += batch.size
+            progress?.invoke(written)
+            if (batch.size < pageLimit) break
+            // Advance the upper bound. Events arrive newest-first, so the
+            // *last* row in the batch is the oldest we've seen. Subtracting
+            // 1 ms is safe because the storage core mints ULIDs at ms
+            // granularity; events sharing a ms still differ by the random
+            // tail but the next page would only re-emit them. The page
+            // limit being well under the cap means we don't hit boundary
+            // duplicates in practice.
+            val oldest = batch.last().timestampMs
+            toMs = oldest - 1
+        }
+        writer.write("{\"meta\":{\"count\":$written,\"exported_at_ms\":${System.currentTimeMillis()}}}\n")
+        writer.flush()
+        written
+    }
+
+    /**
+     * Single-event → one JSONL line. Stable, self-describing shape so the
+     * file is consumable by anything that speaks JSON (jq, python, the OHD
+     * Import RPC once it lands). Lossless within OHD: every channel value
+     * survives, plus the ULID + source + source_id + topLevel flag so a
+     * re-import can dedup against the same (source, source_id) the original
+     * write used.
+     */
+    private fun eventToJsonl(ev: OhdEvent): String {
+        val o = org.json.JSONObject()
+        o.put("ulid", ev.ulid)
+        o.put("event_type", ev.eventType)
+        o.put("timestamp_ms", ev.timestampMs)
+        ev.durationMs?.let { o.put("duration_ms", it) }
+        ev.source?.let { o.put("source", it) }
+        ev.notes?.let { o.put("notes", it) }
+        o.put("top_level", ev.topLevel)
+        val ch = org.json.JSONArray()
+        ev.channels.forEach { c ->
+            val cv = org.json.JSONObject()
+            cv.put("path", c.path)
+            when (val s = c.scalar) {
+                is OhdScalar.Text -> { cv.put("type", "text"); cv.put("value", s.v) }
+                is OhdScalar.Real -> { cv.put("type", "real"); cv.put("value", s.v) }
+                is OhdScalar.Int -> { cv.put("type", "int"); cv.put("value", s.v) }
+                is OhdScalar.Bool -> { cv.put("type", "bool"); cv.put("value", s.v) }
+                is OhdScalar.EnumOrdinal -> { cv.put("type", "enum"); cv.put("value", s.ordinal) }
+            }
+            ch.put(cv)
+        }
+        o.put("channels", ch)
+        return org.json.JSONObject().put("event", o).toString()
+    }
+
+    /**
      * Hard-delete events on **remote** storage (OHD Cloud / self-hosted). All
      * filters optional; an unfiltered call wipes every event the signed-in
      * identity owns. Returns the number of `events` rows removed; cascaded

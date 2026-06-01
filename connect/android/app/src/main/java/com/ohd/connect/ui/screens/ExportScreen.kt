@@ -25,8 +25,11 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -130,6 +133,78 @@ fun ExportScreen(contentPadding: PaddingValues) {
                         },
                         enabled = !working,
                     ) { Text(if (working) "Working…" else "Export everything") }
+                }
+            }
+
+            // --- Portable JSONL (local + remote, no Import RPC required) ---
+            //
+            // Streams every event the signed-in identity owns to a file the
+            // user picks via Storage Access Framework. Plain UTF-8 JSON
+            // Lines — readable by jq, python, anything. Works on **both**
+            // local and remote storage, so the user's "always be able to
+            // pull the full event log" guarantee is honoured regardless of
+            // which backend is active. Paginates client-side so a multi-
+            // year history doesn't blow the row cap.
+            var jsonlWritten by remember { mutableLongStateOf(0L) }
+            val jsonlPicker = rememberLauncherForActivityResult(
+                ActivityResultContracts.CreateDocument("application/jsonl"),
+            ) { uri ->
+                if (uri == null) return@rememberLauncherForActivityResult
+                working = true
+                jsonlWritten = 0L
+                scope.launch {
+                    val res = withContext(Dispatchers.IO) {
+                        runCatching {
+                            ctx.contentResolver.openOutputStream(uri)?.use { os ->
+                                StorageRepository
+                                    .exportAllEventsAsJsonl(os) { n -> jsonlWritten = n }
+                                    .getOrThrow()
+                            } ?: error("Couldn't open the chosen destination.")
+                        }
+                    }
+                    working = false
+                    res.onSuccess { lastResult = "Wrote $it events as JSONL." }
+                        .onFailure { lastResult = "JSONL export failed: ${it.message}" }
+                }
+            }
+
+            Card(
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                ),
+            ) {
+                Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
+                    Text(
+                        text = "Portable event log (JSONL)",
+                        style = MaterialTheme.typography.titleMedium,
+                    )
+                    Text(
+                        text = "One event per line, self-describing JSON. Works on local + OHD Cloud — your guarantee that the full event log is always pullable regardless of which backend you're on. Open in jq / python / any text tool; re-importable on any future OHD instance.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    if (working && jsonlWritten > 0L) {
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            text = "Streaming… $jsonlWritten events written.",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    Button(
+                        onClick = {
+                            // Suggest a timestamped filename so the user can
+                            // keep multiple snapshots without overwriting.
+                            val name = "ohd-events-" +
+                                java.text.SimpleDateFormat("yyyyMMdd-HHmmss")
+                                    .format(java.util.Date()) +
+                                ".jsonl"
+                            jsonlPicker.launch(name)
+                        },
+                        enabled = !working,
+                    ) {
+                        Text(if (working) "Working…" else "Download event log (.jsonl)")
+                    }
                 }
             }
 
