@@ -37,20 +37,39 @@ pub async fn connect(
     Json(body): Json<ConnectBody>,
 ) -> ApiResult<Json<Value>> {
     let new = if let Some(link) = body.link.as_deref() {
-        let parsed = share::parse_share_link(link)?;
-        NewSource {
-            label: body.label.unwrap_or_else(|| "Shared storage".into()),
-            kind: "relay".into(),
-            endpoint: format!(
-                "{}/r/{}",
-                parsed.relay_host.trim_end_matches('/'),
-                parsed.rendezvous_id
-            ),
-            rendezvous_id: Some(parsed.rendezvous_id),
-            relay_host: Some(parsed.relay_host),
-            enc_token: crypto::seal_str(&app.config.data_key, &parsed.token),
-            cert_pin: parsed.pin,
-            scope_json: None,
+        match share::parse_share_link(link)? {
+            share::ParsedShare::Relay {
+                rendezvous_id,
+                token,
+                pin,
+                relay_host,
+            } => NewSource {
+                label: body.label.unwrap_or_else(|| "Shared storage".into()),
+                kind: "relay".into(),
+                endpoint: format!(
+                    "{}/r/{}",
+                    relay_host.trim_end_matches('/'),
+                    rendezvous_id
+                ),
+                rendezvous_id: Some(rendezvous_id),
+                relay_host: Some(relay_host),
+                enc_token: crypto::seal_str(&app.config.data_key, &token),
+                cert_pin: pin,
+                scope_json: None,
+            },
+            share::ParsedShare::Cloud { endpoint, token } => NewSource {
+                label: body.label.unwrap_or_else(|| "OHD Cloud".into()),
+                kind: "direct".into(),
+                endpoint,
+                rendezvous_id: None,
+                relay_host: None,
+                enc_token: crypto::seal_str(&app.config.data_key, &token),
+                // Public Caddy / Let's Encrypt cert — standard TLS, no
+                // per-share SPKI pin. (The relay variant pins because the
+                // inner TLS terminates on a private storage identity key.)
+                cert_pin: None,
+                scope_json: None,
+            },
         }
     } else {
         let endpoint = body.endpoint.ok_or_else(|| {

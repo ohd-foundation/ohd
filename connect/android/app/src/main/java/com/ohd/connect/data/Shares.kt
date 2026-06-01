@@ -150,18 +150,37 @@ data class ShareLink(
     val pinSpki: String?,
     /** Relay host; null for in-person-only shares. */
     val relayHost: String?,
+    /**
+     * Cloud-direct storage endpoint (e.g. `https://storage.ohd.dev`) for
+     * shares that bypass the relay because the storage is already on the
+     * public internet. Non-null on shares originating from a remote-
+     * storage Connect instance; null otherwise. When set, the canonical
+     * URL is the cloud-direct form CORD's parser recognises.
+     */
+    val cloudEndpoint: String? = null,
 ) {
     val hasRemoteAccess: Boolean get() = rendezvousId != null
+    val isCloudDirect: Boolean get() = cloudEndpoint != null
 
     /** The canonical `ohd://…` URL — what the QR code encodes. */
     fun canonicalUrl(): String =
-        if (hasRemoteAccess) {
-            "ohd://share/$rendezvousId?token=$token" +
-                (pinSpki?.let { "&pin=$it" } ?: "") +
-                (relayHost?.let { "&relay=$it" } ?: "")
-        } else {
-            // In-person form: no rendezvous yet, carry the bare grant token.
-            "ohd://grant/$token"
+        when {
+            isCloudDirect -> {
+                // Cloud-direct: storage URL is publicly reachable, no relay,
+                // no SPKI pin (standard TLS). CORD's parser routes this into
+                // its `direct` connection kind.
+                val ep = java.net.URLEncoder.encode(cloudEndpoint!!, "UTF-8")
+                "ohd://share/cloud?endpoint=$ep&token=$token"
+            }
+            hasRemoteAccess -> {
+                "ohd://share/$rendezvousId?token=$token" +
+                    (pinSpki?.let { "&pin=$it" } ?: "") +
+                    (relayHost?.let { "&relay=$it" } ?: "")
+            }
+            else -> {
+                // In-person form: no rendezvous yet, carry the bare grant token.
+                "ohd://grant/$token"
+            }
         }
 
     /**

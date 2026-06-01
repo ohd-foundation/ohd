@@ -91,6 +91,42 @@ This makes the Food tab a real food diary at any timescale, mirroring
 the same `Aggregate` RPC the Home tab uses but bucketed by `DATE_TRUNC
 ('day', timestamp_ms)`.
 
+## Visibility / event-type customization (future)
+
+Today History hides `food.*` events (the Food tab owns them) and uses
+`top_level` to keep `intake.*` micronutrient rows out of the flat list.
+That hard-coded split works for the obvious case but doesn't scale —
+the user might genuinely want to *see* their food-coloring intake on
+some rare day, and there will be many more event-type families of the
+same shape (medication compounds, environmental exposures, supplement
+breakdowns) where the same "show parent, drill into details" tension
+applies.
+
+Open design space, no decision yet:
+
+- **Per-family default visibility** — a registry of event-type prefixes
+  (`food.*`, `intake.*`, `measurement.*`, `medication.*`, …) each with a
+  default surface ("Food tab", "details under parent", "History list",
+  "hidden") and a user override. Backed by a small persisted
+  configuration the user can tweak ("Show food in History") without
+  having to recompile.
+- **Canonical measurement catalogue** — a consolidated source-of-truth
+  enum / registry for the standard measurement types (heart rate, blood
+  pressure, glucose, body temperature, weight, …) so the app, CORD, and
+  external sources (Health Connect mappers, future wearables) all agree
+  on the canonical name + the channel shape per type. Today each
+  surface re-invents the list; the registry is the place to consolidate.
+  This is also what feeds the "show me a chart for X" picker on the
+  future aggregate surface.
+- **'Show detail' affordance per row** — for a parent event (e.g. a
+  `food.eaten`), tapping it could surface the bound `intake.*` children
+  inline without polluting History with the detail rows. The parent
+  stays the unit; details are an opt-in expansion. The `correlation_id`
+  channel that already links parents to children is the join key.
+
+The current `top_level` + `event_types_not_in("food.*")` filtering is a
+v1 placeholder. The right shape lands with the canonical registry.
+
 ## Required server-side pieces
 
 - `ListEventTypes(filter) → repeated {name, count}` — distinct event

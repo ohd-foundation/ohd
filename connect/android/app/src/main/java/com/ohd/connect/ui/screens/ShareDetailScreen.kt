@@ -47,8 +47,10 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
+import com.ohd.connect.BuildConfig
 import com.ohd.connect.data.AuditEntry
 import com.ohd.connect.data.AuditFilter
+import com.ohd.connect.data.Auth
 import com.ohd.connect.data.EmergencyConfig
 import com.ohd.connect.data.QrEncoder
 import com.ohd.connect.data.ShareKind
@@ -201,12 +203,27 @@ fun ShareDetailScreen(
                         }
                     },
                 )
-                ActivateRemoteAccessCard(
-                    shareId = shareId,
-                    shareLabel = s.label,
-                    grantToken = reissuedToken ?: s.grant?.ulid ?: "",
-                    onToast = onToast,
-                )
+                // Cloud-direct vs on-device relay path. Storage already on
+                // the public internet → there's no local relay tunnel to
+                // host; ship a cloud-direct link CORD can paste into its
+                // "Add connection" flow. Otherwise the historic relay
+                // activation flow.
+                if (StorageRepository.isRemoteMode()) {
+                    CloudShareCard(
+                        grantToken = reissuedToken ?: s.grant?.ulid ?: "",
+                        storageUrl = Auth.loadStorageUrl(
+                            ctx,
+                            StorageRepository.activeMode().name,
+                        ) ?: BuildConfig.OHD_CLOUD_STORAGE_URL,
+                    )
+                } else {
+                    ActivateRemoteAccessCard(
+                        shareId = shareId,
+                        shareLabel = s.label,
+                        grantToken = reissuedToken ?: s.grant?.ulid ?: "",
+                        onToast = onToast,
+                    )
+                }
             }
 
             AuditCard(isEmergency = isEmergency, audit = audit)
@@ -588,6 +605,61 @@ private fun ActivateRemoteAccessCard(
                 modifier = Modifier.fillMaxWidth(),
             ) { Text("Disable remote access") }
         }
+    }
+}
+
+/**
+ * Cloud-direct share — the third surface in the share flow that bridges
+ * the gap when the user's storage is already on the public internet
+ * (OHD Cloud or self-hosted with a public Caddy cert). No local relay
+ * tunnel to host; CORD reads `storage.ohd.dev` (or whichever URL) over
+ * standard HTTPS using just the grant token as the bearer. The link
+ * format is what `cord/crates/cord-server/src/share.rs` parses as the
+ * `ParsedShare::Cloud` variant.
+ */
+@Composable
+private fun CloudShareCard(
+    grantToken: String,
+    storageUrl: String,
+) {
+    val link = remember(grantToken, storageUrl) {
+        ShareLink(
+            rendezvousId = null,
+            token = grantToken,
+            pinSpki = null,
+            relayHost = null,
+            cloudEndpoint = storageUrl,
+        )
+    }
+    DetailCard {
+        Text("Cloud share", style = MaterialTheme.typography.titleMedium)
+        Spacer(Modifier.height(4.dp))
+        Text(
+            "Your storage already lives on the public internet, so no relay " +
+                "tunnel is needed — the grantee reaches it directly with the " +
+                "grant token below. Paste the link into CORD's Add connection " +
+                "field, or scan the QR.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(8.dp))
+        Text(
+            text = "Storage: $storageUrl",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(8.dp))
+        OutlinedTextField(
+            value = link.canonicalUrl(),
+            onValueChange = {},
+            readOnly = true,
+            label = { Text("ohd://share link") },
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Spacer(Modifier.height(12.dp))
+        QrImage(content = link.canonicalUrl())
+        Spacer(Modifier.height(12.dp))
+        CopyLinkButton(link.canonicalUrl())
     }
 }
 
