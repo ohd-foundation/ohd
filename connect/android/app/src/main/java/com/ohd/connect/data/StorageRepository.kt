@@ -547,6 +547,139 @@ object StorageRepository {
      * re-import can dedup against the same (source, source_id) the original
      * write used.
      */
+    /**
+     * Read events back from a JSONL stream produced by
+     * [exportAllEventsAsJsonl] (or any source that follows the same line
+     * shape) and write them through [putEvents] in batches. Returns a
+     * [ImportResult] with the per-line counts.
+     *
+     * Idempotency: events that carry `source` + `source_id` dedup via
+     * `idx_events_dedup` on the storage side — re-importing the same export
+     * adds zero rows. Events without `source_id` are written as new rows
+     * (different ULID, same content) on a fresh DB.
+     *
+     * The trailing `{"meta":…}` line is recognized and skipped.
+     *
+     * [progress] is invoked from the IO thread after every batch with the
+     * cumulative number of events written so a UI can show progress.
+     */
+    fun importEventsFromJsonl(
+        input: java.io.InputStream,
+        progress: ((written: Long) -> Unit)? = null,
+    ): Result<ImportResult> = runCatching {
+        val reader = java.io.BufferedReader(java.io.InputStreamReader(input, Charsets.UTF_8))
+        val batchSize = 200
+        var written: Long = 0
+        var skipped: Long = 0
+        var failed: Long = 0
+        val errors = mutableListOf<String>()
+        val batch = ArrayList<EventInput>(batchSize)
+
+        fun flush() {
+            if (batch.isEmpty()) return
+            val res = putEvents(batch.toList(), atomic = false)
+            res.onSuccess { outcomes ->
+                outcomes.forEach { o ->
+                    when (o) {
+                        is PutEventOutcome.Committed, is PutEventOutcome.Pending -> written++
+                        is PutEventOutcome.Error -> {
+                            failed++
+                            errors.add("${o.code}: ${o.message}")
+                        }
+                    }
+                }
+            }.onFailure { e ->
+                failed += batch.size
+                errors.add("putEvents batch failed: ${e.message ?: "(null)"}")
+            }
+            batch.clear()
+            progress?.invoke(written)
+        }
+
+        var lineNo = 0
+        while (true) {
+            val line = reader.readLine() ?: break
+            lineNo++
+            val trimmed = line.trim()
+            if (trimmed.isEmpty()) continue
+            val obj: org.json.JSONObject? = try {
+                org.json.JSONObject(trimmed)
+            } catch (e: Exception) {
+                failed++
+                errors.add("line $lineNo: not valid JSON — ${e.message}")
+                null
+            }
+            if (obj == null) continue
+            // Skip the meta trailer.
+            if (obj.has("meta") && !obj.has("event")) {
+                skipped++
+                continue
+            }
+            val ev = obj.optJSONObject("event")
+            if (ev == null) {
+                skipped++
+                continue
+            }
+            val parsed = jsonlToEventInput(ev)
+            if (parsed == null) {
+                failed++
+                errors.add("line $lineNo: missing required fields (event_type / timestamp_ms)")
+                continue
+            }
+            batch.add(parsed)
+            if (batch.size >= batchSize) flush()
+        }
+        flush()
+        ImportResult(
+            written = written,
+            skipped = skipped,
+            failed = failed,
+            errors = errors.take(20), // cap so a runaway file doesn't OOM
+        )
+    }
+
+    /** One-line → EventInput. Returns null if the line lacks required fields. */
+    private fun jsonlToEventInput(o: org.json.JSONObject): EventInput? {
+        val ts = o.optLong("timestamp_ms", -1L)
+        val type = o.optString("event_type", "").takeIf { it.isNotEmpty() } ?: return null
+        if (ts < 0) return null
+        val channels = mutableListOf<EventChannelInput>()
+        val arr = o.optJSONArray("channels")
+        if (arr != null) {
+            for (i in 0 until arr.length()) {
+                val cv = arr.optJSONObject(i) ?: continue
+                val path = cv.optString("path", "").takeIf { it.isNotEmpty() } ?: continue
+                val scalar = when (cv.optString("type")) {
+                    "text" -> OhdScalar.Text(cv.optString("value", ""))
+                    "real" -> OhdScalar.Real(cv.optDouble("value", 0.0))
+                    "int" -> OhdScalar.Int(cv.optLong("value", 0L))
+                    "bool" -> OhdScalar.Bool(cv.optBoolean("value", false))
+                    "enum" -> OhdScalar.EnumOrdinal(cv.optInt("value", 0))
+                    else -> continue
+                }
+                channels.add(EventChannelInput(path, scalar))
+            }
+        }
+        return EventInput(
+            timestampMs = ts,
+            durationMs = o.optLong("duration_ms").takeIf { o.has("duration_ms") },
+            eventType = type,
+            channels = channels,
+            source = o.optString("source").takeIf { it.isNotEmpty() } ?: "import:jsonl",
+            sourceId = o.optString("source_id").takeIf { it.isNotEmpty() },
+            notes = o.optString("notes").takeIf { it.isNotEmpty() },
+            topLevel = o.optBoolean("top_level", true),
+        )
+    }
+
+    /** Result of [importEventsFromJsonl]. */
+    data class ImportResult(
+        val written: Long,
+        val skipped: Long,
+        val failed: Long,
+        val errors: List<String>,
+    )
+
     private fun eventToJsonl(ev: OhdEvent): String {
         val o = org.json.JSONObject()
         o.put("ulid", ev.ulid)

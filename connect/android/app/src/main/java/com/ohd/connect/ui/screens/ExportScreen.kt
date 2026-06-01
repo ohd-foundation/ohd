@@ -208,6 +208,90 @@ fun ExportScreen(contentPadding: PaddingValues) {
                 }
             }
 
+            // --- Portable JSONL import -----------------------------------
+            //
+            // Reads a JSONL stream (the one [exportAllEventsAsJsonl] writes,
+            // or anything that mirrors that shape) and writes the events
+            // through `put_events`. Dedup is automatic on `(source,
+            // source_id)` — re-importing the same file adds zero rows. The
+            // symmetric counterpart to "Download event log" above; together
+            // they back the user's "I can always pull my data and replay it
+            // anywhere" guarantee.
+            var importWritten by remember { mutableLongStateOf(0L) }
+            val importPicker = rememberLauncherForActivityResult(
+                ActivityResultContracts.OpenDocument(),
+            ) { uri ->
+                if (uri == null) return@rememberLauncherForActivityResult
+                working = true
+                importWritten = 0L
+                scope.launch {
+                    val res = withContext(Dispatchers.IO) {
+                        runCatching {
+                            ctx.contentResolver.openInputStream(uri)?.use { input ->
+                                StorageRepository
+                                    .importEventsFromJsonl(input) { n -> importWritten = n }
+                                    .getOrThrow()
+                            } ?: error("Couldn't open the chosen file.")
+                        }
+                    }
+                    working = false
+                    res.onSuccess { r ->
+                        lastResult = buildString {
+                            append("Imported ${r.written} events")
+                            if (r.skipped > 0) append(", skipped ${r.skipped}")
+                            if (r.failed > 0) append(", failed ${r.failed}")
+                            if (r.errors.isNotEmpty()) {
+                                append(" — first error: ${r.errors.first()}")
+                            }
+                        }
+                    }.onFailure { lastResult = "Import failed: ${it.message}" }
+                }
+            }
+
+            Card(
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                ),
+            ) {
+                Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
+                    Text(
+                        text = "Import event log (JSONL)",
+                        style = MaterialTheme.typography.titleMedium,
+                    )
+                    Text(
+                        text = "Read a previously-downloaded .jsonl file back into this instance — useful for moving between local and OHD Cloud, restoring a snapshot, or accepting an export from another OHD-compatible source. Events that carry source + source_id dedup automatically, so re-importing the same file is safe.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    if (working && importWritten > 0L) {
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            text = "Importing… $importWritten events written.",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    Button(
+                        onClick = {
+                            // SAF `OpenDocument` accepts a MIME list; .jsonl
+                            // commonly serves as `application/jsonl`,
+                            // `application/x-ndjson`, or just `text/plain`.
+                            // The picker lets the user override anyway.
+                            importPicker.launch(arrayOf(
+                                "application/jsonl",
+                                "application/x-ndjson",
+                                "application/json",
+                                "text/plain",
+                                "*/*",
+                            ))
+                        },
+                        enabled = !working,
+                    ) {
+                        Text(if (working) "Working…" else "Import event log (.jsonl)")
+                    }
+                }
+            }
+
             // --- Doctor PDF ----------------------------------------------
             Card(
                 colors = CardDefaults.cardColors(
