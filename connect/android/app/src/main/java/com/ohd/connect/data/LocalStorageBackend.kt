@@ -59,6 +59,10 @@ internal class LocalStorageBackend(
         listEventTypes(filter.toDto()).map { EventTypeSummary(it.eventType, it.count) }
     }
 
+    override fun countSources(filter: EventFilter): Result<Long> = withStorage {
+        countSources(filter.toDto()).toLong()
+    }
+
     override fun countEvents(filter: EventFilter): Result<Long> = withStorage {
         countEvents(filter.toDto()).toLong()
     }

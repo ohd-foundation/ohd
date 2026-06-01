@@ -88,6 +88,7 @@ fun HomeScreen(
     val ctx = LocalContext.current
     var range by remember { mutableStateOf(TimeRange.Today) }
     var eventCount by remember { mutableLongStateOf(0L) }
+    var sourceCount by remember { mutableLongStateOf(0L) }
 
     // Favourites — read the persisted blob lazily via [LaunchedEffect] so
     // EncryptedSharedPreferences's first-touch latency (~hundreds of ms on
@@ -119,9 +120,12 @@ fun HomeScreen(
                 // countEvents is synchronous and, against the remote backend, a
                 // blocking network RPC — run it off the main thread. The Compose
                 // snapshot state assignment is thread-safe.
-                eventCount = withContext(Dispatchers.IO) {
-                    countEventsSince(rangeStartMs(range))
+                val (ec, sc) = withContext(Dispatchers.IO) {
+                    val fromMs = rangeStartMs(range)
+                    countEventsSince(fromMs) to countSourcesSince(fromMs)
                 }
+                eventCount = ec
+                sourceCount = sc
                 delay(5_000L)
             }
         }
@@ -162,8 +166,8 @@ fun HomeScreen(
                         .clickable { onOpenHistory() },
                 )
                 OhdStatTile(
-                    value = "1",
-                    label = "source",
+                    value = formatCount(sourceCount),
+                    label = if (sourceCount == 1L) "source" else "sources",
                     modifier = Modifier
                         .weight(1f)
                         .clickable { onOpenDevices() },
@@ -358,6 +362,15 @@ private fun rangeLabel(range: TimeRange): String = when (range) {
 /** Pure SQL COUNT(*) — no 10 000 row cap, fast even on year-range queries. */
 private fun countEventsSince(fromMs: Long): Long =
     StorageRepository.countEvents(EventFilter(fromMs = fromMs, visibility = EventVisibility.TopLevelOnly))
+        .getOrNull()
+        ?: 0L
+
+/**
+ * `SELECT COUNT(DISTINCT source)` over the same range — the home tile's
+ * real "sources" number. Replaces the hard-coded "1 source" placeholder.
+ */
+private fun countSourcesSince(fromMs: Long): Long =
+    StorageRepository.countSources(EventFilter(fromMs = fromMs, visibility = EventVisibility.TopLevelOnly))
         .getOrNull()
         ?: 0L
 

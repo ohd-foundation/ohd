@@ -478,6 +478,15 @@ object StorageRepository {
     }
 
     /**
+     * Distinct `source` count within `filter`. Drives the home-screen
+     * "sources" tile so it reflects the real producer count (phone, Health
+     * Connect, paired wearables, importers) instead of a hard-coded "1".
+     */
+    fun countSources(filter: EventFilter): Result<Long> = withBackend {
+        countSources(filter)
+    }
+
+    /**
      * Distinct event-type names with per-type counts within `filter`, sorted
      * count-DESC. One SQL `GROUP BY` on either backend — used by the
      * History chip set so the screen doesn't need to pull thousands of rows
