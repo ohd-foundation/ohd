@@ -112,6 +112,12 @@ data class OhdChannel(
     val scalar: OhdScalar,
 )
 
+/** One row of [StorageRepository.listEventTypes]. */
+data class EventTypeSummary(
+    val eventType: String,
+    val count: Long,
+)
+
 sealed interface OhdScalar {
     data class Real(val v: Double) : OhdScalar
     data class Int(val v: Long) : OhdScalar
@@ -469,6 +475,16 @@ object StorageRepository {
      */
     fun countEvents(filter: EventFilter): Result<Long> = withBackend {
         countEvents(filter)
+    }
+
+    /**
+     * Distinct event-type names with per-type counts within `filter`, sorted
+     * count-DESC. One SQL `GROUP BY` on either backend — used by the
+     * History chip set so the screen doesn't need to pull thousands of rows
+     * just to discover which types are present in a range.
+     */
+    fun listEventTypes(filter: EventFilter): Result<List<EventTypeSummary>> = withBackend {
+        listEventTypes(filter)
     }
 
     /**

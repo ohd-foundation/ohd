@@ -208,6 +208,10 @@ internal class RemoteStorageBackend(
         queryEvents(filter.toDto()).map { it.toDomain() }
     }
 
+    override fun listEventTypes(filter: EventFilter): Result<List<EventTypeSummary>> = remoteCall {
+        listEventTypes(filter.toDto()).map { EventTypeSummary(it.eventType, it.count) }
+    }
+
     override fun countEvents(filter: EventFilter): Result<Long> = remoteCall {
         countEvents(filter.toDto()).toLong()
     }

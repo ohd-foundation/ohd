@@ -44,6 +44,13 @@ interface StorageBackend {
 
     fun countEvents(filter: EventFilter): Result<Long>
 
+    /**
+     * Distinct event-type names + per-type counts within `filter`, sorted
+     * count-DESC. One SQL `GROUP BY` (or its remote-RPC equivalent). Used
+     * by the History chip set.
+     */
+    fun listEventTypes(filter: EventFilter): Result<List<EventTypeSummary>>
+
     fun softDeleteEventsBefore(cutoffMs: Long): Result<Long>
 
     // --- Agent tools ---------------------------------------------------------

@@ -27,6 +27,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -91,8 +92,13 @@ fun RecentEventsScreen(
     var selectedType by remember { mutableStateOf<String?>(null) }
 
     var events by remember { mutableStateOf<List<OhdEvent>>(emptyList()) }
-    // Distinct event types present within the current range — drives the chips.
-    var types by remember { mutableStateOf<List<String>>(emptyList()) }
+    // Distinct event types present in the current range, with counts — the
+    // chip set. Server returns it in one GROUP BY (`listEventTypes`); no
+    // need to drag thousands of rows back just to discover what's present.
+    var types by remember { mutableStateOf<List<com.ohd.connect.data.EventTypeSummary>>(emptyList()) }
+    // Total events in range (across all types) — drives the "All · N" chip
+    // and the "showing first M of N" footer when truncated.
+    var totalInRange by remember { mutableLongStateOf(0L) }
     var fallback by remember { mutableStateOf<List<DisplayRow>>(emptyList()) }
     var loaded by remember { mutableStateOf(false) }
     // correlation_id → summed nutrition from intake.* children. Lets the
@@ -101,40 +107,46 @@ fun RecentEventsScreen(
     // intake split.
     var foodNutrition by remember { mutableStateOf<Map<String, FoodTotals>>(emptyMap()) }
 
-    // Re-query whenever the range or the type filter changes. queryEvents is
-    // synchronous but pushed to IO to keep the main thread free.
+    // Page size for the event list. Small enough to stay snappy; the chip
+    // counts above are the canonical "total in range" so a truncated list
+    // still surfaces the right number.
+    val listLimit = 500L
+
+    // Re-query whenever the range or the type filter changes. Two parallel
+    // server-side calls: chip set via `listEventTypes` (GROUP BY, cheap),
+    // and the event list scoped to the selected type. Both honour the
+    // active time range.
     LaunchedEffect(range, selectedType) {
         val fromMs = rangeStartMs(range)
+        val chipFilter = EventFilter(
+            fromMs = fromMs,
+            visibility = EventVisibility.TopLevelOnly,
+        )
+        val listFilter = EventFilter(
+            fromMs = fromMs,
+            eventTypesIn = selectedType?.let { listOf(it) } ?: emptyList(),
+            limit = listLimit,
+            visibility = EventVisibility.TopLevelOnly,
+        )
         val result = withContext(Dispatchers.IO) {
-            // Full range (no type filter) — drives the chip set.
-            // 10 000 = server's max page (per `core::events` docs). Cuts the
-            // recent-2 000 cap that hid less-frequent event types (e.g.
-            // glucose, blood pressure) behind a flood of HC step/heart-rate
-            // rows. A proper paginated /server-side type-aggregation lands
-            // with the future range-navigation work.
-            val all = StorageRepository.queryEvents(
-                EventFilter(
-                    fromMs = fromMs,
-                    limit = 10_000L,
-                    visibility = EventVisibility.TopLevelOnly,
-                ),
-            ).getOrNull().orEmpty()
-            // Filtered list — by selected type when one is active.
-            val filtered = if (selectedType != null) {
-                all.filter { it.eventType == selectedType }
-            } else {
-                all
-            }
-            val nutrition = aggregateFoodNutrition(filtered)
-            Triple(all, filtered, nutrition)
+            val typeSummary = StorageRepository
+                .listEventTypes(chipFilter)
+                .getOrNull()
+                .orEmpty()
+            val list = StorageRepository.queryEvents(listFilter)
+                .getOrNull()
+                .orEmpty()
+            val nutrition = aggregateFoodNutrition(list)
+            Triple(typeSummary, list, nutrition)
         }
-        types = result.first.map { it.eventType }.distinct().sorted()
+        types = result.first
+        totalInRange = result.first.sumOf { it.count }
         events = result.second
         foodNutrition = result.third
         loaded = true
         // The type filter may point at a type no longer present after a
         // range change — fall back to "All" so the list isn't empty.
-        if (selectedType != null && selectedType !in types) {
+        if (selectedType != null && types.none { it.eventType == selectedType }) {
             selectedType = null
         }
     }
@@ -169,15 +181,15 @@ fun RecentEventsScreen(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 FilterChip(
-                    label = "All",
+                    label = "All · ${formatCount(totalInRange)}",
                     selected = selectedType == null,
                     onClick = { selectedType = null },
                 )
                 types.forEach { t ->
                     FilterChip(
-                        label = humanizeEventType(t),
-                        selected = selectedType == t,
-                        onClick = { selectedType = t },
+                        label = "${humanizeEventType(t.eventType)} · ${formatCount(t.count)}",
+                        selected = selectedType == t.eventType,
+                        onClick = { selectedType = t.eventType },
                     )
                 }
             }
@@ -213,6 +225,14 @@ fun RecentEventsScreen(
                     }
                     .toMap()
             }
+            // True count for the active scope: the chip's count when a
+            // type is selected, otherwise the cross-type total in range.
+            val scopeTotal = if (selectedType != null) {
+                types.firstOrNull { it.eventType == selectedType }?.count ?: events.size.toLong()
+            } else {
+                totalInRange
+            }
+            val truncated = scopeTotal > events.size
             LazyColumn(modifier = Modifier.fillMaxSize()) {
                 itemsIndexed(events) { idx, ev ->
                     EventRow(
@@ -221,7 +241,19 @@ fun RecentEventsScreen(
                         nutrition = foodNutrition[ev.correlationId()],
                         onEdit = { onEdit(ev.ulid) },
                     )
-                    if (idx < events.lastIndex) OhdDivider()
+                    if (idx < events.lastIndex || truncated) OhdDivider()
+                }
+                if (truncated) {
+                    item {
+                        Text(
+                            text = "Showing first ${formatCount(events.size.toLong())} of ${formatCount(scopeTotal)} — pick a type or narrow the range to see more.",
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 12.dp),
+                            color = OhdColors.Muted,
+                            fontSize = 12.sp,
+                        )
+                    }
                 }
             }
         } else if (loaded && types.isEmpty()) {
@@ -253,6 +285,12 @@ fun RecentEventsScreen(
             }
         }
     }
+}
+
+/** Compact thousands separator for chip-count badges. Mirrors HomeScreen's. */
+private fun formatCount(n: Long): String = when {
+    n < 1000 -> n.toString()
+    else -> "%,d".format(n)
 }
 
 /** Start-of-range timestamp (ms), local timezone. Year folds into Month. */
