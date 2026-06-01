@@ -128,18 +128,23 @@ fun RecentEventsScreen(
     // parallel server-side calls: chip set via `listEventTypes` (GROUP BY,
     // cheap), and the event list scoped to the selected type. Both honour
     // the active day [from = midnight, to = next-midnight - 1ms].
+    //
+    // Food events get their own dedicated tab — exclude them here so
+    // History is "everything else", not drowned in meal rows.
     LaunchedEffect(dayStartMs, selectedType) {
         val fromMs = dayStartMs
         val toMs = dayStartMs + DAY_MS - 1
         val chipFilter = EventFilter(
             fromMs = fromMs,
             toMs = toMs,
+            eventTypesNotIn = FOOD_EVENT_TYPES,
             visibility = EventVisibility.TopLevelOnly,
         )
         val listFilter = EventFilter(
             fromMs = fromMs,
             toMs = toMs,
             eventTypesIn = selectedType?.let { listOf(it) } ?: emptyList(),
+            eventTypesNotIn = if (selectedType == null) FOOD_EVENT_TYPES else emptyList(),
             limit = listLimit,
             visibility = EventVisibility.TopLevelOnly,
         )
@@ -349,6 +354,16 @@ private fun formatCount(n: Long): String = when {
 
 /** One day in milliseconds. */
 private const val DAY_MS: Long = 24L * 60L * 60L * 1000L
+
+/**
+ * Event types the Food tab owns end-to-end. History excludes these so the
+ * "everything else" surface isn't dominated by per-meal rows.
+ */
+private val FOOD_EVENT_TYPES = listOf(
+    "food.eaten",
+    "food.consumption_started",
+    "food.consumption_finished",
+)
 
 /** Local-midnight (00:00) of today, in epoch millis. */
 private fun startOfTodayLocal(): Long {

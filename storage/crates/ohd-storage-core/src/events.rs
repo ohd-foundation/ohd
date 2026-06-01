@@ -349,6 +349,16 @@ pub fn list_event_types(
     if !filter.include_deleted {
         sql.push_str(" AND e.deleted_at_ms IS NULL");
     }
+    // Honour the same `top_level` visibility predicate query_events does,
+    // so the chip-count and the list-row-count for the same filter always
+    // agree (a 'Heart rate · 760' chip that opens to zero rows because the
+    // count included non-top-level samples is exactly the kind of mismatch
+    // this guard fixes).
+    match &filter.visibility {
+        EventVisibility::All => {}
+        EventVisibility::TopLevelOnly => sql.push_str(" AND e.top_level = 1"),
+        EventVisibility::NonTopLevelOnly => sql.push_str(" AND e.top_level = 0"),
+    }
     if !filter.event_types_in.is_empty() {
         let placeholders = std::iter::repeat("?")
             .take(filter.event_types_in.len())
