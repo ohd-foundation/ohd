@@ -107,10 +107,15 @@ fun RecentEventsScreen(
         val fromMs = rangeStartMs(range)
         val result = withContext(Dispatchers.IO) {
             // Full range (no type filter) — drives the chip set.
+            // 10 000 = server's max page (per `core::events` docs). Cuts the
+            // recent-2 000 cap that hid less-frequent event types (e.g.
+            // glucose, blood pressure) behind a flood of HC step/heart-rate
+            // rows. A proper paginated /server-side type-aggregation lands
+            // with the future range-navigation work.
             val all = StorageRepository.queryEvents(
                 EventFilter(
                     fromMs = fromMs,
-                    limit = 2_000L,
+                    limit = 10_000L,
                     visibility = EventVisibility.TopLevelOnly,
                 ),
             ).getOrNull().orEmpty()
@@ -261,7 +266,8 @@ private fun rangeStartMs(range: TimeRange): Long {
             cal.set(Calendar.MILLISECOND, 0)
         }
         TimeRange.Week -> cal.add(Calendar.DAY_OF_YEAR, -7)
-        TimeRange.Month, TimeRange.Year -> cal.add(Calendar.DAY_OF_YEAR, -30)
+        TimeRange.Month -> cal.add(Calendar.DAY_OF_YEAR, -30)
+        TimeRange.Year -> cal.add(Calendar.DAY_OF_YEAR, -365)
     }
     return cal.timeInMillis
 }
@@ -975,8 +981,13 @@ private fun aggregateFoodNutrition(events: List<OhdEvent>): Map<String, FoodTota
  * the event isn't in the recent window or storage isn't open.
  */
 internal fun findEventByUlid(ulid: String): OhdEvent? {
+    // Server doesn't yet expose `GetEventByUlid` through uniffi; until it
+    // does, a 10 000-row recent-window scan covers all but the most extreme
+    // histories — enough that opening an event from yesterday's History
+    // doesn't 404 with "Event not in recent window". Long-term replace with
+    // a single getEventByUlid RPC + cache.
     val events = StorageRepository
-        .queryEvents(com.ohd.connect.data.EventFilter(limit = 200L))
+        .queryEvents(com.ohd.connect.data.EventFilter(limit = 10_000L))
         .getOrNull()
         .orEmpty()
     return events.firstOrNull { it.ulid == ulid }
