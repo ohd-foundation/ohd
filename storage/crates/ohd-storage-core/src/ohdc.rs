@@ -15,8 +15,8 @@ use crate::cases::{
     self, Case, CaseFilterRow, CaseReopenToken, CaseUpdate, ListCasesFilter, NewCase,
 };
 use crate::events::{
-    self, ChannelScalar, ChannelValue, DeleteFilter, Event, EventFilter, EventInput, GrantScope,
-    PutEventResult,
+    self, ChannelScalar, ChannelValue, DeleteFilter, Event, EventFilter, EventInput,
+    EventTypeSummary, GrantScope, PutEventResult,
 };
 use crate::grants::{self, GrantRow, GrantUpdate, ListGrantsFilter, NewGrant};
 use crate::pending::{self, ListPendingFilter, PendingRow, PendingStatus};
@@ -120,6 +120,49 @@ pub fn put_events(
 
 fn is_error(r: &PutEventResult) -> bool {
     matches!(r, PutEventResult::Error { .. })
+}
+
+/// `OhdcService.ListEventTypes` — distinct event types within `filter`,
+/// with per-type counts. One SQL `GROUP BY`; backs the History chip set
+/// without materializing rows. Self-session only for v0; the grant-scoped
+/// variant intersects with the grant's allowed type set in a later pass.
+pub fn list_event_types(
+    storage: &Storage,
+    token: &ResolvedToken,
+    filter: &EventFilter,
+) -> Result<Vec<EventTypeSummary>> {
+    auth::check_kind_for_op(token, OhdcOp::ListEventTypes)?;
+    let mut rows: Vec<EventTypeSummary> = Vec::new();
+    let res = storage.with_conn(|conn| {
+        rows = events::list_event_types(conn, filter)?;
+        Ok(())
+    });
+    let outcome = match &res {
+        Ok(()) => AuditResult::Success,
+        Err(_) => AuditResult::Error,
+    };
+    storage.with_conn(|conn| {
+        audit::append(
+            conn,
+            &AuditEntry {
+                ts_ms: audit::now_ms(),
+                actor_type: actor_type_for(token.kind),
+                auto_granted: false,
+                grant_id: token.grant_id,
+                action: "read".into(),
+                query_kind: Some("list_event_types".into()),
+                query_params_json: Some(serde_json::to_string(filter)?),
+                rows_returned: Some(rows.len() as i64),
+                rows_filtered: None,
+                result: outcome,
+                reason: None,
+                caller_ip: None,
+                caller_ua: None,
+                delegated_for_user_ulid: None,
+            },
+        )
+    })?;
+    res.map(|_| rows)
 }
 
 /// `OhdcService.CountEvents` — pure SQL `COUNT(*)` over the same predicates

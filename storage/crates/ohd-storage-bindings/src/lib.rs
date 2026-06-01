@@ -484,6 +484,14 @@ impl PutEventOutcomeDto {
     }
 }
 
+/// One row of [`OhdStorage::list_event_types`] / `RemoteOhdStorage::list_event_types`
+/// — a distinct `event_type` name + its count within the supplied filter.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct EventTypeSummaryDto {
+    pub event_type: String,
+    pub count: i64,
+}
+
 /// Filter for [`OhdStorage::query_events`]. Subset of the full OHDC
 /// `EventFilter`; the deeper predicate language stays server-side for now.
 #[derive(Debug, Clone, uniffi::Record)]
@@ -1253,6 +1261,27 @@ impl OhdStorage {
             .with_conn(|conn| core::events::count_events(conn, &core_filter))
             .map_err(OhdError::from)?;
         Ok(count as u64)
+    }
+
+    /// Distinct event-type names + counts within `filter`. One SQL
+    /// `GROUP BY`; backs the History chip set without dragging rows back.
+    /// Same surface as `RemoteOhdStorage::list_event_types`.
+    pub fn list_event_types(
+        &self,
+        filter: EventFilterDto,
+    ) -> Result<Vec<EventTypeSummaryDto>> {
+        let core_filter = filter.into_core();
+        let rows = self
+            .inner
+            .with_conn(|conn| core::events::list_event_types(conn, &core_filter))
+            .map_err(OhdError::from)?;
+        Ok(rows
+            .into_iter()
+            .map(|r| EventTypeSummaryDto {
+                event_type: r.event_type,
+                count: r.count,
+            })
+            .collect())
     }
 
     /// Soft-delete every event with `timestamp_ms < cutoff_ms` that isn't

@@ -127,6 +127,14 @@ pub struct EventFilter {
     pub source_in: Vec<String>,
 }
 
+/// One row of [`OhdcRemoteClient::list_event_types`] — a distinct
+/// `event_type` name + its count within the supplied filter.
+#[derive(Debug, Clone)]
+pub struct EventTypeSummary {
+    pub event_type: String,
+    pub count: i64,
+}
+
 /// Filter for [`OhdcRemoteClient::delete_events`]. All fields optional; an
 /// empty filter wipes every event owned by the authenticated identity.
 #[derive(Debug, Clone, Default)]

@@ -298,6 +298,10 @@ pub enum OhdcOp {
     QueryEvents,
     /// `OhdcService.CountEvents` (same authz matrix as QueryEvents).
     CountEvents,
+    /// `OhdcService.ListEventTypes` (self-session only — drives the
+    /// History chip set; future grant-scoped variant filters to types
+    /// the grant permits).
+    ListEventTypes,
     /// `OhdcService.GetEventByUlid`
     GetEventByUlid,
     /// `OhdcService.WhoAmI`

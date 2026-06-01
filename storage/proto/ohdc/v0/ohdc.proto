@@ -299,6 +299,11 @@ service OhdcService {
   // year-range queries return a true count instead of the stream's page
   // size.
   rpc CountEvents(CountEventsRequest) returns (CountEventsResponse);
+  // Distinct event-type names + per-type counts within a filter, in one
+  // SQL `GROUP BY` instead of N+1 client-side scans. Backs the History
+  // chip set so the screen doesn't need to pull thousands of rows just to
+  // discover which event types are present in a range.
+  rpc ListEventTypes(ListEventTypesRequest) returns (ListEventTypesResponse);
   rpc GetEventByUlid(GetEventByUlidRequest) returns (Event);
   rpc Aggregate(AggregateRequest) returns (AggregateResponse);
   rpc Correlate(CorrelateRequest) returns (CorrelateResponse);
@@ -462,6 +467,25 @@ message CountEventsRequest {
 message CountEventsResponse {
   // Number of events matching the filter.
   int64 count = 1;
+}
+
+message ListEventTypesRequest {
+  // Same filter shape as QueryEvents. `limit` inside the filter is ignored
+  // (this is an unbounded GROUP BY on type); time bounds + event-type
+  // allow/deny + include_deleted are honoured.
+  EventFilter filter = 1;
+}
+
+// One row of the per-type aggregate.
+message EventTypeSummary {
+  string event_type = 1;
+  int64 count = 2;
+}
+
+message ListEventTypesResponse {
+  // Distinct event types within the filter, sorted by count descending so
+  // the noisiest types render first in the chip set.
+  repeated EventTypeSummary types = 1;
 }
 
 message GetEventByUlidRequest {

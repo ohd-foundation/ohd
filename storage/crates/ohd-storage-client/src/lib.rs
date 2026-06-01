@@ -409,6 +409,33 @@ impl OhdcRemoteClient {
     /// dedicated count RPC, so this drains `QueryEvents` and counts the
     /// rows — the same observable result the local `count_events` produces,
     /// at the cost of materialising the stream. The Home stat tile is the
+    /// `ListEventTypes` — distinct event types within `filter`, with
+    /// counts, sorted count-DESC. One GROUP BY on the server; backs the
+    /// History chip set without dragging thousands of rows back.
+    pub async fn list_event_types(
+        &self,
+        filter: EventFilter,
+    ) -> Result<Vec<EventTypeSummary>> {
+        let req = pb::ListEventTypesRequest {
+            filter: ::buffa::MessageField::some(convert::event_filter_to_pb(filter)),
+            ..Default::default()
+        };
+        let resp = self
+            .client
+            .list_event_types_with_options(req, self.auth_options())
+            .await
+            .map_err(map_connect_error)?;
+        Ok(resp
+            .into_owned()
+            .types
+            .into_iter()
+            .map(|t| EventTypeSummary {
+                event_type: t.event_type,
+                count: t.count,
+            })
+            .collect())
+    }
+
     /// `CountEvents` — pure SQL `COUNT(*)` on the server. Honours the same
     /// time / event-type / deleted predicates as `query_events` but is not
     /// capped by the streaming-row page size, so the home-screen tile shows

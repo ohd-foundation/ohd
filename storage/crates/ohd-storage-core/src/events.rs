@@ -314,6 +314,77 @@ pub fn soft_delete_events_before(conn: &Connection, cutoff_ms: i64) -> Result<i6
     Ok(updated as i64)
 }
 
+/// One row of [`list_event_types`]: a distinct `event_type` name + count.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EventTypeSummary {
+    pub event_type: String,
+    pub count: i64,
+}
+
+/// Distinct event types matching `filter`, with per-type counts, sorted
+/// count-DESC. Honours the same time-range / event-type allow-deny /
+/// `include_deleted` predicates as [`query_events`] / [`count_events`];
+/// `limit` inside `filter` is ignored. One SQL `GROUP BY` — no row
+/// materialization, so cheap even on a year-range scan of millions of
+/// rows. Backs the History chip set.
+pub fn list_event_types(
+    conn: &Connection,
+    filter: &EventFilter,
+) -> Result<Vec<EventTypeSummary>> {
+    let mut sql = String::from(
+        "SELECT et.name, COUNT(*) AS n
+           FROM events e JOIN event_types et ON e.event_type_id = et.id
+          WHERE 1=1",
+    );
+    let mut args: Vec<rusqlite::types::Value> = Vec::new();
+
+    if let Some(from) = filter.from_ms {
+        sql.push_str(" AND e.timestamp_ms >= ?");
+        args.push(from.into());
+    }
+    if let Some(to) = filter.to_ms {
+        sql.push_str(" AND e.timestamp_ms <= ?");
+        args.push(to.into());
+    }
+    if !filter.include_deleted {
+        sql.push_str(" AND e.deleted_at_ms IS NULL");
+    }
+    if !filter.event_types_in.is_empty() {
+        let placeholders = std::iter::repeat("?")
+            .take(filter.event_types_in.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        sql.push_str(&format!(" AND et.name IN ({placeholders})"));
+        for name in &filter.event_types_in {
+            args.push(name.clone().into());
+        }
+    }
+    if !filter.event_types_not_in.is_empty() {
+        let placeholders = std::iter::repeat("?")
+            .take(filter.event_types_not_in.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        sql.push_str(&format!(" AND et.name NOT IN ({placeholders})"));
+        for name in &filter.event_types_not_in {
+            args.push(name.clone().into());
+        }
+    }
+    sql.push_str(" GROUP BY et.name ORDER BY n DESC, et.name ASC");
+
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(args.iter()), |r| {
+        Ok(EventTypeSummary {
+            event_type: r.get::<_, String>(0)?,
+            count: r.get::<_, i64>(1)?,
+        })
+    })?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row?);
+    }
+    Ok(out)
+}
+
 /// Filter for [`hard_delete_events`]. All fields optional; an empty filter
 /// deletes every row in the `events` table.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

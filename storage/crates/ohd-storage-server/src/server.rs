@@ -1231,6 +1231,39 @@ impl OhdcService for OhdcAdapter {
         }
     }
 
+    // ---- ListEventTypes ---------------------------------------------------
+
+    fn list_event_types<'a>(
+        &'a self,
+        ctx: RequestContext,
+        request: pb::OwnedListEventTypesRequestView,
+    ) -> impl std::future::Future<
+        Output = ServiceResult<impl connectrpc::Encodable<pb::ListEventTypesResponse> + Send + use<'a>>,
+    > + Send {
+        async move {
+            let token = require_token(self, &ctx)?;
+            let owned = request.to_owned_message();
+            let filter = match owned.filter.into_option() {
+                Some(f) => event_filter_pb_to_core(f)?,
+                None => ohd_events::EventFilter::default(),
+            };
+            let rows = ohd_ohdc::list_event_types(&self.storage, &token, &filter)
+                .map_err(error_to_connect)?;
+            let resp = pb::ListEventTypesResponse {
+                types: rows
+                    .into_iter()
+                    .map(|r| pb::EventTypeSummary {
+                        event_type: r.event_type,
+                        count: r.count,
+                        ..Default::default()
+                    })
+                    .collect(),
+                ..Default::default()
+            };
+            Ok(ConnectResponse::new(resp))
+        }
+    }
+
     // ---- CountEvents ------------------------------------------------------
 
     fn count_events<'a>(

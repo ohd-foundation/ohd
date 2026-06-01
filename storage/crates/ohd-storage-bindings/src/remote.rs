@@ -34,7 +34,7 @@ use tokio::runtime::Runtime;
 
 use crate::{
     AuditEntryDto, AuditFilterDto, CaseDto, CaseStateDto, ChannelValueDto, CreateGrantInputDto,
-    EventDto, EventFilterDto, EventInputDto, GrantChannelRuleDto, GrantDto, GrantEventTypeRuleDto,
+    EventDto, EventFilterDto, EventInputDto, EventTypeSummaryDto, GrantChannelRuleDto, GrantDto, GrantEventTypeRuleDto,
     GrantSensitivityRuleDto, GrantTokenDto, ListGrantsFilterDto, OhdError, PendingEventDto,
     PutEventOutcomeDto, ValueKind,
 };
@@ -442,6 +442,25 @@ impl RemoteOhdStorage {
             .runtime
             .block_on(self.client.put_events(core_inputs, atomic))?;
         Ok(outcomes.into_iter().map(put_outcome_rc_to_dto).collect())
+    }
+
+    /// Distinct event-type names + counts within `filter`. Same shape the
+    /// server's GROUP BY returns — drives the History chip set.
+    pub fn list_event_types(
+        &self,
+        filter: EventFilterDto,
+    ) -> Result<Vec<EventTypeSummaryDto>> {
+        let rc_filter = event_filter_dto_to_rc(filter);
+        let rows = self
+            .runtime
+            .block_on(self.client.list_event_types(rc_filter))?;
+        Ok(rows
+            .into_iter()
+            .map(|r| EventTypeSummaryDto {
+                event_type: r.event_type,
+                count: r.count,
+            })
+            .collect())
     }
 
     /// Fetch the agent tool catalog from the remote server as a JSON
