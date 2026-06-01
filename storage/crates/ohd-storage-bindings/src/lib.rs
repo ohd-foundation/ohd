@@ -1263,6 +1263,17 @@ impl OhdStorage {
         Ok(count as u64)
     }
 
+    /// Distinct `source` count within `filter` — `SELECT COUNT(DISTINCT
+    /// source)`. Drives the home-screen "sources" tile.
+    pub fn count_sources(&self, filter: EventFilterDto) -> Result<u64> {
+        let core_filter = filter.into_core();
+        let n = self
+            .inner
+            .with_conn(|conn| core::events::count_sources(conn, &core_filter))
+            .map_err(OhdError::from)?;
+        Ok(n.max(0) as u64)
+    }
+
     /// Distinct event-type names + counts within `filter`. One SQL
     /// `GROUP BY`; backs the History chip set without dragging rows back.
     /// Same surface as `RemoteOhdStorage::list_event_types`.

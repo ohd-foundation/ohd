@@ -409,6 +409,21 @@ impl OhdcRemoteClient {
     /// dedicated count RPC, so this drains `QueryEvents` and counts the
     /// rows — the same observable result the local `count_events` produces,
     /// at the cost of materialising the stream. The Home stat tile is the
+    /// `CountSources` — distinct producer count within `filter`. Drives
+    /// the home-screen "sources" stat tile.
+    pub async fn count_sources(&self, filter: EventFilter) -> Result<u64> {
+        let req = pb::CountSourcesRequest {
+            filter: ::buffa::MessageField::some(convert::event_filter_to_pb(filter)),
+            ..Default::default()
+        };
+        let resp = self
+            .client
+            .count_sources_with_options(req, self.auth_options())
+            .await
+            .map_err(map_connect_error)?;
+        Ok(resp.into_owned().count.max(0) as u64)
+    }
+
     /// `ListEventTypes` — distinct event types within `filter`, with
     /// counts, sorted count-DESC. One GROUP BY on the server; backs the
     /// History chip set without dragging thousands of rows back.

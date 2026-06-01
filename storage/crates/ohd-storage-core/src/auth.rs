@@ -302,6 +302,9 @@ pub enum OhdcOp {
     /// History chip set; future grant-scoped variant filters to types
     /// the grant permits).
     ListEventTypes,
+    /// `OhdcService.CountSources` (self-session only — distinct producer
+    /// count for the home-screen "sources" tile).
+    CountSources,
     /// `OhdcService.GetEventByUlid`
     GetEventByUlid,
     /// `OhdcService.WhoAmI`

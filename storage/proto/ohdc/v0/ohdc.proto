@@ -304,6 +304,11 @@ service OhdcService {
   // chip set so the screen doesn't need to pull thousands of rows just to
   // discover which event types are present in a range.
   rpc ListEventTypes(ListEventTypesRequest) returns (ListEventTypesResponse);
+  // Distinct `source` count within a filter — `SELECT COUNT(DISTINCT source)`.
+  // Backs the home-screen "sources" tile so it shows the real producer
+  // count (phone, Health Connect, paired wearables, importers, …)
+  // instead of a hard-coded "1 source".
+  rpc CountSources(CountSourcesRequest) returns (CountSourcesResponse);
   rpc GetEventByUlid(GetEventByUlidRequest) returns (Event);
   rpc Aggregate(AggregateRequest) returns (AggregateResponse);
   rpc Correlate(CorrelateRequest) returns (CorrelateResponse);
@@ -486,6 +491,17 @@ message ListEventTypesResponse {
   // Distinct event types within the filter, sorted by count descending so
   // the noisiest types render first in the chip set.
   repeated EventTypeSummary types = 1;
+}
+
+message CountSourcesRequest {
+  // Same filter shape as QueryEvents; `limit` ignored. Events with a NULL
+  // `source` column are NOT counted (they have no producer identity).
+  EventFilter filter = 1;
+}
+
+message CountSourcesResponse {
+  // Number of distinct producers contributing events to the filter.
+  int64 count = 1;
 }
 
 message GetEventByUlidRequest {

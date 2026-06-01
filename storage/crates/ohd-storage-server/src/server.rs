@@ -1231,6 +1231,32 @@ impl OhdcService for OhdcAdapter {
         }
     }
 
+    // ---- CountSources -----------------------------------------------------
+
+    fn count_sources<'a>(
+        &'a self,
+        ctx: RequestContext,
+        request: pb::OwnedCountSourcesRequestView,
+    ) -> impl std::future::Future<
+        Output = ServiceResult<impl connectrpc::Encodable<pb::CountSourcesResponse> + Send + use<'a>>,
+    > + Send {
+        async move {
+            let token = require_token(self, &ctx)?;
+            let owned = request.to_owned_message();
+            let filter = match owned.filter.into_option() {
+                Some(f) => event_filter_pb_to_core(f)?,
+                None => ohd_events::EventFilter::default(),
+            };
+            let n = ohd_ohdc::count_sources(&self.storage, &token, &filter)
+                .map_err(error_to_connect)?;
+            let resp = pb::CountSourcesResponse {
+                count: n,
+                ..Default::default()
+            };
+            Ok(ConnectResponse::new(resp))
+        }
+    }
+
     // ---- ListEventTypes ---------------------------------------------------
 
     fn list_event_types<'a>(

@@ -314,6 +314,58 @@ pub fn soft_delete_events_before(conn: &Connection, cutoff_ms: i64) -> Result<i6
     Ok(updated as i64)
 }
 
+/// `SELECT COUNT(DISTINCT source)` over the same predicates `query_events`
+/// honours (time / event-type allow-deny / visibility / include_deleted).
+/// `source IS NULL` rows are excluded — they have no producer identity to
+/// count. Drives the home-screen "sources" stat tile.
+pub fn count_sources(conn: &Connection, filter: &EventFilter) -> Result<i64> {
+    let mut sql = String::from(
+        "SELECT COUNT(DISTINCT e.source)
+           FROM events e JOIN event_types et ON e.event_type_id = et.id
+          WHERE e.source IS NOT NULL",
+    );
+    let mut args: Vec<rusqlite::types::Value> = Vec::new();
+
+    if let Some(from) = filter.from_ms {
+        sql.push_str(" AND e.timestamp_ms >= ?");
+        args.push(from.into());
+    }
+    if let Some(to) = filter.to_ms {
+        sql.push_str(" AND e.timestamp_ms <= ?");
+        args.push(to.into());
+    }
+    if !filter.include_deleted {
+        sql.push_str(" AND e.deleted_at_ms IS NULL");
+    }
+    match &filter.visibility {
+        EventVisibility::All => {}
+        EventVisibility::TopLevelOnly => sql.push_str(" AND e.top_level = 1"),
+        EventVisibility::NonTopLevelOnly => sql.push_str(" AND e.top_level = 0"),
+    }
+    if !filter.event_types_in.is_empty() {
+        let placeholders = std::iter::repeat("?")
+            .take(filter.event_types_in.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        sql.push_str(&format!(" AND et.name IN ({placeholders})"));
+        for name in &filter.event_types_in {
+            args.push(name.clone().into());
+        }
+    }
+    if !filter.event_types_not_in.is_empty() {
+        let placeholders = std::iter::repeat("?")
+            .take(filter.event_types_not_in.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        sql.push_str(&format!(" AND et.name NOT IN ({placeholders})"));
+        for name in &filter.event_types_not_in {
+            args.push(name.clone().into());
+        }
+    }
+    let n: i64 = conn.query_row(&sql, rusqlite::params_from_iter(args.iter()), |r| r.get(0))?;
+    Ok(n)
+}
+
 /// One row of [`list_event_types`]: a distinct `event_type` name + count.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EventTypeSummary {

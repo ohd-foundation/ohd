@@ -444,6 +444,14 @@ impl RemoteOhdStorage {
         Ok(outcomes.into_iter().map(put_outcome_rc_to_dto).collect())
     }
 
+    /// Distinct `source` count within `filter`. Same shape the server's
+    /// `SELECT COUNT(DISTINCT source)` returns — drives the home-screen
+    /// "sources" stat tile.
+    pub fn count_sources(&self, filter: EventFilterDto) -> Result<u64> {
+        let rc_filter = event_filter_dto_to_rc(filter);
+        Ok(self.runtime.block_on(self.client.count_sources(rc_filter))?)
+    }
+
     /// Distinct event-type names + counts within `filter`. Same shape the
     /// server's GROUP BY returns — drives the History chip set.
     pub fn list_event_types(

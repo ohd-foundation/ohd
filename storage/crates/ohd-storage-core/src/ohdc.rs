@@ -122,6 +122,47 @@ fn is_error(r: &PutEventResult) -> bool {
     matches!(r, PutEventResult::Error { .. })
 }
 
+/// `OhdcService.CountSources` — distinct `source` count within `filter`.
+/// Self-session only; backs the home-screen "sources" tile. Always audited.
+pub fn count_sources(
+    storage: &Storage,
+    token: &ResolvedToken,
+    filter: &EventFilter,
+) -> Result<i64> {
+    auth::check_kind_for_op(token, OhdcOp::CountSources)?;
+    let mut n: i64 = 0;
+    let res = storage.with_conn(|conn| {
+        n = events::count_sources(conn, filter)?;
+        Ok(())
+    });
+    let outcome = match &res {
+        Ok(()) => AuditResult::Success,
+        Err(_) => AuditResult::Error,
+    };
+    storage.with_conn(|conn| {
+        audit::append(
+            conn,
+            &AuditEntry {
+                ts_ms: audit::now_ms(),
+                actor_type: actor_type_for(token.kind),
+                auto_granted: false,
+                grant_id: token.grant_id,
+                action: "read".into(),
+                query_kind: Some("count_sources".into()),
+                query_params_json: Some(serde_json::to_string(filter)?),
+                rows_returned: None,
+                rows_filtered: Some(n),
+                result: outcome,
+                reason: None,
+                caller_ip: None,
+                caller_ua: None,
+                delegated_for_user_ulid: None,
+            },
+        )
+    })?;
+    res.map(|_| n)
+}
+
 /// `OhdcService.ListEventTypes` — distinct event types within `filter`,
 /// with per-type counts. One SQL `GROUP BY`; backs the History chip set
 /// without materializing rows. Self-session only for v0; the grant-scoped
