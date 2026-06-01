@@ -112,7 +112,6 @@ fun RecentEventsScreen(
     // Total events in range (across all types) — drives the "All · N" chip
     // and the "showing first M of N" footer when truncated.
     var totalInRange by remember { mutableLongStateOf(0L) }
-    var fallback by remember { mutableStateOf<List<DisplayRow>>(emptyList()) }
     var loaded by remember { mutableStateOf(false) }
     // correlation_id → summed nutrition from intake.* children. Lets the
     // food.eaten / consumption_* row show "320 kcal · 18g carbs" even though
@@ -165,12 +164,6 @@ fun RecentEventsScreen(
         if (selectedType != null && types.none { it.eventType == selectedType }) {
             selectedType = null
         }
-    }
-
-    LaunchedEffect(Unit) {
-        // Stub / audit fallback only matters on a brand-new install with no
-        // structured events at all; computed once.
-        fallback = withContext(Dispatchers.IO) { loadFallbackRows() }
     }
 
     Column(
@@ -271,20 +264,12 @@ fun RecentEventsScreen(
                     }
                 }
             }
-        } else if (loaded && types.isEmpty()) {
-            // No structured events at all — show the audit/stub fallback.
-            LazyColumn(modifier = Modifier.fillMaxSize()) {
-                itemsIndexed(fallback) { idx, row ->
-                    OhdListItem(
-                        primary = row.primary,
-                        secondary = row.secondary,
-                        meta = row.meta,
-                    )
-                    if (idx < fallback.lastIndex) OhdDivider()
-                }
-            }
         } else {
-            // Day / filter combination has no matching events.
+            // Day / filter combination has no matching events. (Empty-day
+            // and empty-install both land here — the old audit-log fallback
+            // surfaced the app's own `read` operations as user rows, which
+            // looked like garbage on a future day with no events. The
+            // empty-state copy alone is clearer.)
             Box(
                 modifier = Modifier.fillMaxSize(),
                 contentAlignment = Alignment.TopCenter,
