@@ -61,6 +61,9 @@ import com.ohd.connect.ui.components.OhdTopBar
 // Kept for the chart helpers below — those move with the chart code to the
 // future aggregate surface where day/week/month/year still makes sense.
 import com.ohd.connect.ui.components.TimeRange
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.ui.platform.LocalContext
+import com.ohd.connect.data.ExcludedTypesStore
 import com.ohd.connect.ui.icons.EventVisual
 import com.ohd.connect.ui.icons.OhdIcons
 import com.ohd.connect.ui.icons.visualFor
@@ -103,6 +106,14 @@ fun RecentEventsScreen(
     var dayStartMs by remember { mutableLongStateOf(startOfTodayLocal()) }
     var datePickerOpen by remember { mutableStateOf(false) }
     var selectedType by remember { mutableStateOf<String?>(null) }
+    // Long-pressing a chip toggles it into / out of `excludedTypes`. The
+    // set is persisted across sessions (heart_rate is the obvious one a
+    // user will hide once and never want back). Applied only on the "All"
+    // view; tapping a chip to scope IN always wins.
+    val ctx = LocalContext.current
+    var excludedTypes by remember {
+        mutableStateOf(ExcludedTypesStore.load(ctx))
+    }
 
     var events by remember { mutableStateOf<List<OhdEvent>>(emptyList()) }
     // Distinct event types present in the current range, with counts — the
@@ -144,7 +155,15 @@ fun RecentEventsScreen(
             fromMs = fromMs,
             toMs = toMs,
             eventTypesIn = selectedType?.let { listOf(it) } ?: emptyList(),
-            eventTypesNotIn = if (selectedType == null) FOOD_EVENT_TYPES else emptyList(),
+            // On the "All" view we hide food (Food tab owns it) AND any
+            // types the user has long-press-excluded. Scoping to a type
+            // explicitly overrides the exclusion so a long-pressed type
+            // is still openable via a tap.
+            eventTypesNotIn = if (selectedType == null) {
+                (FOOD_EVENT_TYPES + excludedTypes).distinct()
+            } else {
+                emptyList()
+            },
             limit = listLimit,
             visibility = EventVisibility.TopLevelOnly,
         )
@@ -209,7 +228,16 @@ fun RecentEventsScreen(
                     FilterChip(
                         label = "${humanizeEventType(t.eventType)} · ${formatCount(t.count)}",
                         selected = selectedType == t.eventType,
+                        excluded = t.eventType in excludedTypes,
                         onClick = { selectedType = t.eventType },
+                        onLongClick = {
+                            excludedTypes = if (t.eventType in excludedTypes) {
+                                excludedTypes - t.eventType
+                            } else {
+                                excludedTypes + t.eventType
+                            }
+                            ExcludedTypesStore.save(ctx, excludedTypes)
+                        },
                     )
                 }
             }
@@ -394,10 +422,11 @@ private fun formatDayLabel(dayStartMs: Long): String {
 }
 
 /**
- * Day-picker bar: `[ < ]   [ <day pill> ]   [ > ]   [ Today ]`. The pill
- * opens the system date picker; the arrows shift by ±1 day. Replaces the
- * day/week/month/year segmented control on History — that selector lives
- * on the future aggregate surface where the unit is a chart, not a row.
+ * Day-picker bar: `‹   [ Wed, Jun 1 ]   ›   Today`. Matches the chip-row
+ * aesthetic immediately below it — small heights, muted ink, single-line
+ * typography — rather than the chunkier primary-action OhdButton chrome.
+ * Arrows nudge ±1 day; the centre pill opens the system date picker; the
+ * "Today" link appears only when off-today.
  */
 @Composable
 private fun DayPickerBar(
@@ -408,36 +437,68 @@ private fun DayPickerBar(
     onToday: () -> Unit,
 ) {
     val isToday = dayStartMs == startOfTodayLocal()
+    val shape = RoundedCornerShape(16.dp)
     Row(
         modifier = Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        OhdButton(
-            label = "‹",
-            onClick = onPrev,
-            variant = OhdButtonVariant.Ghost,
-        )
-        Box(modifier = Modifier.weight(1f)) {
-            OhdButton(
-                label = formatDayLabel(dayStartMs),
-                onClick = onPick,
-                variant = OhdButtonVariant.Secondary,
-                modifier = Modifier.fillMaxWidth(),
+        DayPickerArrow(symbol = "‹", onClick = onPrev)
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .height(30.dp)
+                .background(OhdColors.BgElevated, shape)
+                .border(BorderStroke(1.dp, OhdColors.Line), shape)
+                .clickable { onPick() }
+                .padding(horizontal = 12.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                text = formatDayLabel(dayStartMs),
+                fontFamily = OhdBody,
+                fontWeight = FontWeight.W500,
+                fontSize = 13.sp,
+                color = OhdColors.Ink,
             )
         }
-        OhdButton(
-            label = "›",
-            onClick = onNext,
-            variant = OhdButtonVariant.Ghost,
-        )
+        DayPickerArrow(symbol = "›", onClick = onNext)
         if (!isToday) {
-            OhdButton(
-                label = "Today",
-                onClick = onToday,
-                variant = OhdButtonVariant.Ghost,
-            )
+            Box(
+                modifier = Modifier
+                    .height(30.dp)
+                    .clickable { onToday() }
+                    .padding(horizontal = 4.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    text = "Today",
+                    fontFamily = OhdBody,
+                    fontWeight = FontWeight.W500,
+                    fontSize = 12.sp,
+                    color = OhdColors.Red,
+                )
+            }
         }
+    }
+}
+
+/** 30×30 dp tap target for prev/next — borderless icon-style. */
+@Composable
+private fun DayPickerArrow(symbol: String, onClick: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .size(30.dp)
+            .clickable { onClick() },
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = symbol,
+            fontFamily = OhdBody,
+            fontWeight = FontWeight.W500,
+            fontSize = 20.sp,
+            color = OhdColors.Muted,
+        )
     }
 }
 
@@ -686,31 +747,52 @@ private fun fmtChartNumber(v: Double): String {
 // Filter chip
 // =============================================================================
 
-/** Small filter chip — selected: ink fill / white text; idle: elevated/border. */
+/**
+ * Small filter chip with three render states:
+ *  - **selected** (tap): ink fill / white text — the list is scoped to this type.
+ *  - **excluded** (long-press toggled): half-opacity + strikethrough — the
+ *    "All" view hides this type entirely.
+ *  - **idle**: elevated background with a thin border.
+ *
+ * `onClick` toggles the selection (single tap); `onLongClick` toggles the
+ * excluded state — the caller persists the resulting set.
+ */
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 private fun FilterChip(
     label: String,
     selected: Boolean,
+    excluded: Boolean = false,
     onClick: () -> Unit,
+    onLongClick: (() -> Unit)? = null,
 ) {
     val shape = RoundedCornerShape(16.dp)
-    val bg = if (selected) OhdColors.Ink else OhdColors.BgElevated
-    val fg = if (selected) OhdColors.White else OhdColors.Muted
+    val bg = when {
+        selected -> OhdColors.Ink
+        excluded -> OhdColors.BgElevated.copy(alpha = 0.5f)
+        else -> OhdColors.BgElevated
+    }
+    val fg = when {
+        selected -> OhdColors.White
+        excluded -> OhdColors.Muted.copy(alpha = 0.5f)
+        else -> OhdColors.Muted
+    }
     Box(
         modifier = Modifier
             .height(30.dp)
             .background(bg, shape)
             .border(BorderStroke(1.dp, OhdColors.Line), shape)
-            .clickable { onClick() }
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick)
             .padding(horizontal = 12.dp),
         contentAlignment = Alignment.Center,
     ) {
         Text(
-            text = label,
+            text = if (excluded) "− $label" else label,
             fontFamily = OhdBody,
             fontWeight = if (selected) FontWeight.W500 else FontWeight.W400,
             fontSize = 12.sp,
             color = fg,
+            textDecoration = if (excluded) androidx.compose.ui.text.style.TextDecoration.LineThrough else null,
         )
     }
 }
