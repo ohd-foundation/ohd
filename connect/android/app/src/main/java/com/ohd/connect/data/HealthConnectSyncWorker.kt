@@ -14,14 +14,22 @@ import androidx.work.WorkerParameters
  * (WorkManager persists the request through `JobScheduler`).
  *
  * Failure handling:
- *  - Storage not opened → [Result.retry], so the next firing picks the work
- *    up after the user finishes onboarding.
+ *  - On-device storage not opened → [Result.retry], so the next firing
+ *    picks the work up after the user finishes onboarding (the SQLCipher
+ *    key isn't reachable from the worker context).
  *  - Health Connect not installed / permissions revoked → [Result.success]
  *    with zero ingested events; the next firing simply does nothing again.
  *  - Any other exception escapes [syncFromHealthConnect] → caught here and
  *    returned as [Result.retry] so transient failures don't abort the
  *    schedule. WorkManager applies its own exponential backoff between
  *    retries.
+ *
+ * Remote storage mode: the worker syncs through the remote backend too.
+ * It used to skip cleanly because each [syncFromHealthConnect] record cost
+ * one network round-trip — a typical HC backfill would have been thousands
+ * of RPCs against `storage.ohd.dev`. The bulk-`PutEvents` work in beta57
+ * collapses those into ~tens of batched calls, so periodic sync is back
+ * on the table on OHD Cloud.
  */
 class HealthConnectSyncWorker(
     appContext: Context,
@@ -29,13 +37,14 @@ class HealthConnectSyncWorker(
 ) : CoroutineWorker(appContext, params) {
 
     override suspend fun doWork(): Result = runCatching {
-        // Health Connect sync writes through the on-device storage core.
-        // In remote storage mode there is no local core to ingest into —
-        // skip cleanly rather than retry forever.
         StorageRepository.init(applicationContext)
-        if (StorageRepository.isRemoteMode()) {
-            Log.d(TAG, "remote storage mode — Health Connect sync off")
-            return@runCatching Result.success()
+        // Remote storage doesn't need a SQLCipher key, so the worker can
+        // bring the backend up itself on a cold-process firing. (For
+        // on-device storage the key lives in MainActivity's setup path,
+        // so the worker can't open it here — it retries until the user
+        // opens the app and finishes onboarding.)
+        if (!StorageRepository.isOpen() && StorageRepository.isRemoteMode()) {
+            StorageRepository.openOrCreate("").getOrThrow()
         }
         if (!StorageRepository.isOpen()) {
             Log.d(TAG, "storage not open yet — retrying later")
