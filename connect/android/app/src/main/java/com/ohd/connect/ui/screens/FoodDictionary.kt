@@ -101,6 +101,14 @@ data class FoodItem(
     val name: String,
     val brand: String? = null,
     val source: String = "in-app dictionary",
+    /**
+     * EAN / UPC / GTIN identifier — captured when the user scans the
+     * physical product. Distinct from `name`: a scanned 13-digit number is
+     * not a meaningful description, so the create form keeps it here and
+     * lets the user fill the `name` separately. OFF lookups populate this
+     * when the source request used the barcode.
+     */
+    val barcode: String? = null,
     val description: String,
     val per100g: NutritionFacts,
     val packageServing: Serving? = null,

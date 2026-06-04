@@ -170,6 +170,7 @@ object CustomFoodStore {
             .put("description", f.description)
             .put("per100g", nutritionToJson(f.per100g))
         if (!f.brand.isNullOrBlank()) obj.put("brand", f.brand)
+        if (!f.barcode.isNullOrBlank()) obj.put("barcode", f.barcode)
         f.packageServing?.let { obj.put("packageServing", servingToJson(it)) }
         f.defaultPortion?.let { obj.put("defaultPortion", servingToJson(it)) }
         if (f.additives.isNotEmpty()) obj.put("additives", JSONArray(f.additives))
@@ -190,6 +191,7 @@ object CustomFoodStore {
         val id = obj.optString("id").takeIf { it.isNotEmpty() } ?: mintId()
         val name = obj.optString("name").takeIf { it.isNotEmpty() } ?: return@runCatching null
         val brand = obj.optString("brand").takeIf { it.isNotEmpty() }
+        val barcode = obj.optString("barcode").takeIf { it.isNotEmpty() }
         val source = obj.optString("source").takeIf { it.isNotEmpty() } ?: "user-created"
         val description = obj.optString("description")
         val per100g = nutritionFromJson(obj.optJSONObject("per100g"))
@@ -200,6 +202,7 @@ object CustomFoodStore {
             food = FoodItem(
                 name = name,
                 brand = brand,
+                barcode = barcode,
                 source = source,
                 description = description,
                 per100g = per100g,

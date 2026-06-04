@@ -82,8 +82,23 @@ fun FoodCreateScreen(
     val scope = rememberCoroutineScope()
 
     // ---- Basics ----------------------------------------------------------
-    var name by remember { mutableStateOf(prefill.orEmpty()) }
+    //
+    // Prefill source-router: a numeric prefill (8-13 digits) is an
+    // EAN/UPC/GTIN — the user scanned a barcode and OFF returned nothing,
+    // so they're filling in the missing product. Route it to the
+    // dedicated `barcode` field instead of dumping a 13-digit number into
+    // the food's display name. Non-numeric prefill stays in `name` (the
+    // user typed a search term and the dictionary / OFF didn't have it).
+    val prefillIsBarcode = remember(prefill) {
+        prefill != null && Regex("^\\d{8,13}$").matches(prefill.trim())
+    }
+    var name by remember {
+        mutableStateOf(if (prefillIsBarcode) "" else prefill.orEmpty())
+    }
     var brand by remember { mutableStateOf("") }
+    var barcode by remember {
+        mutableStateOf(if (prefillIsBarcode) prefill!!.trim() else "")
+    }
     var description by remember { mutableStateOf("") }
 
     // ---- Per-100 g headline macros --------------------------------------
@@ -174,6 +189,7 @@ fun FoodCreateScreen(
         val food = FoodItem(
             name = trimmedName,
             brand = trimmedBrand,
+            barcode = barcode.trim().ifEmpty { null },
             source = "user-created",
             description = trimmedDescription,
             per100g = per100g,
@@ -234,6 +250,16 @@ fun FoodCreateScreen(
                 value = brand,
                 onValueChange = { brand = it },
                 placeholder = "—",
+            )
+            OhdField(
+                label = "Barcode (optional)",
+                value = barcode,
+                onValueChange = { input ->
+                    // Keep only digits — EAN / UPC / GTIN. Cap at 14 (the
+                    // longest GTIN form) so a paste doesn't run away.
+                    barcode = input.filter { it.isDigit() }.take(14)
+                },
+                placeholder = "EAN / UPC — e.g. 5901234567890",
             )
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text(
