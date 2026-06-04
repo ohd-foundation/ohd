@@ -33,7 +33,7 @@ import com.ohd.connect.ui.theme.OhdMono
  * routes each value to the matching sub-screen.
  */
 enum class SettingsDestination {
-    Storage, Access, Forms, Food, HealthConnect, Activities, Reminders, Cord, About,
+    Storage, Access, Forms, Food, NutritionGoals, HealthConnect, Activities, Reminders, Cord, About,
 }
 
 /**
@@ -68,6 +68,9 @@ fun SettingsHubScreen(
         }
         SettingsRow(icon = OhdIcons.Utensils, label = "Food & Nutrition") {
             onNavigate(SettingsDestination.Food)
+        }
+        SettingsRow(icon = OhdIcons.Flame, label = "Nutrition goals") {
+            onNavigate(SettingsDestination.NutritionGoals)
         }
         SettingsRow(icon = OhdIcons.Activity, label = "Health Connect") {
             onNavigate(SettingsDestination.HealthConnect)

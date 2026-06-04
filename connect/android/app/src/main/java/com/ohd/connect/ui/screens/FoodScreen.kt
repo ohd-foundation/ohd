@@ -27,6 +27,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
@@ -37,6 +38,7 @@ import com.ohd.connect.data.EventChannelInput
 import com.ohd.connect.data.EventFilter
 import com.ohd.connect.data.EventInput
 import com.ohd.connect.data.EventVisibility
+import com.ohd.connect.data.NutritionGoalsStore
 import com.ohd.connect.data.OhdEvent
 import com.ohd.connect.data.OhdScalar
 import com.ohd.connect.data.StorageRepository
@@ -696,11 +698,15 @@ internal fun FoodNutritionPanel(
     expanded: Boolean? = null,
     onToggle: (() -> Unit)? = null,
 ) {
-    val kcalTarget = 2000
-    val carbsTarget = 110
-    val proteinTarget = 80
-    val fatTarget = 70
-    val sugarTarget = 20
+    // Personalised + override-aware daily targets (see NutritionGoalsStore).
+    // `effectiveTargets` always returns finite ints and falls all the way
+    // through to WHO defaults so the gauges never render NaN.
+    val targets = NutritionGoalsStore.effectiveTargets(LocalContext.current)
+    val kcalTarget = targets.kcal
+    val carbsTarget = targets.carbsG
+    val proteinTarget = targets.proteinG
+    val fatTarget = targets.fatG
+    val sugarTarget = targets.sugarG
 
     // Either use the hoisted state, or fall back to a local state. We
     // intentionally `remember` regardless so the composable signature

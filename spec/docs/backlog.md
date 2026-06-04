@@ -85,20 +85,11 @@ Sorted within each area by rough impact.
    Both paths share the same JSON shape the LLM emits — keep the
    parser/validator in one place (likely a small module sitting
    alongside `CustomFoodStore`).
-- 🟥 **Nutrition targets — personalized, overridable, meaningful defaults.**
-  The Food tab gauges (`0 / 2,000 kcal`, `/110 g` carbs, `/80 g` protein,
-  `/70 g` fat, `/20 g` sugar) are hard-coded. Should be:
-  - **Default**: computed from the user's metabolic rate + goal + global
-    recommendation. Mifflin-St Jeor BMR (age / sex / height / weight),
-    × activity factor → TDEE, then WHO/global macro ratios per goal
-    (maintain / cut / bulk). When the profile is incomplete, fall back
-    to WHO daily references (the current hard-coded values are a
-    reasonable proxy for those).
-  - **Override**: a "Nutrition goals" Settings screen where the user
-    can pin specific numbers (kcal + four macros + extended targets when
-    we surface them). Override wins; otherwise computed default.
-  - Persist alongside the rest of the user profile (likely
-    `OhdAccountStore` or a sibling pref).
+- 🟢 **Nutrition targets — personalized, overridable, meaningful defaults.**
+  Shipped: `NutritionGoalsStore` (Mifflin–St Jeor BMR × PAL × goal scale,
+  with per-macro overrides and WHO fallback), `Settings → Nutrition goals`
+  editor screen, and `FoodScreen` now reads `effectiveTargets(ctx)` instead
+  of the hard-coded 2000 / 110 / 80 / 70 / 20.
 - 🟥 **Search-by-name "leaves the activity".** Flagged a few rounds
   ago; suspected the inline CameraX preview reopening after popBackStack.
   Worth re-testing on beta71+; if it still repros, dig in.
