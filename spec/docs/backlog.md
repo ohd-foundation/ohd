@@ -65,20 +65,26 @@ Sorted within each area by rough impact.
   Form gets a "Packaging ▾" expander mirroring the existing
   allergens / scores sections; serializer extends to round-trip + a
   v2→v3 migration. OFF mapper fills these from the `packagings` array.
-- 🟥 **AI-assisted custom-food entry.** When CORD / an LLM is set up
-  the user wants to fill the custom-food form by chatting: *"Create:
-  homemade granola, oats + nuts + honey, ~450 kcal/100g"* and the
-  model fills the rest (typical macros + likely allergens). Two
-  shapes worth supporting:
-   - **From CORD chat**: a `create_custom_food` tool added to
-     `ohd-mcp-core`'s catalog; the agent assembles a `FoodItem` from
-     the user's description plus a recipe-aware nutrition estimate and
+- 🟥 **AI-assisted custom-food entry — text → structured form fill.**
+  The user feeds the model whatever they have — back-of-pack text,
+  product description from a website, recipe-blog paragraph, voice
+  transcript, OFF-page paste — and the model parses it into every
+  `FoodItem` field at once. Two shapes:
+   - **In-form "Fill from description" affordance.** A multi-line
+     text area at the top of `FoodCreateScreen` ("Paste a description,
+     ingredients list, or back-of-pack text…") + a button that sends
+     the blob to the active CORD agent with a prompt asking for a
+     JSON `FoodItem`. Returned fields populate the form below; the
+     user reviews + edits + Saves. Must **never overwrite** fields the
+     user has already filled in by hand — the AI is additive.
+   - **From CORD chat directly.** A `create_custom_food` tool added
+     to `ohd-mcp-core`'s catalog so the user can say *"create:
+     homemade granola, oats + honey + almonds, ~450 kcal/100 g,
+     glass jar"* in chat and the agent assembles a `FoodItem` and
      writes through the same `CustomFoodStore.add` the form uses.
-   - **In-form "Estimate from name" button**: tap → sends `{name,
-     brand?, description?}` to the active CORD agent; the model fills
-     all empty fields in the open form (kcal, macros, micronutrients,
-     ingredient guesses, likely allergens). User reviews + edits +
-     Save. Never overwrites a field the user already entered.
+   Both paths share the same JSON shape the LLM emits — keep the
+   parser/validator in one place (likely a small module sitting
+   alongside `CustomFoodStore`).
 - 🟥 **Nutrition targets — personalized, overridable, meaningful defaults.**
   The Food tab gauges (`0 / 2,000 kcal`, `/110 g` carbs, `/80 g` protein,
   `/70 g` fat, `/20 g` sugar) are hard-coded. Should be:
