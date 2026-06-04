@@ -49,6 +49,36 @@ Sorted within each area by rough impact.
   food creation, keep serving local until accepted, drop the local
   override once upstream". Hinges on a shared OFF-like food-DB or the
   OHD food registry. Currently local-only.
+- 🟥 **Packaging info on `FoodItem` + custom-food form.** OFF carries
+  packaging (material × format × recycling) and CORD will want it for
+  environmental aggregates ("plastic g this week"). Add to
+  `FoodItem`:
+   ```
+   data class Packaging(
+       val material: String? = null,    // "plastic" | "glass" | "metal" | "cardboard" | "paper" | "mixed"
+       val format: String? = null,      // "bottle" | "can" | "jar" | "box" | "bag" | "tray" | "wrapper"
+       val recyclable: Boolean? = null,
+       val recycledContentPct: Int? = null,
+       val notes: String? = null,
+   )
+   ```
+  Form gets a "Packaging ▾" expander mirroring the existing
+  allergens / scores sections; serializer extends to round-trip + a
+  v2→v3 migration. OFF mapper fills these from the `packagings` array.
+- 🟥 **AI-assisted custom-food entry.** When CORD / an LLM is set up
+  the user wants to fill the custom-food form by chatting: *"Create:
+  homemade granola, oats + nuts + honey, ~450 kcal/100g"* and the
+  model fills the rest (typical macros + likely allergens). Two
+  shapes worth supporting:
+   - **From CORD chat**: a `create_custom_food` tool added to
+     `ohd-mcp-core`'s catalog; the agent assembles a `FoodItem` from
+     the user's description plus a recipe-aware nutrition estimate and
+     writes through the same `CustomFoodStore.add` the form uses.
+   - **In-form "Estimate from name" button**: tap → sends `{name,
+     brand?, description?}` to the active CORD agent; the model fills
+     all empty fields in the open form (kcal, macros, micronutrients,
+     ingredient guesses, likely allergens). User reviews + edits +
+     Save. Never overwrites a field the user already entered.
 - 🟥 **Nutrition targets — personalized, overridable, meaningful defaults.**
   The Food tab gauges (`0 / 2,000 kcal`, `/110 g` carbs, `/80 g` protein,
   `/70 g` fat, `/20 g` sugar) are hard-coded. Should be:
