@@ -142,12 +142,20 @@ fun FoodCreateScreen(
     var nutriScore by remember { mutableStateOf<String?>(null) }
     var ecoScore by remember { mutableStateOf<String?>(null) }
 
+    // ---- Packaging (material × format × recycling) ----------------------
+    var pkgMaterial by remember { mutableStateOf<String?>(null) }
+    var pkgFormat by remember { mutableStateOf<String?>(null) }
+    var pkgRecyclable by remember { mutableStateOf<Boolean?>(null) }
+    var pkgRecycledPct by remember { mutableStateOf("") }
+    var pkgNotes by remember { mutableStateOf("") }
+
     // ---- Expander state (local — not persisted) -------------------------
     var moreNutrientsOpen by remember { mutableStateOf(false) }
     var servingsOpen by remember { mutableStateOf(false) }
     var allergensOpen by remember { mutableStateOf(false) }
     var ingredientsOpen by remember { mutableStateOf(false) }
     var scoresOpen by remember { mutableStateOf(false) }
+    var packagingOpen by remember { mutableStateOf(false) }
 
     var submitting by remember { mutableStateOf(false) }
 
@@ -204,6 +212,13 @@ fun FoodCreateScreen(
             novaGroup = novaGroup,
             nutriScore = nutriScore,
             ecoScore = ecoScore,
+            packaging = com.ohd.connect.ui.screens.Packaging(
+                material = pkgMaterial,
+                format = pkgFormat,
+                recyclable = pkgRecyclable,
+                recycledContentPct = pkgRecycledPct.trim().toIntOrNull()?.coerceIn(0, 100),
+                notes = pkgNotes.trim().ifEmpty { null },
+            ).takeUnless { it.isBlank },
         )
 
         submitting = true
@@ -634,6 +649,67 @@ fun FoodCreateScreen(
                         ecoScore = if (ecoScore == low) null else low
                     },
                 )
+            }
+
+            // ===== 7. PACKAGING ==========================================
+            ExpanderHeader(
+                label = "Packaging",
+                expanded = packagingOpen,
+                onToggle = { packagingOpen = !packagingOpen },
+            )
+            if (packagingOpen) {
+                FormSubLabel("Material")
+                PillRow(
+                    options = listOf("plastic", "glass", "metal", "cardboard", "paper", "mixed"),
+                    selectedLabel = pkgMaterial,
+                    onSelect = { picked ->
+                        pkgMaterial = if (pkgMaterial == picked) null else picked
+                    },
+                )
+                FormSubLabel("Format")
+                PillRow(
+                    options = listOf("bottle", "can", "jar", "box", "bag", "tray", "wrapper"),
+                    selectedLabel = pkgFormat,
+                    onSelect = { picked ->
+                        pkgFormat = if (pkgFormat == picked) null else picked
+                    },
+                )
+                FormSubLabel("Recyclable")
+                PillRow(
+                    options = listOf("Yes", "No"),
+                    selectedLabel = when (pkgRecyclable) {
+                        true -> "Yes"
+                        false -> "No"
+                        null -> null
+                    },
+                    onSelect = { picked ->
+                        val next = when (picked) { "Yes" -> true; "No" -> false; else -> null }
+                        pkgRecyclable = if (pkgRecyclable == next) null else next
+                    },
+                )
+                OhdField(
+                    label = "Recycled content % (optional)",
+                    value = pkgRecycledPct,
+                    onValueChange = { input ->
+                        pkgRecycledPct = input.filter { it.isDigit() }.take(3)
+                    },
+                    placeholder = "0–100",
+                )
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(
+                        text = "Notes (optional)",
+                        fontFamily = OhdBody,
+                        fontWeight = FontWeight.W500,
+                        fontSize = 13.sp,
+                        color = OhdColors.Ink,
+                    )
+                    OhdInput(
+                        value = pkgNotes,
+                        onValueChange = { pkgNotes = it },
+                        placeholder = "Mixed-material packaging, recycling instructions, …",
+                        singleLine = false,
+                    )
+                }
             }
 
             // ===== Save ==================================================

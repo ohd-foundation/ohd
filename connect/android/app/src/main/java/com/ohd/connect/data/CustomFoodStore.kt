@@ -3,6 +3,7 @@ package com.ohd.connect.data
 import android.content.Context
 import com.ohd.connect.ui.screens.FoodItem
 import com.ohd.connect.ui.screens.NutritionFacts
+import com.ohd.connect.ui.screens.Packaging
 import com.ohd.connect.ui.screens.Serving
 import org.json.JSONArray
 import org.json.JSONObject
@@ -82,6 +83,7 @@ object CustomFoodStore {
 
     private const val KEY_CUSTOM_FOODS_V1 = "custom_foods_v1"
     private const val KEY_CUSTOM_FOODS_V2 = "custom_foods_v2"
+    private const val KEY_CUSTOM_FOODS_V3 = "custom_foods_v3"
     private const val ID_PREFIX = "custom:"
 
     /** All foods the user has created, newest-first. */
@@ -128,22 +130,29 @@ object CustomFoodStore {
 
     private fun readRows(ctx: Context): List<Row> {
         val prefs = Auth.securePrefs(ctx)
-        val raw = prefs.getString(KEY_CUSTOM_FOODS_V2, null)
-        if (!raw.isNullOrBlank()) {
-            return parseArray(raw)
+        // v3 is the current shape. Earlier versions are forward-compatible
+        // — every field added since is optional with a sensible default —
+        // so reading v2 / v1 through the same parser fills the new fields
+        // with their data-class defaults, then writes back as v3 and
+        // cleans up the old key. Migration is one-shot per key.
+        prefs.getString(KEY_CUSTOM_FOODS_V3, null)?.takeIf { it.isNotBlank() }?.let {
+            return parseArray(it)
         }
-        // v2 missing — try to migrate any v1 entries forward.
-        val legacy = prefs.getString(KEY_CUSTOM_FOODS_V1, null)
-        if (legacy.isNullOrBlank()) return emptyList()
-        val parsed = parseArray(legacy)
-        if (parsed.isEmpty()) {
-            // Failed to parse — leave v1 in place so a future beta can retry
-            // the migration with whatever the corruption was.
-            return emptyList()
+        prefs.getString(KEY_CUSTOM_FOODS_V2, null)?.takeIf { it.isNotBlank() }?.let { legacy ->
+            val parsed = parseArray(legacy)
+            if (parsed.isEmpty()) return emptyList()
+            writeRows(ctx, parsed)
+            prefs.edit().remove(KEY_CUSTOM_FOODS_V2).apply()
+            return parsed
         }
-        writeRows(ctx, parsed)
-        prefs.edit().remove(KEY_CUSTOM_FOODS_V1).apply()
-        return parsed
+        prefs.getString(KEY_CUSTOM_FOODS_V1, null)?.takeIf { it.isNotBlank() }?.let { legacy ->
+            val parsed = parseArray(legacy)
+            if (parsed.isEmpty()) return emptyList()
+            writeRows(ctx, parsed)
+            prefs.edit().remove(KEY_CUSTOM_FOODS_V1).apply()
+            return parsed
+        }
+        return emptyList()
     }
 
     private fun parseArray(raw: String): List<Row> = runCatching {
@@ -155,7 +164,7 @@ object CustomFoodStore {
         val arr = JSONArray()
         rows.forEach { arr.put(rowToJson(it)) }
         Auth.securePrefs(ctx).edit()
-            .putString(KEY_CUSTOM_FOODS_V2, arr.toString())
+            .putString(KEY_CUSTOM_FOODS_V3, arr.toString())
             .apply()
     }
 
@@ -173,6 +182,7 @@ object CustomFoodStore {
         if (!f.barcode.isNullOrBlank()) obj.put("barcode", f.barcode)
         f.packageServing?.let { obj.put("packageServing", servingToJson(it)) }
         f.defaultPortion?.let { obj.put("defaultPortion", servingToJson(it)) }
+        f.packaging?.takeUnless { it.isBlank }?.let { obj.put("packaging", packagingToJson(it)) }
         if (f.additives.isNotEmpty()) obj.put("additives", JSONArray(f.additives))
         if (f.allergens.isNotEmpty()) obj.put("allergens", JSONArray(f.allergens))
         if (f.traces.isNotEmpty()) obj.put("traces", JSONArray(f.traces))
@@ -197,6 +207,7 @@ object CustomFoodStore {
         val per100g = nutritionFromJson(obj.optJSONObject("per100g"))
         val packageServing = obj.optJSONObject("packageServing")?.let { servingFromJson(it) }
         val defaultPortion = obj.optJSONObject("defaultPortion")?.let { servingFromJson(it) }
+        val packaging = obj.optJSONObject("packaging")?.let { packagingFromJson(it) }
         Row(
             id = id,
             food = FoodItem(
@@ -208,6 +219,7 @@ object CustomFoodStore {
                 per100g = per100g,
                 packageServing = packageServing,
                 defaultPortion = defaultPortion,
+                packaging = packaging,
                 additives = stringListFrom(obj, "additives"),
                 allergens = stringListFrom(obj, "allergens"),
                 traces = stringListFrom(obj, "traces"),
@@ -296,6 +308,36 @@ object CustomFoodStore {
         val grams = obj.optDouble("grams", Double.NaN)
         if (grams.isNaN()) return null
         return Serving(name = name, grams = grams)
+    }
+
+    private fun packagingToJson(p: Packaging): JSONObject {
+        val obj = JSONObject()
+        p.material?.let { obj.put("material", it) }
+        p.format?.let { obj.put("format", it) }
+        p.recyclable?.let { obj.put("recyclable", it) }
+        p.recycledContentPct?.let { obj.put("recycledContentPct", it) }
+        if (!p.notes.isNullOrBlank()) obj.put("notes", p.notes)
+        return obj
+    }
+
+    private fun packagingFromJson(obj: JSONObject): Packaging {
+        val recyclable = if (obj.has("recyclable") && !obj.isNull("recyclable")) {
+            obj.optBoolean("recyclable")
+        } else {
+            null
+        }
+        val pct = if (obj.has("recycledContentPct") && !obj.isNull("recycledContentPct")) {
+            obj.optInt("recycledContentPct", -1).takeIf { it in 0..100 }
+        } else {
+            null
+        }
+        return Packaging(
+            material = obj.optString("material").takeIf { it.isNotEmpty() },
+            format = obj.optString("format").takeIf { it.isNotEmpty() },
+            recyclable = recyclable,
+            recycledContentPct = pct,
+            notes = obj.optString("notes").takeIf { it.isNotEmpty() },
+        )
     }
 
     private fun stringListFrom(obj: JSONObject, key: String): List<String> {

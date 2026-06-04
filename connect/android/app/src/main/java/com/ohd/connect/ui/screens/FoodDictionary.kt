@@ -83,6 +83,30 @@ data class NutritionFacts(
 data class Serving(val name: String, val grams: Double)
 
 /**
+ * Physical packaging — a curated subset of OFF's `packagings` shape.
+ *
+ *  - [material] — what the wrapper is made of. OFF canonical tokens:
+ *    `plastic`, `glass`, `metal`, `cardboard`, `paper`, `mixed`.
+ *  - [format] — physical form. `bottle`, `can`, `jar`, `box`, `bag`,
+ *    `tray`, `wrapper`.
+ *  - [recyclable] — three-state: true / false / unknown (`null`).
+ *  - [recycledContentPct] — 0-100 when known; null otherwise.
+ *  - [notes] — freeform text for anything the structured fields can't carry.
+ */
+data class Packaging(
+    val material: String? = null,
+    val format: String? = null,
+    val recyclable: Boolean? = null,
+    val recycledContentPct: Int? = null,
+    val notes: String? = null,
+) {
+    /** True when nothing is set — used to skip serialisation. */
+    val isBlank: Boolean
+        get() = material == null && format == null && recyclable == null &&
+            recycledContentPct == null && notes.isNullOrBlank()
+}
+
+/**
  * One entry in the in-app stub food dictionary used by [FoodSearchScreen]
  * and [FoodDetailScreen].
  *
@@ -113,6 +137,13 @@ data class FoodItem(
     val per100g: NutritionFacts,
     val packageServing: Serving? = null,
     val defaultPortion: Serving? = null,
+    /**
+     * Physical packaging info — material × format + recycling. Mirrors a
+     * subset of OFF's `packagings` array. Drives future environmental
+     * aggregates ("plastic g this week") and is what the OFF-upload
+     * affordance ends up contributing back.
+     */
+    val packaging: Packaging? = null,
     /**
      * Composition data harvested from OpenFoodFacts — empty for the in-app
      * dictionary, populated for live scans. All tags are stripped of OFF's

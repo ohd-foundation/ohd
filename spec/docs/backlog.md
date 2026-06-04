@@ -45,26 +45,65 @@ Sorted within each area by rough impact.
 - 🟥 **Edit / remove custom foods.** `CustomFoodStore` has `remove(id)`
   + persistence; the UI only adds. Need a long-press / detail-screen
   affordance to manage existing custom foods.
-- 🟥 **Upstream submission of custom foods.** User flagged: "emit
-  food creation, keep serving local until accepted, drop the local
-  override once upstream". Hinges on a shared OFF-like food-DB or the
-  OHD food registry. Currently local-only.
-- 🟥 **Packaging info on `FoodItem` + custom-food form.** OFF carries
-  packaging (material × format × recycling) and CORD will want it for
-  environmental aggregates ("plastic g this week"). Add to
-  `FoodItem`:
-   ```
-   data class Packaging(
-       val material: String? = null,    // "plastic" | "glass" | "metal" | "cardboard" | "paper" | "mixed"
-       val format: String? = null,      // "bottle" | "can" | "jar" | "box" | "bag" | "tray" | "wrapper"
-       val recyclable: Boolean? = null,
-       val recycledContentPct: Int? = null,
-       val notes: String? = null,
-   )
-   ```
-  Form gets a "Packaging ▾" expander mirroring the existing
-  allergens / scores sections; serializer extends to round-trip + a
-  v2→v3 migration. OFF mapper fills these from the `packagings` array.
+- 🟥 **Upstream submission of custom foods — OFF contribution path.**
+  Legal note: OFF data is **ODbL** (Open Database License). It requires
+  attribution + share-alike for *derived databases*; reading the OFF
+  API for our own users' personal logs is **not** a derived database
+  redistribution, so we're not legally obligated to contribute back.
+  But it's good citizenship — a barcode the user scans + custom-creates
+  is almost certainly missing from OFF too, and uploading it benefits
+  everyone. Two-stage rollout:
+   - **Phase 1 — opt-in upload button** on the saved custom food's
+     detail screen ("Contribute to OpenFoodFacts"). Hits OFF's product
+     contribution API (`/cgi/product_jqm2.pl` or the newer one) with
+     the user's OFF account (or anonymous if they don't have one).
+     Photos required for many fields per OFF's quality rules — gate
+     the button on having `barcode + name + at least one photo`.
+   - **Phase 2 — keep-local-until-accepted**: per the user's original
+     flag, the local custom keeps being served until OFF acceptance
+     comes back, at which point the local override is dropped on next
+     search-refresh. Requires polling / a callback flow; deferable.
+  Either way: add an "Upload to OpenFoodFacts" entry to the
+  custom-food detail / edit screen as the visible surface.
+- 🟥 **Photos on `FoodItem` + custom-food form.** OFF stores
+  `image_url`, `image_ingredients_url`, `image_nutrition_url`,
+  `image_packaging_url`. Mirror as `FoodItem.photos: List<FoodPhoto>`
+  with `kind ∈ {product, ingredients, nutrition, packaging}` + a URI
+  (file:// for local-only customs; https:// when populated from OFF).
+  Form gets a "Photos ▾" expander with a Camera / Gallery action that
+  drops a 1280-px-max compressed JPEG under `app/files/food-photos/`
+  and stores the file:// uri on the row. Required for the OFF-upload
+  button above. (Touches `FoodItem` + serializer + a `v3→v4` store
+  migration; relates to the packaging-info item above which already
+  needed `v2→v3`, so the two should land together if possible.)
+- 🟢 **Packaging info on `FoodItem` + custom-food form.** Shipped
+  beta76: `Packaging(material, format, recyclable, recycledContentPct,
+  notes)` data class, `FoodItem.packaging: Packaging?`, "Packaging ▾"
+  expander in `FoodCreateScreen` with material × format × recyclable
+  pill rows + recycled-content % numeric input + notes text area,
+  serializer extended, store bumped `custom_foods_v2 → v3` (v1 + v2
+  rows migrate forward through the same parser since every added field
+  is optional with a default).
+- 🟥 **List-input UX upgrade — "Add an entry…" picker + freeform.**
+  The current allergens / traces / ingredients-analysis / labels are
+  flat multi-select chip rows over a fixed token set. That works for
+  the common 14 EU allergens but breaks down everywhere else:
+   - Ingredients + additives are *open* lists — the user paste-and-edits
+     comma-separated strings today, which is clumsy.
+   - Even allergens / traces want "other" cases (sulphites-not-listed,
+     regional specifics).
+   - Forced-pill UX hides what's selected once the row scrolls.
+  Target shape, same for every list field:
+   - A chip row showing the **currently-selected** entries (tap to
+     remove). One row, wraps; the user always sees what's in.
+   - A trailing **"+ Add"** chip that opens a small bottom sheet with
+     (a) a select / search over the canonical token list for that
+     field, and (b) a freeform text input at the bottom for
+     "Something else: ___". Confirm adds the entry to the chip row.
+  Applies to: allergens, traces, ingredientsAnalysis, labels,
+  ingredients, additives. The canonical lists stay where they are
+  (per-field constants in `FoodCreateScreen`); the sheet is a shared
+  component.
 - 🟥 **AI-assisted custom-food entry — text → structured form fill.**
   The user feeds the model whatever they have — back-of-pack text,
   product description from a website, recipe-blog paragraph, voice
