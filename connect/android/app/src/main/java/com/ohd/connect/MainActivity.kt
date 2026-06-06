@@ -336,15 +336,18 @@ private fun OhdConnectApp(
 
         // Apply the persisted Health-Connect auto-sync preference on every
         // cold start. Idempotent — WorkManager keeps the existing schedule
-        // via `ExistingPeriodicWorkPolicy.KEEP`.
+        // via `ExistingPeriodicWorkPolicy.KEEP`. Used to be gated on
+        // `onDevice` because the worker explicitly skipped in remote mode;
+        // beta72 lifted that skip and made the worker bring the remote
+        // backend up itself, so the schedule needs to be re-enqueued on a
+        // remote install too (a reinstall wipes WorkManager's DB and there
+        // is nothing else to recreate the periodic job).
         LaunchedEffect(Unit) {
-            if (onDevice) {
-                HealthConnectScheduler.applyPersistedPreference(ctx)
-                // Same shape for reminders — enable iff any of the three
-                // reminder toggles is on. The worker reads each toggle every
-                // tick so user changes don't need a reschedule.
-                RemindersScheduler.applyPersistedPreference(ctx)
-            }
+            HealthConnectScheduler.applyPersistedPreference(ctx)
+            // Same shape for reminders — enable iff any of the three
+            // reminder toggles is on. The worker reads each toggle every
+            // tick so user changes don't need a reschedule.
+            RemindersScheduler.applyPersistedPreference(ctx)
         }
 
         // Resume every share the user left with remote access enabled
@@ -380,8 +383,11 @@ private fun OhdConnectApp(
         LaunchedEffect(lifecycleOwner) {
             lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
                 while (true) {
-                    if (onDevice &&
-                        HealthConnectScheduler.isEnabled(ctx) &&
+                    // Same remote-mode lift as above — the in-foreground
+                    // sync is the responsiveness fallback for the periodic
+                    // worker; gating it to on-device left remote users
+                    // with no pull at all when the app is open.
+                    if (HealthConnectScheduler.isEnabled(ctx) &&
                         StorageRepository.isOpen() &&
                         OhdHealthConnect.availability(ctx) ==
                             OhdHealthConnect.Availability.Installed
