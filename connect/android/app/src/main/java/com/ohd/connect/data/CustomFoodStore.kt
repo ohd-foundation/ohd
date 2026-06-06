@@ -92,15 +92,33 @@ object CustomFoodStore {
     /** All foods the user has created, newest-first. */
     fun all(ctx: Context): List<FoodItem> = readRows(ctx).map { it.food }
 
-    /** Substring (case-insensitive) match on name + brand. */
+    /**
+     * Substring (case-insensitive) match on name, brand, and barcode.
+     * Including barcode means typing a stored 13-digit number into the
+     * search box surfaces the custom food the user attached it to —
+     * critical for the "I just scanned my custom-saved product" flow.
+     */
     fun search(ctx: Context, query: String): List<FoodItem> {
         val q = query.trim()
         val rows = all(ctx)
         if (q.isEmpty()) return rows
         return rows.filter { food ->
             food.name.contains(q, ignoreCase = true) ||
-                (food.brand?.contains(q, ignoreCase = true) == true)
+                (food.brand?.contains(q, ignoreCase = true) == true) ||
+                (food.barcode?.contains(q, ignoreCase = true) == true)
         }
+    }
+
+    /**
+     * Exact-match barcode lookup. The barcode-scan flow in
+     * [com.ohd.connect.ui.screens.FoodSearchScreen] consults this before
+     * falling back to the OpenFoodFacts cache + remote: a custom food
+     * the user has saved with a barcode wins over OFF for that EAN.
+     */
+    fun byBarcode(ctx: Context, code: String): FoodItem? {
+        val needle = code.trim()
+        if (needle.isEmpty()) return null
+        return all(ctx).firstOrNull { it.barcode == needle }
     }
 
     /**

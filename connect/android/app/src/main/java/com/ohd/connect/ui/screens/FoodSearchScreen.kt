@@ -112,12 +112,24 @@ fun FoodSearchScreen(
         val isBarcode = BARCODE_REGEX.matches(trimmed)
         val localEmpty = results.isEmpty()
         if (isBarcode) {
-            // Barcode path — cache shortcut, single-product lookup.
+            // Barcode path:
+            //  1. Custom store — a user-saved food carrying this barcode wins
+            //     over OFF (the user explicitly attached this number to their
+            //     own record; honour that). Already surfaced in `results`
+            //     above via the substring branch of CustomFoodStore.search,
+            //     but we re-check here to short-circuit the remote call.
+            CustomFoodStore.byBarcode(ctx, trimmed)?.let {
+                remoteResults = emptyList()
+                remoteState = RemoteLookupState.Idle
+                return@LaunchedEffect
+            }
+            //  2. OFF in-memory cache.
             OpenFoodFacts.cache[trimmed]?.let { cached ->
                 remoteResults = listOf(cached)
                 remoteState = RemoteLookupState.Idle
                 return@LaunchedEffect
             }
+            //  3. Remote OFF lookup.
             remoteState = RemoteLookupState.Loading
             remoteResults = emptyList()
             try {
