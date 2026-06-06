@@ -7,6 +7,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -71,15 +73,13 @@ fun FoodDetailScreen(
     contentPadding: PaddingValues = PaddingValues(0.dp),
     modifier: Modifier = Modifier,
 ) {
-    // Default amount: package > portion > custom 100 g, mirroring the chip
-    // ordering. The state covers both the chip selection and the custom
-    // grams input — they share a single source of truth so the macros panel
-    // can compute against `currentGrams()` regardless of which chip is on.
-    val initial: AmountSelection = when {
-        item.packageServing != null -> AmountSelection.Package
-        item.defaultPortion != null -> AmountSelection.Portion
-        else -> AmountSelection.Custom("100")
-    }
+    // Default amount: first declared serving if any, otherwise Custom 100 g.
+    // The state covers both the chip selection and the custom grams input —
+    // they share a single source of truth so the macros panel can compute
+    // against `currentGrams()` regardless of which chip is on.
+    val initial: AmountSelection =
+        if (item.servings.isNotEmpty()) AmountSelection.Preset(0)
+        else AmountSelection.Custom("100")
     var selection by remember { mutableStateOf(initial) }
 
     val grams = currentGrams(item, selection)
@@ -247,21 +247,19 @@ fun FoodDetailScreen(
 }
 
 /**
- * One of three mutually-exclusive amount sources the user can select. The
- * `Custom` variant carries its inline text so a re-selection of the
- * package/portion chip can fall back to the last-typed value if the user
- * toggles back to custom.
+ * One of two mutually-exclusive amount sources the user can select. The
+ * `Preset` variant indexes into [FoodItem.servings]; the `Custom` variant
+ * carries its inline text so a re-selection of a preset chip can fall
+ * back to the last-typed value if the user toggles back to custom.
  */
 private sealed interface AmountSelection {
-    data object Package : AmountSelection
-    data object Portion : AmountSelection
+    data class Preset(val index: Int) : AmountSelection
     data class Custom(val text: String) : AmountSelection
 }
 
 /** Resolve the current grams value for the active selection. */
 private fun currentGrams(item: FoodItem, sel: AmountSelection): Double? = when (sel) {
-    AmountSelection.Package -> item.packageServing?.grams
-    AmountSelection.Portion -> item.defaultPortion?.grams
+    is AmountSelection.Preset -> item.servings.getOrNull(sel.index)?.grams
     is AmountSelection.Custom -> sel.text.trim().toDoubleOrNull()
 }
 
@@ -280,30 +278,28 @@ private fun BrandSourceLine(item: FoodItem) {
     )
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun AmountChips(
     item: FoodItem,
     selection: AmountSelection,
     onSelect: (AmountSelection) -> Unit,
 ) {
-    Row(
+    // One chip per declared serving, then an always-on Custom (g) chip.
+    // Once you stack more than ~3, equal-weight chips squeeze the labels
+    // below readability; instead we let them flow with their natural width
+    // using FlowRow so the long names like "Big bottle (2000 g)" don't get
+    // truncated and the row wraps cleanly to a second line when needed.
+    FlowRow(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        if (item.packageServing != null) {
+        item.servings.forEachIndexed { idx, serving ->
             AmountChip(
-                label = "Package (${formatGrams(item.packageServing.grams)} g)",
-                selected = selection == AmountSelection.Package,
-                onClick = { onSelect(AmountSelection.Package) },
-                modifier = Modifier.weight(1f),
-            )
-        }
-        if (item.defaultPortion != null) {
-            AmountChip(
-                label = "Portion (${item.defaultPortion.name}, ${formatGrams(item.defaultPortion.grams)} g)",
-                selected = selection == AmountSelection.Portion,
-                onClick = { onSelect(AmountSelection.Portion) },
-                modifier = Modifier.weight(1f),
+                label = "${serving.name} (${formatGrams(serving.grams)} g)",
+                selected = selection is AmountSelection.Preset && selection.index == idx,
+                onClick = { onSelect(AmountSelection.Preset(idx)) },
             )
         }
         AmountChip(
@@ -315,7 +311,6 @@ private fun AmountChips(
                 val seed = (selection as? AmountSelection.Custom)?.text ?: "100"
                 onSelect(AmountSelection.Custom(seed))
             },
-            modifier = Modifier.weight(1f),
         )
     }
 }

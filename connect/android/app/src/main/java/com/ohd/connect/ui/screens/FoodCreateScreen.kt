@@ -126,10 +126,12 @@ fun FoodCreateScreen(
     var caffeine by remember { mutableStateOf("") }
 
     // ---- Serving sizes --------------------------------------------------
-    var packageLabel by remember { mutableStateOf("") }
-    var packageGrams by remember { mutableStateOf("") }
-    var portionLabel by remember { mutableStateOf("") }
-    var portionGrams by remember { mutableStateOf("") }
+    //
+    // List of named pre-portions ("Small can / 250 g", "Big bottle / 2000 g",
+    // "Pour S / 100 g"). Always-on "Custom (g)" lives on the detail screen
+    // so we never need a row for that here. The list starts with one blank
+    // draft to invite a first entry; blanks are filtered on save.
+    var servingDrafts by remember { mutableStateOf(listOf(ServingDraft("", ""))) }
 
     // ---- Allergens & traces (OFF token list) ----------------------------
     var allergens by remember { mutableStateOf(setOf<String>()) }
@@ -195,8 +197,7 @@ fun FoodCreateScreen(
             caffeineMg = caffeine.trim().toDoubleOrNull() ?: 0.0,
         )
 
-        val pkgServing = buildServing(packageLabel, packageGrams)
-        val defServing = buildServing(portionLabel, portionGrams)
+        val servings: List<Serving> = servingDrafts.mapNotNull { buildServing(it.label, it.grams) }
 
         val food = FoodItem(
             name = trimmedName,
@@ -205,8 +206,7 @@ fun FoodCreateScreen(
             source = "user-created",
             description = trimmedDescription,
             per100g = per100g,
-            packageServing = pkgServing,
-            defaultPortion = defServing,
+            servings = servings,
             additives = splitCsv(additives),
             allergens = allergens.toList(),
             traces = traces.toList(),
@@ -479,64 +479,70 @@ fun FoodCreateScreen(
                 onToggle = { servingsOpen = !servingsOpen },
             )
             if (servingsOpen) {
-                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Text(
-                        text = "Package serving",
-                        fontFamily = OhdBody,
-                        fontWeight = FontWeight.W500,
-                        fontSize = 12.sp,
-                        color = OhdColors.Muted,
-                    )
+                FormSubLabel(
+                    "Add any number of named portions — small/medium/large cans, " +
+                        "bottle sizes, pour sizes. The detail screen always offers " +
+                        "a “Custom (g)” chip too, so you don't need to add 1 g."
+                )
+                servingDrafts.forEachIndexed { idx, draft ->
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalAlignment = Alignment.Bottom,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
                         OhdField(
-                            label = "Label",
-                            value = packageLabel,
-                            onValueChange = { packageLabel = it },
-                            placeholder = "Bottle",
+                            label = if (idx == 0) "Name" else "",
+                            value = draft.label,
+                            onValueChange = { v ->
+                                servingDrafts = servingDrafts.toMutableList().also {
+                                    it[idx] = it[idx].copy(label = v)
+                                }
+                            },
+                            placeholder = "Small can",
                             modifier = Modifier.weight(1.4f),
                         )
                         OhdField(
-                            label = "Grams",
-                            value = packageGrams,
-                            onValueChange = { packageGrams = sanitizeDecimal(it) },
+                            label = if (idx == 0) "Grams" else "",
+                            value = draft.grams,
+                            onValueChange = { v ->
+                                servingDrafts = servingDrafts.toMutableList().also {
+                                    it[idx] = it[idx].copy(grams = sanitizeDecimal(v))
+                                }
+                            },
                             placeholder = "0",
                             keyboardType = KeyboardType.Decimal,
                             modifier = Modifier.weight(1f),
                         )
+                        // Remove row. Always available — the user can clear the
+                        // list entirely (a food with no named portions just
+                        // shows the Custom chip on the detail screen).
+                        Box(
+                            modifier = Modifier
+                                .height(44.dp)
+                                .clickable {
+                                    servingDrafts = servingDrafts.toMutableList()
+                                        .also { it.removeAt(idx) }
+                                }
+                                .padding(horizontal = 8.dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text(
+                                text = "×",
+                                fontFamily = OhdBody,
+                                fontWeight = FontWeight.W500,
+                                fontSize = 20.sp,
+                                color = OhdColors.Muted,
+                            )
+                        }
                     }
                 }
-                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Text(
-                        text = "Default portion",
-                        fontFamily = OhdBody,
-                        fontWeight = FontWeight.W500,
-                        fontSize = 12.sp,
-                        color = OhdColors.Muted,
-                    )
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    ) {
-                        OhdField(
-                            label = "Label",
-                            value = portionLabel,
-                            onValueChange = { portionLabel = it },
-                            placeholder = "Bowl",
-                            modifier = Modifier.weight(1.4f),
-                        )
-                        OhdField(
-                            label = "Grams",
-                            value = portionGrams,
-                            onValueChange = { portionGrams = sanitizeDecimal(it) },
-                            placeholder = "0",
-                            keyboardType = KeyboardType.Decimal,
-                            modifier = Modifier.weight(1f),
-                        )
-                    }
-                }
+                OhdButton(
+                    label = "+ Add serving",
+                    variant = OhdButtonVariant.Ghost,
+                    onClick = {
+                        servingDrafts = servingDrafts + ServingDraft("", "")
+                    },
+                )
             }
 
             // ===== 4. ALLERGENS & TRACES =================================
@@ -1138,6 +1144,13 @@ private val OFF_LABELS: List<String> = listOf(
 // =============================================================================
 // Helpers
 // =============================================================================
+
+/**
+ * One row in the editable serving list. Strings (not Doubles) so the
+ * field can carry partially-typed input like `"2."` without normalising
+ * the user's cursor away.
+ */
+private data class ServingDraft(val label: String, val grams: String)
 
 /**
  * Build a Serving from a label + grams pair. Returns null when either

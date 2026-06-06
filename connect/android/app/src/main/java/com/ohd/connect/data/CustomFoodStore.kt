@@ -49,8 +49,10 @@ import java.security.SecureRandom
  *           "caffeineMg":    0.0,
  *           "nutrimentsPer100g": { "phosphorus": 0.14, … }   // optional
  *       },
- *       "packageServing": { "name": "Bag", "grams": 400.0 }, // optional
- *       "defaultPortion": { "name": "Bowl", "grams": 60.0 }, // optional
+ *       "servings": [                                        // optional
+ *           { "name": "Bag", "grams": 400.0 },
+ *           { "name": "Bowl", "grams": 60.0 }
+ *       ],
  *       "additives":            ["e330"],                    // optional
  *       "allergens":            ["gluten", "milk"],          // optional
  *       "traces":               ["nuts"],                    // optional
@@ -84,6 +86,7 @@ object CustomFoodStore {
     private const val KEY_CUSTOM_FOODS_V1 = "custom_foods_v1"
     private const val KEY_CUSTOM_FOODS_V2 = "custom_foods_v2"
     private const val KEY_CUSTOM_FOODS_V3 = "custom_foods_v3"
+    private const val KEY_CUSTOM_FOODS_V4 = "custom_foods_v4"
     private const val ID_PREFIX = "custom:"
 
     /** All foods the user has created, newest-first. */
@@ -130,27 +133,26 @@ object CustomFoodStore {
 
     private fun readRows(ctx: Context): List<Row> {
         val prefs = Auth.securePrefs(ctx)
-        // v3 is the current shape. Earlier versions are forward-compatible
-        // — every field added since is optional with a sensible default —
-        // so reading v2 / v1 through the same parser fills the new fields
-        // with their data-class defaults, then writes back as v3 and
-        // cleans up the old key. Migration is one-shot per key.
-        prefs.getString(KEY_CUSTOM_FOODS_V3, null)?.takeIf { it.isNotBlank() }?.let {
+        // v4 is the current shape. Earlier versions are forward-compatible
+        // — every field added since is optional with a sensible default,
+        // and the v3→v4 shape change (packageServing + defaultPortion → a
+        // single `servings` list) is reconciled inside [rowFromJson] which
+        // accepts either form. So reading v3 / v2 / v1 through the same
+        // parser fills the new fields with their data-class defaults,
+        // merges the two legacy serving fields into a list, then writes
+        // back as v4 and cleans up the old key. Migration is one-shot per
+        // key.
+        prefs.getString(KEY_CUSTOM_FOODS_V4, null)?.takeIf { it.isNotBlank() }?.let {
             return parseArray(it)
         }
-        prefs.getString(KEY_CUSTOM_FOODS_V2, null)?.takeIf { it.isNotBlank() }?.let { legacy ->
-            val parsed = parseArray(legacy)
-            if (parsed.isEmpty()) return emptyList()
-            writeRows(ctx, parsed)
-            prefs.edit().remove(KEY_CUSTOM_FOODS_V2).apply()
-            return parsed
-        }
-        prefs.getString(KEY_CUSTOM_FOODS_V1, null)?.takeIf { it.isNotBlank() }?.let { legacy ->
-            val parsed = parseArray(legacy)
-            if (parsed.isEmpty()) return emptyList()
-            writeRows(ctx, parsed)
-            prefs.edit().remove(KEY_CUSTOM_FOODS_V1).apply()
-            return parsed
+        for (legacyKey in listOf(KEY_CUSTOM_FOODS_V3, KEY_CUSTOM_FOODS_V2, KEY_CUSTOM_FOODS_V1)) {
+            prefs.getString(legacyKey, null)?.takeIf { it.isNotBlank() }?.let { legacy ->
+                val parsed = parseArray(legacy)
+                if (parsed.isEmpty()) return emptyList()
+                writeRows(ctx, parsed)
+                prefs.edit().remove(legacyKey).apply()
+                return parsed
+            }
         }
         return emptyList()
     }
@@ -164,7 +166,7 @@ object CustomFoodStore {
         val arr = JSONArray()
         rows.forEach { arr.put(rowToJson(it)) }
         Auth.securePrefs(ctx).edit()
-            .putString(KEY_CUSTOM_FOODS_V3, arr.toString())
+            .putString(KEY_CUSTOM_FOODS_V4, arr.toString())
             .apply()
     }
 
@@ -180,8 +182,11 @@ object CustomFoodStore {
             .put("per100g", nutritionToJson(f.per100g))
         if (!f.brand.isNullOrBlank()) obj.put("brand", f.brand)
         if (!f.barcode.isNullOrBlank()) obj.put("barcode", f.barcode)
-        f.packageServing?.let { obj.put("packageServing", servingToJson(it)) }
-        f.defaultPortion?.let { obj.put("defaultPortion", servingToJson(it)) }
+        if (f.servings.isNotEmpty()) {
+            obj.put("servings", JSONArray().apply {
+                f.servings.forEach { put(servingToJson(it)) }
+            })
+        }
         f.packaging?.takeUnless { it.isBlank }?.let { obj.put("packaging", packagingToJson(it)) }
         if (f.additives.isNotEmpty()) obj.put("additives", JSONArray(f.additives))
         if (f.allergens.isNotEmpty()) obj.put("allergens", JSONArray(f.allergens))
@@ -205,8 +210,21 @@ object CustomFoodStore {
         val source = obj.optString("source").takeIf { it.isNotEmpty() } ?: "user-created"
         val description = obj.optString("description")
         val per100g = nutritionFromJson(obj.optJSONObject("per100g"))
-        val packageServing = obj.optJSONObject("packageServing")?.let { servingFromJson(it) }
-        val defaultPortion = obj.optJSONObject("defaultPortion")?.let { servingFromJson(it) }
+        // v4 shape: `servings: [{name, grams}, …]`. v3 and earlier wrote
+        // packageServing + defaultPortion as separate optional objects;
+        // we merge whichever are present into the new list, packageServing
+        // first to preserve original ordering.
+        val servings: List<Serving> = buildList {
+            obj.optJSONArray("servings")?.let { arr ->
+                for (i in 0 until arr.length()) {
+                    arr.optJSONObject(i)?.let { servingFromJson(it) }?.let(::add)
+                }
+            }
+            if (isEmpty()) {
+                obj.optJSONObject("packageServing")?.let { servingFromJson(it) }?.let(::add)
+                obj.optJSONObject("defaultPortion")?.let { servingFromJson(it) }?.let(::add)
+            }
+        }
         val packaging = obj.optJSONObject("packaging")?.let { packagingFromJson(it) }
         Row(
             id = id,
@@ -217,8 +235,7 @@ object CustomFoodStore {
                 source = source,
                 description = description,
                 per100g = per100g,
-                packageServing = packageServing,
-                defaultPortion = defaultPortion,
+                servings = servings,
                 packaging = packaging,
                 additives = stringListFrom(obj, "additives"),
                 allergens = stringListFrom(obj, "allergens"),

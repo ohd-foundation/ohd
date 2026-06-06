@@ -117,9 +117,10 @@ data class Packaging(
  *    screen.
  *  - [per100g] — macros normalised to 100 g, the basis for the rule-of-three
  *    computation in [FoodDetailScreen].
- *  - [packageServing] / [defaultPortion] — optional preset chips on the
- *    detail screen. A user can always fall back to the "Custom (g)" chip and
- *    type any amount.
+ *  - [servings] — zero or more named preset chips on the detail screen
+ *    (e.g. "Small can 250 g", "Big bottle 2 L"). A user can always fall
+ *    back to the "Custom (g)" chip and type any amount, so the list may
+ *    be empty.
  */
 data class FoodItem(
     val name: String,
@@ -135,8 +136,15 @@ data class FoodItem(
     val barcode: String? = null,
     val description: String,
     val per100g: NutritionFacts,
-    val packageServing: Serving? = null,
-    val defaultPortion: Serving? = null,
+    /**
+     * Named pre-portion options shown as one-tap chips on
+     * [FoodDetailScreen]. A drink (Sprite) can hold "Small can 250 g",
+     * "Big can 500 g", "Half-litre bottle 500 g", "2 L bottle 2000 g",
+     * "Pour S 100 g", "Pour M 200 g" — order preserved as entered. The
+     * detail screen always pairs this list with an always-available
+     * "Custom (g)" chip, so an empty list is fine.
+     */
+    val servings: List<Serving> = emptyList(),
     /**
      * Physical packaging info — material × format + recycling. Mirrors a
      * subset of OFF's `packagings` array. Drives future environmental
@@ -184,133 +192,128 @@ val FoodDictionary: List<FoodItem> = listOf(
         name = "Oat porridge with banana",
         description = "Rolled oats cooked with milk or water, topped with sliced banana — a classic slow-release-carb breakfast.",
         per100g = NutritionFacts(kcal = 105, carbsG = 18.0, proteinG = 3.5, fatG = 2.0, sugarG = 5.0),
-        defaultPortion = Serving("Bowl", 360.0),
+        servings = listOf(Serving("Bowl", 360.0)),
     ),
     FoodItem(
         name = "Oat porridge — Quaker",
         brand = "Quaker",
         description = "Quick-cook rolled oats from Quaker. Whole-grain, no added sugar in the dry product.",
         per100g = NutritionFacts(kcal = 379, carbsG = 67.0, proteinG = 13.5, fatG = 6.5, sugarG = 1.0),
-        packageServing = Serving("Sachet (40g)", 40.0),
-        defaultPortion = Serving("Bowl (50g dry)", 50.0),
+        servings = listOf(Serving("Sachet (40g)", 40.0), Serving("Bowl (50g dry)", 50.0)),
     ),
     FoodItem(
         name = "Greek yoghurt 200 g",
         description = "Strained yoghurt — higher protein than regular, mild sour taste.",
         per100g = NutritionFacts(kcal = 60, carbsG = 4.0, proteinG = 10.0, fatG = 0.5, sugarG = 4.0),
-        packageServing = Serving("Cup (200g)", 200.0),
-        defaultPortion = Serving("Bowl", 150.0),
+        servings = listOf(Serving("Cup (200g)", 200.0), Serving("Bowl", 150.0)),
     ),
     FoodItem(
         name = "Banana, medium",
         description = "Medium ripe banana, ~120 g without skin. Quick-release carbs and a hit of potassium.",
         per100g = NutritionFacts(kcal = 89, carbsG = 23.0, proteinG = 1.1, fatG = 0.3, sugarG = 12.0),
-        defaultPortion = Serving("1 medium", 120.0),
+        servings = listOf(Serving("1 medium", 120.0)),
     ),
     FoodItem(
         name = "Apple, medium",
         description = "Medium apple, ~180 g with skin on. Fibre-forward whole fruit.",
         per100g = NutritionFacts(kcal = 52, carbsG = 14.0, proteinG = 0.3, fatG = 0.2, sugarG = 10.0),
-        defaultPortion = Serving("1 medium", 180.0),
+        servings = listOf(Serving("1 medium", 180.0)),
     ),
     FoodItem(
         name = "Chicken breast 150 g",
         description = "Skinless boneless chicken breast, grilled or pan-seared. Lean protein staple.",
         per100g = NutritionFacts(kcal = 165, carbsG = 0.0, proteinG = 31.0, fatG = 3.6, sugarG = 0.0),
-        defaultPortion = Serving("1 fillet", 150.0),
+        servings = listOf(Serving("1 fillet", 150.0)),
     ),
     FoodItem(
         name = "Chicken thigh 150 g",
         description = "Skinless boneless chicken thigh — fattier and more flavourful than breast.",
         per100g = NutritionFacts(kcal = 209, carbsG = 0.0, proteinG = 26.0, fatG = 11.0, sugarG = 0.0),
-        defaultPortion = Serving("1 thigh", 150.0),
+        servings = listOf(Serving("1 thigh", 150.0)),
     ),
     FoodItem(
         name = "Salmon fillet 150 g",
         description = "Atlantic salmon fillet, baked or pan-seared. Omega-3-rich oily fish.",
         per100g = NutritionFacts(kcal = 187, carbsG = 0.0, proteinG = 20.0, fatG = 12.0, sugarG = 0.0),
-        defaultPortion = Serving("1 fillet", 150.0),
+        servings = listOf(Serving("1 fillet", 150.0)),
     ),
     FoodItem(
         name = "Boiled egg, large",
         description = "Hard-boiled large hen's egg, ~50 g. Complete protein with most of the fat in the yolk.",
         per100g = NutritionFacts(kcal = 155, carbsG = 1.1, proteinG = 13.0, fatG = 11.0, sugarG = 1.1),
-        defaultPortion = Serving("1 large", 50.0),
+        servings = listOf(Serving("1 large", 50.0)),
     ),
     FoodItem(
         name = "Avocado, half",
         description = "Half a Hass avocado, ~100 g. Mostly monounsaturated fat plus fibre.",
         per100g = NutritionFacts(kcal = 160, carbsG = 9.0, proteinG = 2.0, fatG = 15.0, sugarG = 0.7),
-        defaultPortion = Serving("Half", 100.0),
+        servings = listOf(Serving("Half", 100.0)),
     ),
     FoodItem(
         name = "Brown rice, cooked 200 g",
         description = "Long-grain brown rice, boiled. Whole-grain side carb.",
         per100g = NutritionFacts(kcal = 124, carbsG = 26.0, proteinG = 2.7, fatG = 1.0, sugarG = 0.4),
-        defaultPortion = Serving("Bowl", 200.0),
+        servings = listOf(Serving("Bowl", 200.0)),
     ),
     FoodItem(
         name = "Quinoa, cooked 200 g",
         description = "Cooked quinoa — pseudo-cereal with all nine essential amino acids.",
         per100g = NutritionFacts(kcal = 120, carbsG = 21.0, proteinG = 4.4, fatG = 1.9, sugarG = 0.9),
-        defaultPortion = Serving("Bowl", 200.0),
+        servings = listOf(Serving("Bowl", 200.0)),
     ),
     FoodItem(
         name = "Sweet potato, baked 200 g",
         description = "Baked sweet potato with skin. Beta-carotene-rich complex carb.",
         per100g = NutritionFacts(kcal = 90, carbsG = 21.0, proteinG = 2.0, fatG = 0.2, sugarG = 6.5),
-        defaultPortion = Serving("1 medium", 200.0),
+        servings = listOf(Serving("1 medium", 200.0)),
     ),
     FoodItem(
         name = "Spinach salad 100 g",
         description = "Fresh baby spinach leaves, no dressing. Volume eating with iron and folate.",
         per100g = NutritionFacts(kcal = 23, carbsG = 3.6, proteinG = 2.9, fatG = 0.4, sugarG = 0.4),
-        defaultPortion = Serving("Bowl", 100.0),
+        servings = listOf(Serving("Bowl", 100.0)),
     ),
     FoodItem(
         name = "Almonds, 30 g handful",
         description = "Whole raw almonds. Snack-friendly source of vitamin E and monounsaturated fat.",
         per100g = NutritionFacts(kcal = 579, carbsG = 22.0, proteinG = 21.0, fatG = 50.0, sugarG = 4.4),
-        packageServing = Serving("Handful (30g)", 30.0),
-        defaultPortion = Serving("Handful", 30.0),
+        servings = listOf(Serving("Handful (30g)", 30.0), Serving("Handful", 30.0)),
     ),
     FoodItem(
         name = "Olive oil, 1 tbsp",
         description = "Extra-virgin olive oil. Nearly all monounsaturated fat — used as cooking medium or dressing.",
         per100g = NutritionFacts(kcal = 884, carbsG = 0.0, proteinG = 0.0, fatG = 100.0, sugarG = 0.0),
-        defaultPortion = Serving("1 tbsp", 14.0),
+        servings = listOf(Serving("1 tbsp", 14.0)),
     ),
     FoodItem(
         name = "Whole-grain toast slice",
         description = "Standard slice (~35 g) of whole-grain bread, toasted.",
         per100g = NutritionFacts(kcal = 247, carbsG = 41.0, proteinG = 13.0, fatG = 4.2, sugarG = 5.0),
-        defaultPortion = Serving("1 slice", 35.0),
+        servings = listOf(Serving("1 slice", 35.0)),
     ),
     FoodItem(
         name = "Peanut butter, 1 tbsp",
         description = "Natural peanut butter, no added sugar or palm oil. Calorie-dense plant protein.",
         per100g = NutritionFacts(kcal = 588, carbsG = 20.0, proteinG = 25.0, fatG = 50.0, sugarG = 9.0),
-        defaultPortion = Serving("1 tbsp", 16.0),
+        servings = listOf(Serving("1 tbsp", 16.0)),
     ),
     FoodItem(
         name = "Espresso, single",
         description = "Single shot of espresso, ~30 ml. No added milk or sugar.",
         per100g = NutritionFacts(kcal = 9, carbsG = 1.7, proteinG = 0.1, fatG = 0.2, sugarG = 0.0),
-        defaultPortion = Serving("1 shot (30ml)", 30.0),
+        servings = listOf(Serving("1 shot (30ml)", 30.0)),
     ),
     FoodItem(
         name = "Latte, 250 ml",
         description = "Espresso topped with steamed whole milk. ~250 ml café-style cup.",
         per100g = NutritionFacts(kcal = 48, carbsG = 4.6, proteinG = 2.6, fatG = 2.0, sugarG = 4.6),
-        packageServing = Serving("Cup (250ml)", 250.0),
-        defaultPortion = Serving("Cup", 250.0),
+        servings = listOf(Serving("Cup (250ml)", 250.0), Serving("Cup", 250.0)),
     ),
     FoodItem(
         name = "Dark chocolate 20 g",
         description = "70% cocoa dark chocolate square (~20 g). Rich in flavanols and saturated fat.",
         per100g = NutritionFacts(kcal = 550, carbsG = 46.0, proteinG = 7.5, fatG = 35.0, sugarG = 35.0),
-        packageServing = Serving("Square (20g)", 20.0),
-        defaultPortion = Serving("Square", 20.0),
+        servings = listOf(Serving("Square (20g)", 20.0), Serving("Square", 20.0)),
     ),
 )
 
