@@ -4,7 +4,6 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -17,6 +16,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CheckboxDefaults
+import androidx.compose.material3.RadioButton
+import androidx.compose.material3.RadioButtonDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -33,6 +36,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ohd.connect.data.CustomFoodStore
 import com.ohd.connect.ui.components.OhdButton
+import com.ohd.connect.ui.components.OhdButtonVariant
 import com.ohd.connect.ui.components.OhdField
 import com.ohd.connect.ui.components.OhdInput
 import com.ohd.connect.ui.components.OhdSectionHeader
@@ -543,20 +547,22 @@ fun FoodCreateScreen(
             )
             if (allergensOpen) {
                 FormSubLabel("Contains")
-                ChipRow(
+                CheckboxMultiSelect(
                     options = OFF_ALLERGENS,
                     selected = allergens,
                     onToggle = { tok ->
                         allergens = if (tok in allergens) allergens - tok else allergens + tok
                     },
+                    addPlaceholder = "Add other allergen…",
                 )
                 FormSubLabel("May contain (traces)")
-                ChipRow(
+                CheckboxMultiSelect(
                     options = OFF_ALLERGENS,
                     selected = traces,
                     onToggle = { tok ->
                         traces = if (tok in traces) traces - tok else traces + tok
                     },
+                    addPlaceholder = "Add other trace…",
                 )
             }
 
@@ -598,20 +604,22 @@ fun FoodCreateScreen(
                     )
                 }
                 FormSubLabel("Ingredient analysis")
-                ChipRow(
+                CheckboxMultiSelect(
                     options = OFF_ANALYSIS,
                     selected = analysis,
                     onToggle = { tok ->
                         analysis = if (tok in analysis) analysis - tok else analysis + tok
                     },
+                    addPlaceholder = "Add other analysis tag…",
                 )
                 FormSubLabel("Labels")
-                ChipRow(
+                CheckboxMultiSelect(
                     options = OFF_LABELS,
                     selected = labels,
                     onToggle = { tok ->
                         labels = if (tok in labels) labels - tok else labels + tok
                     },
+                    addPlaceholder = "Add other label…",
                 )
             }
 
@@ -659,20 +667,22 @@ fun FoodCreateScreen(
             )
             if (packagingOpen) {
                 FormSubLabel("Material")
-                PillRow(
+                RadioListWithCustom(
                     options = listOf("plastic", "glass", "metal", "cardboard", "paper", "mixed"),
-                    selectedLabel = pkgMaterial,
+                    selected = pkgMaterial,
                     onSelect = { picked ->
                         pkgMaterial = if (pkgMaterial == picked) null else picked
                     },
+                    addPlaceholder = "Add other material… (tetrapak, bioplastic, …)",
                 )
                 FormSubLabel("Format")
-                PillRow(
+                RadioListWithCustom(
                     options = listOf("bottle", "can", "jar", "box", "bag", "tray", "wrapper"),
-                    selectedLabel = pkgFormat,
+                    selected = pkgFormat,
                     onSelect = { picked ->
                         pkgFormat = if (pkgFormat == picked) null else picked
                     },
+                    addPlaceholder = "Add other format…",
                 )
                 FormSubLabel("Recyclable")
                 PillRow(
@@ -805,35 +815,6 @@ private fun OhdSectionHeaderInline(text: String) {
     )
 }
 
-/**
- * Horizontally-scrollable row of toggleable filter chips. Mirrors the
- * FilterChip in RecentEventsScreen — rounded pill, Ink fill when
- * selected, BgElevated otherwise. Tokens are shown title-cased
- * (`Gluten`) but the underlying selection set stores the lowercase OFF
- * token (`gluten`).
- */
-@Composable
-private fun ChipRow(
-    options: List<String>,
-    selected: Set<String>,
-    onToggle: (String) -> Unit,
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .horizontalScroll(rememberScrollState()),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        options.forEach { token ->
-            ToggleChip(
-                label = token.replace('-', ' ').replaceFirstChar { it.uppercase() },
-                selected = token in selected,
-                onClick = { onToggle(token) },
-            )
-        }
-    }
-}
-
 @Composable
 private fun ToggleChip(
     label: String,
@@ -858,6 +839,214 @@ private fun ToggleChip(
             fontWeight = if (selected) FontWeight.W500 else FontWeight.W400,
             fontSize = 12.sp,
             color = fg,
+        )
+    }
+}
+
+/**
+ * Vertical checkbox list with an inline "Add custom…" affordance.
+ *
+ * Replaces the horizontally-scrolling chip row for multi-select fields
+ * (allergens, traces, ingredient analysis, labels). Checkboxes are easier
+ * to scan and more accessible than colour-coded pills, and the trailing
+ * input lets the user record anything the OFF canonical list doesn't
+ * cover (custom allergens, ingredient flags, niche labels).
+ *
+ * Internal model:
+ *  - [options] is the canonical token list — always rendered as checkbox
+ *    rows in the given order, regardless of whether they are selected.
+ *  - Any token in [selected] not present in [options] is rendered as an
+ *    additional "custom" checkbox row below the canonicals. Unticking it
+ *    removes it from the set.
+ *  - The user types a new token in the inline input and presses **Add**;
+ *    the token is lowercased and space→dash-normalised to match the OFF
+ *    style, then surfaced as another custom row above the input.
+ */
+@Composable
+private fun CheckboxMultiSelect(
+    options: List<String>,
+    selected: Set<String>,
+    onToggle: (String) -> Unit,
+    addPlaceholder: String = "Add other…",
+) {
+    val canonical = options.toSet()
+    val customSelected = selected.filter { it !in canonical }.sorted()
+    var draft by remember { mutableStateOf("") }
+
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        options.forEach { token ->
+            CheckboxRow(
+                label = token.replace('-', ' ').replaceFirstChar { it.uppercase() },
+                checked = token in selected,
+                onCheckedChange = { onToggle(token) },
+            )
+        }
+        customSelected.forEach { token ->
+            CheckboxRow(
+                label = token.replace('-', ' ').replaceFirstChar { it.uppercase() },
+                checked = true,
+                onCheckedChange = { onToggle(token) },
+            )
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Box(modifier = Modifier.weight(1f)) {
+                OhdInput(
+                    value = draft,
+                    onValueChange = { draft = it },
+                    placeholder = addPlaceholder,
+                )
+            }
+            OhdButton(
+                label = "Add",
+                variant = OhdButtonVariant.Ghost,
+                enabled = draft.isNotBlank(),
+                onClick = {
+                    val tok = draft.trim().lowercase().replace(' ', '-')
+                    if (tok.isNotEmpty() && tok !in selected) onToggle(tok)
+                    draft = ""
+                },
+            )
+        }
+    }
+}
+
+/**
+ * Vertical radio-button list with an inline "Add custom…" affordance.
+ *
+ * Single-select counterpart of [CheckboxMultiSelect], used for packaging
+ * material and format. The canonical [options] are listed top-to-bottom
+ * as radio rows; any selected value outside the canonical set appears as
+ * an additional "custom" radio row, and the inline input lets the user
+ * commit a new value (which becomes the [selected] and re-renders as
+ * that custom row). Tapping the currently-selected radio clears it to
+ * `null` — same behaviour as the pill row this replaces.
+ */
+@Composable
+private fun RadioListWithCustom(
+    options: List<String>,
+    selected: String?,
+    onSelect: (String) -> Unit,
+    addPlaceholder: String = "Add other…",
+) {
+    val canonical = options.toSet()
+    val showCustom = selected != null && selected !in canonical
+    var draft by remember { mutableStateOf("") }
+
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        options.forEach { opt ->
+            RadioRow(
+                label = opt.replace('-', ' ').replaceFirstChar { it.uppercase() },
+                selected = selected == opt,
+                onClick = { onSelect(opt) },
+            )
+        }
+        if (showCustom) selected?.let { sel ->
+            RadioRow(
+                label = sel.replace('-', ' ').replaceFirstChar { it.uppercase() },
+                selected = true,
+                onClick = { onSelect(sel) },
+            )
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Box(modifier = Modifier.weight(1f)) {
+                OhdInput(
+                    value = draft,
+                    onValueChange = { draft = it },
+                    placeholder = addPlaceholder,
+                )
+            }
+            OhdButton(
+                label = "Set",
+                variant = OhdButtonVariant.Ghost,
+                enabled = draft.isNotBlank(),
+                onClick = {
+                    val tok = draft.trim().lowercase().replace(' ', '-')
+                    if (tok.isNotEmpty()) onSelect(tok)
+                    draft = ""
+                },
+            )
+        }
+    }
+}
+
+/**
+ * One row in [CheckboxMultiSelect]: tappable anywhere on the row,
+ * Material3 [Checkbox] tinted to OHD ink for the checked state, label
+ * in `Inter 14 / 400`.
+ */
+@Composable
+private fun CheckboxRow(
+    label: String,
+    checked: Boolean,
+    onCheckedChange: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onCheckedChange() }
+            .padding(vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Checkbox(
+            checked = checked,
+            onCheckedChange = { onCheckedChange() },
+            colors = CheckboxDefaults.colors(
+                checkedColor = OhdColors.Ink,
+                uncheckedColor = OhdColors.Line,
+                checkmarkColor = OhdColors.White,
+            ),
+        )
+        Text(
+            text = label,
+            fontFamily = OhdBody,
+            fontWeight = FontWeight.W400,
+            fontSize = 14.sp,
+            color = OhdColors.Ink,
+        )
+    }
+}
+
+/**
+ * One row in [RadioListWithCustom]: same shape as [CheckboxRow] but uses
+ * a Material3 [RadioButton] tinted to OHD ink.
+ */
+@Composable
+private fun RadioRow(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onClick() }
+            .padding(vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        RadioButton(
+            selected = selected,
+            onClick = { onClick() },
+            colors = RadioButtonDefaults.colors(
+                selectedColor = OhdColors.Ink,
+                unselectedColor = OhdColors.Line,
+            ),
+        )
+        Text(
+            text = label,
+            fontFamily = OhdBody,
+            fontWeight = FontWeight.W400,
+            fontSize = 14.sp,
+            color = OhdColors.Ink,
         )
     }
 }
