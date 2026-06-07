@@ -14,7 +14,9 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -92,6 +94,10 @@ fun FoodScreen(
     // should remain finishable in the morning.
     var inProgress by remember { mutableStateOf<List<InProgressFood>>(emptyList()) }
     var refreshTick by remember { mutableStateOf(0) }
+    // Long-press on a today's-log row opens a confirm dialog; the dialog
+    // runs the delete RPC + bumps [refreshTick]. Hoisted here so the
+    // dialog can sit at the screen root rather than inside the list row.
+    var pendingDelete by remember { mutableStateOf<OhdEvent?>(null) }
     // Bump the tick on every screen-resume so navigating back from
     // FoodDetailScreen (where a new food was logged) re-runs the query and
     // the gauges update. Without this, FoodScreen's LaunchedEffect would
@@ -309,8 +315,66 @@ fun FoodScreen(
 
             OhdSectionHeader(text = "TODAY")
 
-            FoodTodayList(events = todaysFoods, onOpenEvent = onOpenEvent)
+            FoodTodayList(
+                events = todaysFoods,
+                onOpenEvent = onOpenEvent,
+                onLongPressEvent = { pendingDelete = it },
+            )
         }
+    }
+
+    // Confirm-delete dialog for the "I didn't actually eat this" path.
+    // Wipes every event at the same exact millisecond as the food.eaten
+    // parent — the macro children (intake.*) and composition tags
+    // (composition.*) share the parent's timestamp, so a precise
+    // [ts, ts] range nukes the whole meal in one RPC. Two unrelated
+    // events landing at the same millisecond is implausible enough to
+    // ignore for a beta-grade affordance.
+    pendingDelete?.let { ev ->
+        val name = ev.channels
+            .firstOrNull { it.path == CH_NAME }
+            ?.let { (it.scalar as? OhdScalar.Text)?.v }
+            ?: "this entry"
+        AlertDialog(
+            onDismissRequest = { pendingDelete = null },
+            title = { Text("Delete $name?") },
+            text = {
+                Text(
+                    "Removes the entry and its macro / composition children. " +
+                        "This can't be undone.",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val target = ev
+                    pendingDelete = null
+                    scope.launch(Dispatchers.IO) {
+                        val outcome = StorageRepository.deleteRemoteEvents(
+                            fromMs = target.timestampMs,
+                            toMs = target.timestampMs,
+                        )
+                        withContext(Dispatchers.Main) {
+                            outcome.fold(
+                                onSuccess = {
+                                    onToast("Removed $name")
+                                    // Trigger the LaunchedEffect re-fetch.
+                                    refreshTick += 1
+                                },
+                                onFailure = { e ->
+                                    onToast(
+                                        e.message
+                                            ?: "Couldn't delete — try again",
+                                    )
+                                },
+                            )
+                        }
+                    }
+                }) { Text("Delete") }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingDelete = null }) { Text("Cancel") }
+            },
+        )
     }
 }
 
@@ -593,6 +657,9 @@ internal fun startOfTodayMs(): Long {
 private fun FoodTodayList(
     events: List<OhdEvent>,
     onOpenEvent: (String) -> Unit,
+    /** Long-press → context affordance; surfaces a delete dialog at the
+     * screen level. Optional so other call sites can ignore it. */
+    onLongPressEvent: ((OhdEvent) -> Unit)? = null,
 ) {
     if (events.isEmpty()) {
         OhdListItem(
@@ -625,6 +692,7 @@ private fun FoodTodayList(
                 secondary = detail,
                 meta = "›",
                 onClick = { onOpenEvent(event.ulid) },
+                onLongClick = onLongPressEvent?.let { handler -> { handler(event) } },
             )
             if (index < events.lastIndex) {
                 OhdDivider()

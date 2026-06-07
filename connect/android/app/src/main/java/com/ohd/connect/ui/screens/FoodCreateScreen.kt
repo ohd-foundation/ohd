@@ -117,6 +117,11 @@ fun FoodCreateScreen(
     var saturatedFat by remember { mutableStateOf("") }
     var transFat by remember { mutableStateOf("") }
     var sodium by remember { mutableStateOf("") }
+    // EU/UK nutrition labels print salt (g), not sodium (mg) — keep both
+    // editable; whichever the user has in hand drives the other via
+    // sodiumToSaltText / saltToSodiumText. NaCl molar ratio 2.5 →
+    // salt_g = sodium_mg / 400.
+    var salt by remember { mutableStateOf("") }
     var cholesterol by remember { mutableStateOf("") }
     var potassium by remember { mutableStateOf("") }
     var calcium by remember { mutableStateOf("") }
@@ -394,12 +399,30 @@ fun FoodCreateScreen(
                     OhdField(
                         label = "Sodium (mg)",
                         value = sodium,
-                        onValueChange = { sodium = sanitizeDecimal(it) },
+                        onValueChange = { v ->
+                            sodium = sanitizeDecimal(v)
+                            // Salt label is what nutrition panels actually
+                            // print in the EU/UK — keep the salt field in
+                            // lockstep so the form matches whichever number
+                            // the user has in hand. NaCl molar ratio: 2.5.
+                            salt = sodiumToSaltText(sodium)
+                        },
                         placeholder = "0",
                         keyboardType = KeyboardType.Decimal,
                         modifier = Modifier.weight(1f),
                     )
                 }
+                OhdField(
+                    label = "Salt (g)",
+                    value = salt,
+                    onValueChange = { v ->
+                        salt = sanitizeDecimal(v)
+                        // Mirror back: typing salt drives sodium.
+                        sodium = saltToSodiumText(salt)
+                    },
+                    placeholder = "0",
+                    keyboardType = KeyboardType.Decimal,
+                )
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -1151,6 +1174,41 @@ private val OFF_LABELS: List<String> = listOf(
  * the user's cursor away.
  */
 private data class ServingDraft(val label: String, val grams: String)
+
+/**
+ * Convert a sodium-in-mg text field to its salt-in-g equivalent.
+ * NaCl salt is 39.34 % sodium by mass — the chemistry convention used by
+ * EU food labelling is the round 2.5 ratio: salt_g = sodium_mg / 400.
+ *
+ * Empty / unparseable input → empty string (clears the mirrored field).
+ * Numeric input is rendered with up to 3 decimal places, trailing zeros
+ * stripped, so "0.500" shows as "0.5" rather than locking the cursor on
+ * a noisy decimal tail.
+ */
+private fun sodiumToSaltText(sodium: String): String {
+    val mg = sodium.trim().toDoubleOrNull() ?: return ""
+    val grams = mg / 400.0
+    return trimDecimal(grams)
+}
+
+/** Inverse of [sodiumToSaltText]: salt_g × 400 = sodium_mg. */
+private fun saltToSodiumText(salt: String): String {
+    val g = salt.trim().toDoubleOrNull() ?: return ""
+    val mg = g * 400.0
+    return trimDecimal(mg)
+}
+
+/**
+ * Format a Double with up to 3 decimals and trim trailing zeros so the
+ * mirrored field stays compact ("0.5", not "0.500"). Whole numbers
+ * print without a decimal point.
+ */
+private fun trimDecimal(value: Double): String {
+    if (value.isNaN() || value.isInfinite()) return ""
+    val rounded = (value * 1000.0).let { kotlin.math.round(it) } / 1000.0
+    if (rounded == rounded.toLong().toDouble()) return rounded.toLong().toString()
+    return rounded.toString().trimEnd('0').trimEnd('.')
+}
 
 /**
  * Build a Serving from a label + grams pair. Returns null when either

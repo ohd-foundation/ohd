@@ -1,7 +1,8 @@
 package com.ohd.connect.ui.components
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -32,6 +33,7 @@ import com.ohd.connect.ui.theme.OhdColors
  *   Pass as a plain string — the spec calls these out as text.
  * - [leading] is an optional 20–24 dp icon slot rendered before the text.
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun OhdListItem(
     primary: String,
@@ -40,11 +42,26 @@ fun OhdListItem(
     meta: String? = null,
     leading: @Composable (() -> Unit)? = null,
     onClick: (() -> Unit)? = null,
+    /**
+     * Optional long-press gesture, used by surfaces that want a
+     * delete / context affordance (e.g. the food log's "remove this
+     * entry I didn't actually eat" flow). When either [onClick] or this
+     * is set, the row uses [combinedClickable] under the hood.
+     */
+    onLongClick: (() -> Unit)? = null,
 ) {
     val rowModifier = modifier
         .fillMaxWidth()
         .background(OhdColors.Bg)
-        .let { if (onClick != null) it.clickable { onClick() } else it }
+        .let { base ->
+            when {
+                onClick == null && onLongClick == null -> base
+                else -> base.combinedClickable(
+                    onClick = { onClick?.invoke() },
+                    onLongClick = onLongClick,
+                )
+            }
+        }
         .padding(horizontal = 16.dp, vertical = 14.dp)
 
     Row(
