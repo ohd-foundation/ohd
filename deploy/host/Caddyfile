@@ -103,8 +103,11 @@ api.ohd.dev {
 }
 
 # ---- mcp.ohd.dev ----------------------------------------------------------
-# OHD MCP server — JSON-RPC 2.0 surface over the ohd-mcp-core tool catalog.
-# Speaks MCP 2024-11-05; HTTP transport. See connect/mcp-rs/SPEC.
+# OHD MCP surface — JSON-RPC 2.0 over `/mcp` on the storage server. Same
+# bearer-auth as the OHDC connectrpc surface; per-user data sits behind
+# the same token. The standalone `ohd-mcp-rs` container was retired once
+# storage-server grew its own `/mcp` route (no second daemon, no
+# duplicate dispatcher).
 mcp.ohd.dev {
     encode gzip zstd
 
@@ -113,7 +116,11 @@ mcp.ohd.dev {
         X-Content-Type-Options nosniff
     }
 
-    reverse_proxy ohd-mcp:8445
+    reverse_proxy ohd-storage:8443 {
+        transport http {
+            versions h2c
+        }
+    }
 }
 
 # ---- cord.ohd.dev ---------------------------------------------------------

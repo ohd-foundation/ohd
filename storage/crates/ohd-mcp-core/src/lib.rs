@@ -20,6 +20,7 @@ pub mod grant_json;
 pub mod put;
 pub mod scope;
 pub mod tools;
+pub mod wire;
 
 pub use scope::{ShareScope, ToolKind};
 

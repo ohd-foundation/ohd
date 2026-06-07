@@ -201,6 +201,12 @@ pub async fn serve_with_providers(
             };
             app = app.merge(crate::oauth::router(state));
         }
+        // SaaS MCP surface. Mounted alongside OAuth so `POST /mcp` lands
+        // on the JSON-RPC handler rather than the Connect-RPC fallback.
+        // Caddy at `mcp.ohd.dev` is just an alias for this route — the
+        // wire-level entry point sits on the same axum router as
+        // `storage.ohd.dev` itself.
+        app = app.merge(crate::mcp::router(Arc::clone(&storage)));
         app = app.fallback_service(connect_svc);
         if cors {
             app = app.layer(cors_layer);

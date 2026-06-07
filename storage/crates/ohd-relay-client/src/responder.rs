@@ -457,91 +457,43 @@ where
 /// Dispatch one MCP JSON-RPC request line. Returns `None` for a
 /// notification (a request with no `id`), `Some(response_json)` otherwise.
 ///
-/// This is the scoped-MCP core — it is **not** stubbed: `tools/list` and
-/// `tools/call` go through [`ohd_mcp_core::catalog_scoped`] /
-/// [`dispatch_scoped`] with the share's [`ShareScope`].
+/// Resolves the share's live [`ShareScope`] fresh per request — a
+/// mid-session suspend / revoke / expiry is honoured on the very next
+/// call — then hands the parsed line + scope to the shared
+/// [`ohd_mcp_core::wire::handle_json_rpc`] dispatcher. The wire layer
+/// does all the protocol work; the responder just contributes scope and
+/// transport (relay-tunnel-with-inner-TLS).
 fn handle_mcp_request(line: &str, storage: &Storage, grant_id: i64) -> Option<Value> {
-    let req: Value = match serde_json::from_str(line) {
-        Ok(v) => v,
-        Err(e) => {
-            // Parse error — JSON-RPC says reply with null id.
-            return Some(rpc_error(Value::Null, -32_700, &format!("parse error: {e}")));
-        }
-    };
-    let id = req.get("id").cloned();
-    let method = req.get("method").and_then(|v| v.as_str()).unwrap_or("");
-    let params = req.get("params").cloned().unwrap_or_else(|| json!({}));
-
-    // Resolve the share scope fresh for this request so a mid-session
-    // suspend / revoke / expiry is honoured immediately.
     let scope = match resolve_scope(storage, grant_id) {
         Ok(s) => s,
         Err(err) => {
-            return id.map(|id| {
-                rpc_error(id, -32_603, &format!("scope resolution failed: {err}"))
-            });
+            // Parse just enough of the envelope to mirror its id back on
+            // the error response. JSON-RPC says transport errors get the
+            // request's id when known, null otherwise.
+            let id = serde_json::from_str::<Value>(line)
+                .ok()
+                .and_then(|v| v.get("id").cloned())
+                .unwrap_or(Value::Null);
+            return Some(json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "error": {
+                    "code": -32_603,
+                    "message": format!("scope resolution failed: {err}"),
+                },
+            }));
         }
     };
-
-    let result: std::result::Result<Value, (i32, String)> = match method {
-        "initialize" => Ok(json!({
-            "protocolVersion": MCP_PROTOCOL_VERSION,
-            "capabilities": { "tools": { "listChanged": false } },
-            "serverInfo": {
-                "name": "ohd-share-responder",
-                "version": env!("CARGO_PKG_VERSION"),
-            },
-        })),
-        "notifications/initialized" | "initialized" => {
-            // A notification carries no id and expects no reply.
-            return None;
-        }
-        "ping" => Ok(json!({})),
-        "tools/list" => Ok(json!({
-            "tools": ohd_mcp_core::catalog_scoped(Some(&scope)),
-        })),
-        "tools/call" => call_tool_scoped(&params, storage, &scope),
-        other => Err((-32_601, format!("method not found: {other}"))),
-    };
-
-    // A request with no `id` is a notification: no reply at all.
-    let id = id?;
-    Some(match result {
-        Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
-        Err((code, message)) => rpc_error(id, code, &message),
-    })
+    ohd_mcp_core::wire::handle_json_rpc(line, storage, Some(&scope), RESPONDER_SERVER_INFO)
 }
 
-/// `tools/call` under a share scope. Out-of-scope calls surface a
-/// `tool_result` with `isError: true` carrying the `NotPermitted` message —
-/// the agent must treat it as "not permitted", never "no data".
-fn call_tool_scoped(
-    params: &Value,
-    storage: &Storage,
-    scope: &ShareScope,
-) -> std::result::Result<Value, (i32, String)> {
-    let name = params
-        .get("name")
-        .and_then(|v| v.as_str())
-        .ok_or((-32_602, "params.name is required".to_string()))?;
-    let arguments = params
-        .get("arguments")
-        .cloned()
-        .unwrap_or_else(|| json!({}));
-
-    let result_str = ohd_mcp_core::dispatch_scoped_json(
-        name,
-        &arguments.to_string(),
-        storage,
-        Some(scope),
-    );
-    let parsed: Value = serde_json::from_str(&result_str).unwrap_or(Value::Null);
-    let is_error = parsed.get("error").is_some();
-    Ok(json!({
-        "content": [{ "type": "text", "text": result_str }],
-        "isError": is_error,
-    }))
-}
+/// Identifies this transport in MCP `initialize` responses. The phone
+/// responder advertises itself separately from the SaaS storage server's
+/// `/mcp` route so a connecting agent can tell which surface it reached.
+const RESPONDER_SERVER_INFO: ohd_mcp_core::wire::ServerInfo = ohd_mcp_core::wire::ServerInfo {
+    name: "ohd-share-responder",
+    version: env!("CARGO_PKG_VERSION"),
+};
 
 /// Resolve the live [`ShareScope`] for `grant_id` off the storage core.
 fn resolve_scope(storage: &Storage, grant_id: i64) -> Result<ShareScope> {
@@ -549,14 +501,6 @@ fn resolve_scope(storage: &Storage, grant_id: i64) -> Result<ShareScope> {
         .with_conn(|conn| ohd_storage_core::grants::read_grant(conn, grant_id))
         .context("read grant row")?;
     Ok(ShareScope::from_grant(&grant, now_ms()))
-}
-
-fn rpc_error(id: Value, code: i32, message: &str) -> Value {
-    json!({
-        "jsonrpc": "2.0",
-        "id": id,
-        "error": { "code": code, "message": message },
-    })
 }
 
 fn sha256(input: &[u8]) -> [u8; 32] {

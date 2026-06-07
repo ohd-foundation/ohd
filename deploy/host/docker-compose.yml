@@ -58,21 +58,9 @@ services:
     networks:
       - ohd-net
 
-  ohd-mcp:
-    build:
-      context: ../../
-      dockerfile: connect/mcp-rs/deploy/Dockerfile
-    image: ohd-mcp-rs:dev
-    container_name: ohd-mcp
-    restart: unless-stopped
-    expose:
-      - "8445"
-    volumes:
-      - mcp_data:/var/lib/ohd-mcp
-    environment:
-      RUST_LOG: ${RUST_LOG:-info}
-    networks:
-      - ohd-net
+  # ohd-mcp standalone container retired. The SaaS MCP surface lives on
+  # ohd-storage-server itself (POST /mcp); Caddy at mcp.ohd.dev is now an
+  # alias to that route. See mcp.rs + wire layer in ohd-mcp-core.
 
   ohd-saas:
     build:
@@ -173,8 +161,6 @@ volumes:
     name: ohd_relay_data
   saas_data:
     name: ohd_saas_data
-  mcp_data:
-    name: ohd_mcp_data
   cord_data:
     name: ohd_cord_data
   idp_data:

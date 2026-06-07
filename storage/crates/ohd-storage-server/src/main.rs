@@ -23,6 +23,7 @@ use rusqlite::params;
 mod auth_server;
 mod http3;
 mod jwks;
+mod mcp;
 mod oauth;
 mod server;
 mod sync_server;
