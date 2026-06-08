@@ -125,11 +125,13 @@ services:
       - "8447"
     volumes:
       - idp_data:/var/lib/ohd-idp
-      # Read-only mount of the saas database. The IdP federates account
-      # lookups off saas's `accounts` table (see `idp.toml::store.saas_db`)
-      # so it needs to read the same SQLite file the saas container owns.
-      # No write access — accounts are mutated through the SaaS API only.
-      - saas_data:/var/lib/ohd-saas:ro
+      # Shared mount of the saas database (read-write). The IdP federates
+      # account lookups off saas's `profiles` + `email_credentials`
+      # tables (see `idp.toml::store.saas_db`) and ALSO writes to them on
+      # signup — the IdP is currently the canonical signup path, not a
+      # passive reader. Read-only would make /signup fail with "inserting
+      # profiles row" because SQLite rejects writes through a ro mount.
+      - saas_data:/var/lib/ohd-saas
       - ./idp.toml:/etc/ohd-idp/idp.toml:ro
     environment:
       RUST_LOG: ${RUST_LOG:-info}
