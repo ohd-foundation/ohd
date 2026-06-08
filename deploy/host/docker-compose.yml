@@ -125,6 +125,11 @@ services:
       - "8447"
     volumes:
       - idp_data:/var/lib/ohd-idp
+      # Read-only mount of the saas database. The IdP federates account
+      # lookups off saas's `accounts` table (see `idp.toml::store.saas_db`)
+      # so it needs to read the same SQLite file the saas container owns.
+      # No write access — accounts are mutated through the SaaS API only.
+      - saas_data:/var/lib/ohd-saas:ro
       - ./idp.toml:/etc/ohd-idp/idp.toml:ro
     environment:
       RUST_LOG: ${RUST_LOG:-info}
@@ -152,7 +157,6 @@ services:
       - ohd-storage
       - ohd-relay
       - ohd-saas
-      - ohd-mcp
 
 volumes:
   storage_data:
