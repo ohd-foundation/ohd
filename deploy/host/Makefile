@@ -17,15 +17,19 @@
 # IPv4 to Hetzner sometimes ends up in their automatic DDoS mitigation
 # (see git history for details) and IPv6 is unaffected.
 
-HOST_V6  := root@[2a01:4f8:c014:d23b::1]
-HOST_V4  := root@178.105.71.238
-HOST_DNS := root@storage.ohd.dev
-HOST     := $(HOST_V6)
-SSH      := ssh -o BatchMode=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=20
-RSYNC    := rsync -az -e "$(SSH)" --exclude=target/ --exclude=node_modules/ \
-            --exclude=.venv/ --exclude=__pycache__/ --exclude=build/ \
-            --exclude=dist/ --exclude=.git/ --exclude='*.apk' \
-            --exclude=cargo-target/
+# IPv6 host literal. SSH wants `user@addr` with no brackets; rsync's URL
+# parser wants `user@[addr]:path`. We keep both forms so each tool sees
+# the syntax it expects, and use storage.ohd.dev (A-record only) as a
+# stable identifier in messages.
+HOST_SSH   := root@2a01:4f8:c014:d23b::1
+HOST_RSYNC := root@[2a01:4f8:c014:d23b::1]
+HOST_V4    := root@178.105.71.238
+HOST_DNS   := root@storage.ohd.dev
+SSH        := ssh -o BatchMode=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=20
+RSYNC      := rsync -az -e "$(SSH)" --exclude=target/ --exclude=node_modules/ \
+              --exclude=.venv/ --exclude=__pycache__/ --exclude=build/ \
+              --exclude=dist/ --exclude=.git/ --exclude='*.apk' \
+              --exclude=cargo-target/
 
 # Compose lives at deploy/host/docker-compose.yml; the build contexts
 # climb `../..` to the repo root, so most docker commands run from
@@ -73,14 +77,14 @@ build:
 # (`docker save | ssh ... docker load`), rsync the compose+caddy+landing
 # bits, and `docker compose up -d` on the host with both profiles.
 ship: build
-	@echo "=== save + load over $(HOST_V6) ==="
-	docker save $(IMAGES) | gzip | $(SSH) $(HOST) 'gzip -d | docker load'
+	@echo "=== save + load over $(HOST_SSH) ==="
+	docker save $(IMAGES) | gzip | $(SSH) $(HOST_SSH) 'gzip -d | docker load'
 	@echo "=== rsync config + landing ==="
-	$(RSYNC) $(REPO)/deploy/host/ $(HOST):/opt/ohd/deploy/host/
-	$(RSYNC) $(REPO)/landing/ $(HOST):/opt/ohd/landing/
-	$(RSYNC) $(REPO)/idp/idp.toml $(HOST):/opt/ohd/deploy/host/idp.toml
+	$(RSYNC) $(REPO)/deploy/host/ $(HOST_RSYNC):/opt/ohd/deploy/host/
+	$(RSYNC) $(REPO)/landing/ $(HOST_RSYNC):/opt/ohd/landing/
+	$(RSYNC) $(REPO)/idp/idp.toml $(HOST_RSYNC):/opt/ohd/deploy/host/idp.toml
 	@echo "=== docker compose up -d ==="
-	$(SSH) $(HOST) 'cd /opt/ohd && $(COMPOSE) --env-file .env up -d'
+	$(SSH) $(HOST_SSH) 'cd /opt/ohd && $(COMPOSE) --env-file .env up -d'
 	@$(MAKE) --no-print-directory ps
 
 # ---- logs / ps / ssh ------------------------------------------------------
@@ -89,13 +93,13 @@ ship: build
 # loop doesn't require remembering the compose path.
 
 logs:
-	$(SSH) $(HOST) 'cd /opt/ohd && $(COMPOSE) logs --tail=50 -f'
+	$(SSH) $(HOST_SSH) 'cd /opt/ohd && $(COMPOSE) logs --tail=50 -f'
 
 ps:
-	$(SSH) $(HOST) 'cd /opt/ohd && $(COMPOSE) ps --format "table {{.Name}}\t{{.Status}}"'
+	$(SSH) $(HOST_SSH) 'cd /opt/ohd && $(COMPOSE) ps --format "table {{.Name}}\t{{.Status}}"'
 
 ssh:
-	@$(SSH) -t $(HOST)
+	@$(SSH) -t $(HOST_SSH)
 
 # ---- bootstrap ------------------------------------------------------------
 #
@@ -115,7 +119,7 @@ ssh:
 #                             got 48").
 bootstrap:
 	@if [ -z "$$OHD_CORD_ANTHROPIC_KEY" ]; then \
-		if $(SSH) $(HOST) 'test -s /opt/ohd/.env' 2>/dev/null; then \
+		if $(SSH) $(HOST_SSH) 'test -s /opt/ohd/.env' 2>/dev/null; then \
 			echo "==> /opt/ohd/.env already present on host; reusing it"; \
 		else \
 			echo "ERROR: first-time bootstrap needs OHD_CORD_ANTHROPIC_KEY="; \
@@ -125,11 +129,11 @@ bootstrap:
 		fi; \
 	fi
 	@echo "=== docker install (idempotent) ==="
-	$(SSH) $(HOST) bash -se < bootstrap-docker.sh
+	$(SSH) $(HOST_SSH) bash -se < bootstrap-docker.sh
 	@echo "=== mkdir /opt/ohd /var/www/ohd-downloads ==="
-	$(SSH) $(HOST) 'mkdir -p /opt/ohd /var/www/ohd-downloads'
+	$(SSH) $(HOST_SSH) 'mkdir -p /opt/ohd /var/www/ohd-downloads'
 	@echo "=== rsync code ==="
-	$(RSYNC) $(REPO)/ $(HOST):/opt/ohd/
+	$(RSYNC) $(REPO)/ $(HOST_RSYNC):/opt/ohd/
 	@echo "=== ensure /opt/ohd/.env exists ==="
 	@if [ -n "$$OHD_CORD_ANTHROPIC_KEY" ]; then \
 		echo "  writing /opt/ohd/.env with provided Anthropic key + fresh randoms"; \
@@ -140,7 +144,7 @@ bootstrap:
 		S_SAAS=$$(openssl rand -base64 32); \
 		printf 'OHD_CORD_SESSION_SECRET=%s\nOHD_CORD_DATA_KEY=%s\nOHD_CORD_OIDC_OHD_SECRET=%s\nOHD_IDP_CLIENT_CORD_SECRET=%s\nOHD_SAAS_JWT_SECRET=%s\nOHD_CORD_ANTHROPIC_KEY=%s\n' \
 			"$$S_SESSION" "$$S_DATA" "$$S_OIDC" "$$S_OIDC" "$$S_SAAS" "$$ANTHROPIC" \
-			| $(SSH) $(HOST) 'umask 077 && cat > /opt/ohd/.env && chmod 600 /opt/ohd/.env'; \
+			| $(SSH) $(HOST_SSH) 'umask 077 && cat > /opt/ohd/.env && chmod 600 /opt/ohd/.env'; \
 		unset ANTHROPIC S_SESSION S_DATA S_OIDC S_SAAS; \
 	else \
 		echo "  reusing existing /opt/ohd/.env"; \
@@ -153,9 +157,9 @@ bootstrap:
 # Use only when you're certain — data loss is total.
 
 nuke:
-	@printf "About to destroy all containers + volumes on $(HOST). Confirm with: make nuke-confirm\n"
+	@printf "About to destroy all containers + volumes on $(HOST_SSH). Confirm with: make nuke-confirm\n"
 
 nuke-confirm:
-	$(SSH) $(HOST) 'cd /opt/ohd && $(COMPOSE) down -v --remove-orphans'
-	$(SSH) $(HOST) 'docker volume rm $$(docker volume ls -q | grep ^ohd_) 2>/dev/null || true'
+	$(SSH) $(HOST_SSH) 'cd /opt/ohd && $(COMPOSE) down -v --remove-orphans'
+	$(SSH) $(HOST_SSH) 'docker volume rm $$(docker volume ls -q | grep ^ohd_) 2>/dev/null || true'
 	@echo "host wiped. re-run: OHD_CORD_ANTHROPIC_KEY=… make bootstrap"

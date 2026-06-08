@@ -25,6 +25,8 @@ export interface Me {
 export interface AuthProvider {
   id: string;
   issuer: string;
+  /** "oidc" for a real identity provider, "dev" for the testing bypass. */
+  kind: string;
 }
 
 // A connected data store. The backend calls this a "source" on the wire

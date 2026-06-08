@@ -484,9 +484,13 @@ pub async fn signup_submit(
 
     let created = match app.accounts.create_account(&form.email, &form.password) {
         Ok(c) => c,
-        // create_account's errors are all user-facing input problems
-        // (bad email, weak password, duplicate) — surface them as-is.
-        Err(e) => return signup_error(&e.to_string()),
+        // create_account returns an anyhow::Error. `{:#}` prints the
+        // full context chain (each `.context("…")` layer joined by ": "
+        // plus the root cause), so an opaque "inserting profiles row"
+        // turns into "inserting profiles row: attempt to write a
+        // readonly database" — the operator can act on what they see
+        // without having to ssh in and tail logs.
+        Err(e) => return signup_error(&format!("{e:#}")),
     };
 
     // The account exists. Stash the authenticated login and show the

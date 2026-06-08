@@ -19,6 +19,11 @@ export default function LoginPage() {
 
   if (!providers && !error) return <Spinner label="Loading sign-in" />;
 
+  // Real identity providers (kind=oidc) become full-width buttons; the
+  // dev-bypass provider (kind=dev) becomes a small corner link.
+  const real = providers?.filter((p) => p.kind !== "dev") ?? [];
+  const dev = providers?.find((p) => p.kind === "dev") ?? null;
+
   return (
     <div className="center-screen">
       <div className="card login-card">
@@ -31,31 +36,72 @@ export default function LoginPage() {
           </div>
         )}
 
-        {providers && providers.length === 0 && (
+        {providers && real.length === 0 && !dev && (
           <div className="banner info" style={{ marginTop: 20 }}>
             No sign-in providers are configured on this deployment. Login is
-            unavailable (dev mode).
+            unavailable.
           </div>
         )}
 
-        {providers && providers.length > 0 && (
+        {real.length > 0 && (
           <div className="provider-list">
-            {providers.map((p) => (
-              <button
-                key={p.id}
-                className="primary"
-                onClick={() => {
-                  // Must navigate, not fetch: this 302s through the IdP.
-                  window.location.href = api.authStartUrl(p.id);
-                }}
-              >
-                <div>Continue with {p.id}</div>
-                <div className="provider-issuer">{p.issuer}</div>
-              </button>
+            {real.map((p) => (
+              <OidcButton key={p.id} provider={p} />
             ))}
+          </div>
+        )}
+
+        {dev && (
+          <div className="login-dev-bypass">
+            <a
+              href={api.authStartUrl(dev.id)}
+              onClick={(e) => {
+                e.preventDefault();
+                window.location.href = api.authStartUrl(dev.id);
+              }}
+            >
+              → demo
+            </a>
           </div>
         )}
       </div>
     </div>
   );
+}
+
+/**
+ * Single OIDC provider button, styled like a real social-login button
+ * (white surface, framed, brand wordmark prominently displayed). The
+ * `id === "ohd"` branch renders the OHD Identity wordmark with the
+ * project's red+black split so it visually matches the rest of the
+ * brand surface; other providers fall back to a generic label.
+ */
+function OidcButton({ provider }: { provider: AuthProvider }) {
+  const go = () => {
+    // window.location.href, not fetch — the IdP responds with a 302.
+    window.location.href = api.authStartUrl(provider.id);
+  };
+  return (
+    <button className="oidc-button" onClick={go}>
+      {provider.id === "ohd" ? (
+        <span className="oidc-button-label">
+          Continue with{" "}
+          <span className="oidc-brand">
+            <span className="oidc-brand-ohd">OHD</span>{" "}
+            <span className="oidc-brand-identity">Identity</span>
+          </span>
+        </span>
+      ) : (
+        <span className="oidc-button-label">
+          Continue with{" "}
+          <span className="oidc-brand">{capitalize(provider.id)}</span>
+        </span>
+      )}
+      <span className="oidc-issuer">{provider.issuer}</span>
+    </button>
+  );
+}
+
+function capitalize(s: string) {
+  return s.length ? s[0].toUpperCase() + s.slice(1) : s;
 }
