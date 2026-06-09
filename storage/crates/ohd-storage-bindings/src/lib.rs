@@ -1224,10 +1224,21 @@ impl OhdStorage {
             .map(|i| i.into_core())
             .collect::<Result<Vec<_>>>()?;
         let envelope = self.inner.envelope_key().cloned();
+        // Self-session (uniffi = owner-on-device) never needs pending
+        // approval — that's a grant-only flow. The `atomic` parameter
+        // belongs to the Kotlin API surface (all-or-nothing vs
+        // best-effort batch semantic) and gets enforced higher up; the
+        // core's transaction is always single-shot for now, so we
+        // ignore `atomic` at this layer until events::put_events grows
+        // a real toggle. Critically — do NOT pass `atomic` here. An
+        // earlier version did, which dropped `atomic` into the
+        // `require_approval` slot and triggered "require_approval
+        // without grant token" on every meal log.
+        let _ = atomic;
         let results = self
             .inner
             .with_conn_mut(|conn| {
-                core::events::put_events(conn, &core_inputs, None, atomic, envelope.as_ref())
+                core::events::put_events(conn, &core_inputs, None, false, envelope.as_ref())
             })
             .map_err(OhdError::from)?;
         Ok(results.into_iter().map(PutEventOutcomeDto::from_core).collect())
