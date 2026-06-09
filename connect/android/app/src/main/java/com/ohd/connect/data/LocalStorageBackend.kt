@@ -71,6 +71,14 @@ internal class LocalStorageBackend(
         softDeleteEventsBefore(cutoffMs).toLong()
     }
 
+    override fun hardDeleteEventsInRange(
+        fromMs: Long,
+        toMs: Long,
+        eventTypes: List<String>,
+    ): Result<Long> = withStorage {
+        hardDeleteEventsInRange(fromMs, toMs, eventTypes).toLong()
+    }
+
     // --- Agent tools ---------------------------------------------------------
 
     override fun listToolsJson(): Result<String> = withStorage { listTools() }

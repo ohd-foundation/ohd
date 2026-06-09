@@ -59,6 +59,18 @@ interface StorageBackend {
 
     fun softDeleteEventsBefore(cutoffMs: Long): Result<Long>
 
+    /**
+     * Hard-delete every event with `timestamp_ms` in the inclusive range
+     * `[fromMs, toMs]`. Optionally filter by `eventTypes`. Returns the
+     * number of rows removed. Owner-only — the food-log row delete on
+     * [com.ohd.connect.ui.screens.FoodScreen] routes through here.
+     */
+    fun hardDeleteEventsInRange(
+        fromMs: Long,
+        toMs: Long,
+        eventTypes: List<String>,
+    ): Result<Long>
+
     // --- Agent tools ---------------------------------------------------------
 
     fun listToolsJson(): Result<String>

@@ -349,7 +349,7 @@ fun FoodScreen(
                     val target = ev
                     pendingDelete = null
                     scope.launch(Dispatchers.IO) {
-                        val outcome = StorageRepository.deleteRemoteEvents(
+                        val outcome = StorageRepository.hardDeleteEventsInRange(
                             fromMs = target.timestampMs,
                             toMs = target.timestampMs,
                         )

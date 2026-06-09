@@ -1317,6 +1317,35 @@ impl OhdStorage {
         Ok(n as u64)
     }
 
+    /// Hard-delete every event with `timestamp_ms` in the inclusive range
+    /// `[from_ms, to_ms]`. When `event_types` is non-empty, the delete is
+    /// additionally restricted to those type names. Returns the number of
+    /// rows removed.
+    ///
+    /// Owner-only — uniffi callers are the user themselves operating on
+    /// their on-device storage. The food-log "long-press → remove this
+    /// entry I didn't actually eat" affordance routes a single meal
+    /// through here with `from_ms == to_ms == event.timestamp_ms` so the
+    /// parent `food.eaten` row and its `intake.*` / `composition.*`
+    /// children (which all share the parent's ms) go in one RPC.
+    pub fn hard_delete_events_in_range(
+        &self,
+        from_ms: i64,
+        to_ms: i64,
+        event_types: Vec<String>,
+    ) -> Result<u64> {
+        let filter = core::events::DeleteFilter {
+            from_ms: Some(from_ms),
+            to_ms: Some(to_ms),
+            event_types,
+        };
+        let n = self
+            .inner
+            .with_conn(|conn| core::events::hard_delete_events(conn, &filter))
+            .map_err(OhdError::from)?;
+        Ok(n as u64)
+    }
+
     // -------------------------------------------------------------------------
     // Agent tools (CORD + MCP) — uniffi shim over `ohd-mcp-core`.
     // -------------------------------------------------------------------------

@@ -755,6 +755,22 @@ object StorageRepository {
         return backend.deleteRemoteEvents(fromMs, toMs, eventTypes)
     }
 
+    /**
+     * Hard-delete events in a closed timestamp range, optionally restricted
+     * to specific event types. Works on both backends — the food log's
+     * "remove this entry I didn't actually eat" affordance calls this with
+     * `fromMs == toMs == event.timestampMs` so the parent `food.eaten` and
+     * its `intake.*` / `composition.*` children (which share the parent's
+     * ms) all go in one call regardless of storage mode.
+     */
+    fun hardDeleteEventsInRange(
+        fromMs: Long,
+        toMs: Long,
+        eventTypes: List<String> = emptyList(),
+    ): Result<Long> = withBackend {
+        hardDeleteEventsInRange(fromMs, toMs, eventTypes)
+    }
+
     // =========================================================================
     // Agent tools (CORD + future MCP) — thin shim over ohd-mcp-core.
     // =========================================================================

@@ -227,6 +227,18 @@ internal class RemoteStorageBackend(
         // this is defensive — surface a clear failure rather than crash.
         unsupportedRemote("Retention sweep")
 
+    override fun hardDeleteEventsInRange(
+        fromMs: Long,
+        toMs: Long,
+        eventTypes: List<String>,
+    ): Result<Long> = remoteCall {
+        // The OHDC `DeleteEvents` RPC accepts nullable bounds; the
+        // backend's `fromMs/toMs: Long?` lines up with the uniffi-local
+        // method's `Long` (always supplied for the per-event delete
+        // path) by promoting them to Some.
+        deleteEvents(fromMs, toMs, eventTypes).toLong()
+    }
+
     /**
      * Hard-delete events on the remote server (`DeleteEvents` RPC). Empty
      * filter wipes every event the signed-in identity owns. Returns the
