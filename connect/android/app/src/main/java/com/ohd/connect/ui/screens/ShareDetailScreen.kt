@@ -52,6 +52,7 @@ import com.ohd.connect.data.AuditEntry
 import com.ohd.connect.data.AuditFilter
 import com.ohd.connect.data.Auth
 import com.ohd.connect.data.EmergencyConfig
+import com.ohd.connect.data.GrantTokenStore
 import com.ohd.connect.data.QrEncoder
 import com.ohd.connect.data.ShareKind
 import com.ohd.connect.data.ShareLink
@@ -190,6 +191,13 @@ fun ShareDetailScreen(
                                 withContext(Dispatchers.Main) {
                                     result.fold(
                                         onSuccess = {
+                                            // CreateGrant mints a fresh grant
+                                            // row and a fresh bearer for it —
+                                            // persist the new bearer keyed by
+                                            // the new grant's ULID so a later
+                                            // visit to share-detail still
+                                            // produces a working link.
+                                            GrantTokenStore.save(ctx, it.grantUlid, it.token)
                                             reissuedToken = it.token
                                             onToast("Re-issued share link below.")
                                             refreshTick++
@@ -210,7 +218,14 @@ fun ShareDetailScreen(
                 // activation flow.
                 if (StorageRepository.isRemoteMode()) {
                     CloudShareCard(
-                        grantToken = reissuedToken ?: s.grant?.ulid ?: "",
+                        // Prefer the just-minted reissue token, fall back to
+                        // the persisted bearer from create-time. Final empty
+                        // string surfaces the "needs re-issue" state in the
+                        // share card rather than encoding the grant ULID as a
+                        // (broken) bearer.
+                        grantToken = reissuedToken
+                            ?: s.grant?.ulid?.let { GrantTokenStore.load(ctx, it) }
+                            ?: "",
                         storageUrl = Auth.loadStorageUrl(
                             ctx,
                             StorageRepository.activeMode().name,
@@ -220,7 +235,14 @@ fun ShareDetailScreen(
                     ActivateRemoteAccessCard(
                         shareId = shareId,
                         shareLabel = s.label,
-                        grantToken = reissuedToken ?: s.grant?.ulid ?: "",
+                        // Prefer the just-minted reissue token, fall back to
+                        // the persisted bearer from create-time. Final empty
+                        // string surfaces the "needs re-issue" state in the
+                        // share card rather than encoding the grant ULID as a
+                        // (broken) bearer.
+                        grantToken = reissuedToken
+                            ?: s.grant?.ulid?.let { GrantTokenStore.load(ctx, it) }
+                            ?: "",
                         onToast = onToast,
                     )
                 }

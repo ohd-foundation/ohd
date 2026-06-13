@@ -53,6 +53,7 @@ import com.ohd.connect.data.CreateGrantInput
 import com.ohd.connect.data.CreateGrantResult
 import com.ohd.connect.data.GrantSummary
 import com.ohd.connect.data.GrantTemplates
+import com.ohd.connect.data.GrantTokenStore
 import com.ohd.connect.data.StorageRepository
 import com.ohd.connect.ui.theme.OhdConnectTheme
 import kotlinx.coroutines.Dispatchers
@@ -72,6 +73,7 @@ import kotlinx.coroutines.withContext
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun GrantsScreen(contentPadding: PaddingValues) {
+    val ctx = androidx.compose.ui.platform.LocalContext.current
     var sub by remember { mutableStateOf(GrantsSubTab.Active) }
     var grants by remember { mutableStateOf<List<GrantSummary>>(emptyList()) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -159,6 +161,11 @@ fun GrantsScreen(contentPadding: PaddingValues) {
                         withContext(Dispatchers.Main) {
                             result.fold(
                                 onSuccess = { share ->
+                                    // Persist the bearer keyed by grant ulid
+                                    // so the share-detail surface can rebuild
+                                    // a working `ohd://share/cloud?token=…`
+                                    // link without re-issue.
+                                    GrantTokenStore.save(ctx, share.grantUlid, share.token)
                                     lastShare = share
                                     refreshTick++
                                     android.util.Log.i(

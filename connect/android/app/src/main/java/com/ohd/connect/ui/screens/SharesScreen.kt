@@ -46,6 +46,7 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import com.ohd.connect.data.EmergencyConfig
 import com.ohd.connect.data.GrantTemplates
+import com.ohd.connect.data.GrantTokenStore
 import com.ohd.connect.data.ShareKind
 import com.ohd.connect.data.ShareRow
 import com.ohd.connect.data.StorageRepository
@@ -176,6 +177,10 @@ fun SharesScreen(
                         withContext(Dispatchers.Main) {
                             result.fold(
                                 onSuccess = { res ->
+                                    // Persist the bearer alongside the grant so
+                                    // ShareDetailScreen can rebuild a working
+                                    // share link without having to re-issue.
+                                    GrantTokenStore.save(ctx, res.grantUlid, res.token)
                                     lastToken = res.token
                                     refreshTick++
                                 },

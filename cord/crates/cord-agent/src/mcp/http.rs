@@ -20,9 +20,22 @@ pub struct HttpTransport {
 
 impl HttpTransport {
     pub fn new(endpoint: impl Into<String>, token: Option<String>) -> Self {
+        // The share artifact carries a base URL ("https://storage.ohd.dev"),
+        // not the MCP path. Append `/mcp` once at construction so the
+        // hot path is a single trim-and-post, not a per-call concat.
+        // Idempotent when the share creator already included `/mcp` —
+        // a bare-base URL ("https://x/") and an explicit ("https://x/mcp")
+        // both produce the same final endpoint.
+        let mut url = endpoint.into();
+        let trimmed = url.trim_end_matches('/').to_string();
+        url = if trimmed.ends_with("/mcp") {
+            trimmed
+        } else {
+            format!("{trimmed}/mcp")
+        };
         Self {
             http: reqwest::Client::new(),
-            endpoint: endpoint.into(),
+            endpoint: url,
             token,
             next_id: AtomicI64::new(1),
         }

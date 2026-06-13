@@ -25,10 +25,28 @@ services:
     restart: unless-stopped
     expose:
       - "8443"
+    # Light up the OAuth/OIDC IdP endpoints so the Connect Android app can
+    # "Sign in to OHD Cloud" against storage.ohd.dev. The upstream provider
+    # ohd_account points at accounts.ohd.dev (the ohd-idp container); the
+    # storage AS is registered there as `ohd-storage-cloud` with the
+    # matching client_secret in OHD_OAUTH_PROVIDER_OHD_ACCOUNT_CLIENT_SECRET
+    # (idp side: OHD_IDP_CLIENT_STORAGE_SECRET).
+    command:
+      - "serve"
+      - "--db"
+      - "/var/lib/ohd-storage/storage.db"
+      - "--listen"
+      - "0.0.0.0:8443"
+      - "--oauth-issuer"
+      - "https://storage.ohd.dev"
+      - "--oauth-provider"
+      - "ohd_account=https://accounts.ohd.dev"
     volumes:
       - storage_data:/var/lib/ohd-storage
     environment:
       RUST_LOG: ${RUST_LOG:-info}
+      OHD_OAUTH_PROVIDER_OHD_ACCOUNT_CLIENT_ID: ${OHD_OAUTH_PROVIDER_OHD_ACCOUNT_CLIENT_ID:-ohd-storage-cloud}
+      OHD_OAUTH_PROVIDER_OHD_ACCOUNT_CLIENT_SECRET: ${OHD_OAUTH_PROVIDER_OHD_ACCOUNT_CLIENT_SECRET:-}
     networks:
       - ohd-net
     healthcheck:
@@ -136,6 +154,11 @@ services:
     environment:
       RUST_LOG: ${RUST_LOG:-info}
       OHD_IDP_CLIENT_CORD_SECRET: ${OHD_IDP_CLIENT_CORD_SECRET:-}
+      # Storage AS as an OIDC RP — idp.toml's `ohd-storage-cloud` client
+      # entry references this env var via `client_secret_env`. Must equal
+      # OHD_OAUTH_PROVIDER_OHD_ACCOUNT_CLIENT_SECRET on the storage side
+      # for the upstream code-exchange to validate.
+      OHD_IDP_CLIENT_STORAGE_SECRET: ${OHD_IDP_CLIENT_STORAGE_SECRET:-}
     networks:
       - ohd-net
 

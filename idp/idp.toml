@@ -51,3 +51,11 @@ client_secret_env = "OHD_IDP_CLIENT_CORD_SECRET"
 id = "connect-web"
 redirect_uris = ["https://connect.ohd.dev/auth/callback"]
 public = true               # PKCE-only, no client secret
+
+# Storage AS as a downstream RP. The OHD Cloud storage server delegates
+# its "Sign in" picker to this IdP (`--oauth-provider ohd_account=…`) so
+# the Connect Android app can log into OHD Cloud through one identity.
+[[client]]
+id = "ohd-storage-cloud"
+redirect_uris = ["https://storage.ohd.dev/oauth/oidc-callback"]
+client_secret_env = "OHD_IDP_CLIENT_STORAGE_SECRET"
