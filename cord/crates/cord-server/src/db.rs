@@ -218,14 +218,35 @@ impl Db {
     }
 
     pub fn delete_source(&self, user: &str, id: &str) -> ApiResult<()> {
-        let conn = self.pool.get()?;
-        let n = conn.execute(
+        let mut conn = self.pool.get()?;
+        // `chats.source_id` has a non-cascading FK reference to
+        // `data_sources(id)`, so deleting a source that still has
+        // chats hits SQLite's FOREIGN KEY constraint and bubbles up
+        // as a 500. Clear the dependent rows first inside one txn so
+        // the delete is atomic — a half-completed cascade would leave
+        // the source row gone while chats stayed orphaned with broken
+        // references.
+        let tx = conn.transaction()?;
+        tx.execute(
+            "DELETE FROM chat_messages
+              WHERE chat_id IN (
+                SELECT id FROM chats
+                WHERE source_id = ?1 AND cord_user_ulid = ?2
+              )",
+            params![id, user],
+        )?;
+        tx.execute(
+            "DELETE FROM chats WHERE source_id = ?1 AND cord_user_ulid = ?2",
+            params![id, user],
+        )?;
+        let n = tx.execute(
             "DELETE FROM data_sources WHERE cord_user_ulid = ?1 AND id = ?2",
             params![user, id],
         )?;
         if n == 0 {
             return Err(ApiError::NotFound);
         }
+        tx.commit()?;
         Ok(())
     }
 
