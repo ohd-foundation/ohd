@@ -185,6 +185,10 @@ pub async fn summary(
 ) -> ApiResult<Json<Value>> {
     let source = app.db.get_source(&user.0, &id)?;
     let unreachable = || Json(json!({ "summary": null, "status": "unreachable" }));
+    // Distinct "unauthorized" status so the SPA can render a "the
+    // share's token is no longer valid — re-issue in Connect and
+    // re-add this source" hint instead of an ambiguous "unreachable".
+    let unauthorized = || Json(json!({ "summary": null, "status": "unauthorized" }));
 
     let mcp = match build_mcp_client(&app, &source) {
         Ok(mcp) => mcp,
@@ -206,7 +210,17 @@ pub async fn summary(
             Ok(unreachable())
         }
         Err(e) => {
-            tracing::info!(source = %id, error = %e, "summary: describe_data unreachable");
+            // Auth-class failures travel as "HTTP 401" inside the
+            // AgentError::Mcp message. We don't get a typed code on the
+            // wire (yet), so substring-classify here — it's narrow
+            // enough that the false-positive rate is essentially zero
+            // and the trade-off vs typed errors is small for now.
+            let msg = format!("{e}");
+            if msg.contains("HTTP 401") || msg.contains("unauthenticated") {
+                tracing::info!(source = %id, error = %msg, "summary: describe_data unauthorized");
+                return Ok(unauthorized());
+            }
+            tracing::info!(source = %id, error = %msg, "summary: describe_data unreachable");
             Ok(unreachable())
         }
     }

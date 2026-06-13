@@ -124,8 +124,14 @@ export default function ConnectionPage() {
     }
   };
 
-  const onDisconnect = async () => {
-    if (!confirm("Disconnect this connection? The stored credential is wiped."))
+  const onDelete = async () => {
+    if (
+      !confirm(
+        "Delete this connection? CORD's stored credential for it is wiped " +
+          "and the link disappears from your list. The data on the underlying " +
+          "OHD storage is not touched.",
+      )
+    )
       return;
     setBusy(true);
     setActionError(null);
@@ -134,7 +140,7 @@ export default function ConnectionPage() {
       await reload();
       navigate("/");
     } catch (e) {
-      setActionError(e instanceof ApiError ? e.message : "Disconnect failed");
+      setActionError(e instanceof ApiError ? e.message : "Delete failed");
       setBusy(false);
     }
   };
@@ -194,9 +200,9 @@ export default function ConnectionPage() {
           <button
             className="small danger"
             disabled={busy}
-            onClick={onDisconnect}
+            onClick={onDelete}
           >
-            Disconnect
+            Delete
           </button>
         </div>
       </div>
@@ -277,14 +283,31 @@ function DataSummaryPanel({
     );
   }
 
-  // Null summary: an offline phone-backed connection is normal, not an error.
+  // Null summary: an offline phone-backed connection is normal, not an
+  // error. Auth failures get their own copy — the share's bearer is gone
+  // or no longer recognised and the user needs to re-issue + re-add.
   if (!summary || !summary.summary) {
+    const unauthorized = summary?.status === "unauthorized";
     return (
       <div className="card" style={{ marginBottom: 18 }}>
         <h3 style={{ margin: "0 0 4px" }}>Data summary</h3>
         <div className="faint" style={{ fontSize: 12.5 }}>
-          The connection is currently unreachable, so its data summary is
-          unavailable. This is expected when a phone-backed storage is offline.
+          {unauthorized ? (
+            <>
+              The storage rejected this connection's credential
+              (<code>auth: unauthenticated</code>). The share token has been
+              revoked, rotated, or wasn't a valid bearer to begin with.
+              Open the matching share in your OHD Connect app, tap
+              <strong> Re-issue</strong>, copy the new link, then delete
+              this connection and add it again with that link.
+            </>
+          ) : (
+            <>
+              The connection is currently unreachable, so its data summary
+              is unavailable. This is expected when a phone-backed storage
+              is offline.
+            </>
+          )}
         </div>
       </div>
     );
