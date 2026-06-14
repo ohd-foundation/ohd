@@ -17,16 +17,24 @@
 //! Authentication is the same `Authorization: Bearer …` bearer that
 //! flows over the Connect-RPC surface — the OHD-issued session token.
 //! No new credential class. The token is resolved via
-//! [`ohd_auth::resolve_token`] and checked for the [`ListTools`] /
-//! [`ExecuteTool`] ops before the wire dispatcher runs.
+//! [`ohd_auth::resolve_token`].
 //!
-//! Scope handling: this is the **owner** path — a bearer is the user
-//! acting on their own storage. There is no [`ShareScope`] applied. The
-//! grant-bound shape lives on the phone responder; if SaaS ever needs
-//! to serve a third-party grant token over the same `/mcp` endpoint
-//! we'll grow a second branch that resolves the grant's scope (the
-//! shared wire layer is already scope-aware — see
-//! [`ohd_mcp_core::wire::handle_json_rpc`]).
+//! Two token kinds reach here:
+//!  - **SelfSession** — the storage owner acting on their own data.
+//!    Runs unscoped through [`ohd_mcp_core::wire::handle_json_rpc`]
+//!    with `scope = None` — full catalog, no per-call intersection.
+//!  - **Grant** — a third party (CORD on cord.ohd.dev, a clinician's
+//!    desktop client, etc.) that the owner gave a share to. Same wire
+//!    layer, but `scope = Some(ShareScope::from_grant(...))` — the
+//!    catalog is filtered (operator tools removed, read-only grants
+//!    hide write tools) and every `tools/call` intersects its
+//!    `EventFilter` with the grant's read rules. Mirrors what the
+//!    phone-side share responder does over a relay tunnel; the SaaS
+//!    path skips the inner-TLS hop because the storage is already
+//!    public.
+//!
+//! Device tokens are rejected at the door — they're write-only on the
+//! OHDC surface and have no business minting tool calls.
 
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
@@ -34,7 +42,10 @@ use axum::response::IntoResponse;
 use axum::routing::post;
 use axum::{Json, Router};
 use ohd_mcp_core::wire::{self, ServerInfo};
-use ohd_storage_core::auth::{self as ohd_auth, OhdcOp};
+use ohd_mcp_core::ShareScope;
+use ohd_storage_core::auth::{self as ohd_auth, TokenKind};
+use ohd_storage_core::format::now_ms;
+use ohd_storage_core::grants;
 use ohd_storage_core::Storage;
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -99,27 +110,66 @@ async fn handle_rpc(
         }
     };
 
-    // 2. Surface-level op check — the connectrpc surface gates ListTools
-    //    and ExecuteTool separately; here we admit a token that can do
-    //    either and let the wire dispatcher pick by JSON-RPC method.
-    //    Both ops have the same kind-policy, so passing one through
-    //    `check_kind_for_op` is sufficient as the door-keep test.
-    if let Err(e) = ohd_auth::check_kind_for_op(&token, OhdcOp::ListTools) {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(json!({
-                "jsonrpc": "2.0",
-                "id": Value::Null,
-                "error": { "code": -32_001, "message": format!("not permitted: {e}") },
-            })),
-        )
-            .into_response();
-    }
+    // 2. Resolve the scope from the token kind. SelfSession is unscoped
+    //    (full catalog); Grant tokens carry a [`ShareScope`] derived
+    //    from the underlying grant row, refreshed per request so a
+    //    revoke / suspend / expiry mid-session takes effect on the
+    //    very next call. Device tokens are rejected — they're
+    //    write-only on the OHDC surface and have no MCP surface
+    //    semantics.
+    let scope: Option<ShareScope> = match token.kind {
+        TokenKind::SelfSession => None,
+        TokenKind::Grant => {
+            let grant_id = match token.grant_id {
+                Some(g) => g,
+                None => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({
+                            "jsonrpc": "2.0",
+                            "id": Value::Null,
+                            "error": { "code": -32_603, "message": "grant token resolved without a grant id" },
+                        })),
+                    )
+                        .into_response();
+                }
+            };
+            match state
+                .storage
+                .with_conn(|conn| grants::read_grant(conn, grant_id))
+            {
+                Ok(grant) => Some(ShareScope::from_grant(&grant, now_ms())),
+                Err(e) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({
+                            "jsonrpc": "2.0",
+                            "id": Value::Null,
+                            "error": { "code": -32_603, "message": format!("scope resolution failed: {e}") },
+                        })),
+                    )
+                        .into_response();
+                }
+            }
+        }
+        TokenKind::Device => {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(json!({
+                    "jsonrpc": "2.0",
+                    "id": Value::Null,
+                    "error": { "code": -32_001, "message": "not permitted: device tokens cannot use the agent surface" },
+                })),
+            )
+                .into_response();
+        }
+    };
 
-    // 3. Wire dispatch. Owner path (scope=None); the shared dispatcher
-    //    handles JSON-RPC envelopes, method routing, parse errors, and
-    //    notifications (returning None for the latter).
-    match wire::handle_json_rpc(&body, &state.storage, None, SAAS_SERVER_INFO) {
+    // 3. Wire dispatch. The shared dispatcher handles JSON-RPC
+    //    envelopes, method routing, parse errors, and notifications
+    //    (returning None for the latter). When `scope = Some(_)` the
+    //    catalog is filtered and every tool call is scope-intersected.
+    match wire::handle_json_rpc(&body, &state.storage, scope.as_ref(), SAAS_SERVER_INFO) {
         Some(value) => Json(value).into_response(),
         None => StatusCode::NO_CONTENT.into_response(),
     }
