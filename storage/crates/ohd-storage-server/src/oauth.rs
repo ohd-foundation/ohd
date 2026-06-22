@@ -125,6 +125,17 @@ pub fn router(state: OauthState) -> Router {
             "/.well-known/oauth-authorization-server",
             get(discovery_handler),
         )
+        // RFC 9728 / MCP 2025-03-26 — the protected-resource metadata an MCP
+        // client follows after a 401 with `WWW-Authenticate`. Tells the
+        // client which AS issues tokens for this resource. Same route on
+        // both `storage.ohd.dev` and `mcp.ohd.dev` because Caddy fronts
+        // both at the same container; the body fixes the canonical
+        // resource id at `https://mcp.ohd.dev` regardless of which hostname
+        // the request came in on.
+        .route(
+            "/.well-known/oauth-protected-resource",
+            get(protected_resource_handler),
+        )
         .route("/oauth/jwks.json", get(jwks_handler))
         .route("/oauth/authorize", get(authorize_get).post(authorize_post))
         // OIDC-RP callback: where a configured upstream provider
@@ -168,6 +179,30 @@ struct DiscoveryDoc<'a> {
     token_endpoint_auth_methods_supported: &'a [&'a str],
     scopes_supported: &'a [&'a str],
     claims_supported: &'a [&'a str],
+}
+
+/// RFC 9728 protected-resource metadata. The MCP audience is the
+/// resource; the AS is the same storage server seen by its
+/// canonical `issuer` URL. A client that hits `/mcp` without a bearer
+/// is told to come here, then to `/.well-known/oauth-authorization-server`
+/// on the AS URL it finds.
+#[derive(Serialize)]
+struct ProtectedResourceMetadata<'a> {
+    resource: &'static str,
+    authorization_servers: [&'a str; 1],
+    bearer_methods_supported: &'a [&'a str],
+    scopes_supported: &'a [&'a str],
+}
+
+async fn protected_resource_handler(State(state): State<OauthState>) -> Response {
+    let issuer = state.issuer.trim_end_matches('/').to_string();
+    let body = ProtectedResourceMetadata {
+        resource: "https://mcp.ohd.dev",
+        authorization_servers: [issuer.as_str()],
+        bearer_methods_supported: &["header"],
+        scopes_supported: &["openid", "profile", "offline_access"],
+    };
+    (StatusCode::OK, Json(body)).into_response()
 }
 
 async fn discovery_handler(State(state): State<OauthState>) -> Response {
@@ -948,6 +983,39 @@ fn render_authorize_form(state: &OauthState, q: &AuthorizeQuery) -> String {
     let escaped_scope = html_escape(q.scope.as_deref().unwrap_or("openid"));
     let escaped_cc = html_escape(q.code_challenge.as_deref().unwrap_or(""));
     let escaped_ccm = html_escape(q.code_challenge_method.as_deref().unwrap_or("S256"));
+
+    // Look up the client to decide whether to show the "newly registered"
+    // banner. A client whose `created_by_user_ulid` is NULL arrived via
+    // the public MCP DCR path and the user has never explicitly granted
+    // it before — we want the consent screen to make that crystal clear
+    // so a deceptive client_name can't slip past unnoticed.
+    let dcr_warning = q.client_id.as_deref().and_then(|cid| {
+        let row: Result<Option<(String, Option<Vec<u8>>, i64)>, _> =
+            state.storage.with_conn(|conn| {
+                conn.query_row(
+                    "SELECT client_name, created_by_user_ulid, created_at_ms
+                       FROM oauth_clients WHERE client_id = ?1",
+                    params![cid],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )
+                .optional()
+                .map_err(ohd_storage_core::Error::from)
+            });
+        let (client_name, created_by, _) = row.ok().flatten()?;
+        if created_by.is_some() {
+            return None;
+        }
+        let escaped_name = html_escape(&client_name);
+        Some(format!(
+            r#"<div style="border:2px solid #b00;background:#fff4f4;padding:.75em 1em;margin-bottom:1em;border-radius:6px">
+<strong>⚠ Newly-registered application</strong>
+<p style="margin:.4em 0">This client registered itself just now and you have <em>never</em> granted it access before.
+Its self-declared name is <b>{escaped_name}</b> — that name is <em>not</em> verified.
+Only continue if you are the one who initiated this sign-in (e.g. you just ran <code>claude mcp add ohd …</code>).</p>
+</div>"#
+        ))
+    })
+    .unwrap_or_default();
     // Hidden fields carrying the downstream authorization request — repeated
     // in every form on the page so whichever the user submits round-trips it.
     let hidden = format!(
@@ -1002,6 +1070,7 @@ button{{font:inherit;padding:.6em 1em;width:100%;margin:.25em 0}}
 form{{margin:0 0 .5em}}
 small{{color:#555}}</style>
 <h1>Sign in to OHD Storage</h1>
+{dcr_warning}
 {intro}
 {provider_forms}
 {paste_form}"#
@@ -1809,6 +1878,60 @@ struct RegisterRequest {
     response_types: Option<Vec<String>>,
     /// `none` for public clients (PKCE); `client_secret_post` for confidentials.
     token_endpoint_auth_method: Option<String>,
+    /// RFC 7591 §2 — a stable id for the software product (e.g.
+    /// `https://claude.ai/code`). Optional; echoed back in the
+    /// response so the client can confirm round-trip. Storing it on
+    /// the row is a follow-up (needs a migration); for now it's
+    /// accepted-and-returned so RFC 7591 clients don't error.
+    #[allow(dead_code)]
+    software_id: Option<String>,
+    /// RFC 7591 §2 — a string version for the software product (e.g.
+    /// `2026-06-22`). Same handling as `software_id`.
+    #[allow(dead_code)]
+    software_version: Option<String>,
+}
+
+/// Heuristic: does this DCR request look like an MCP client?
+///
+/// MCP clients (Claude Code, Claude Desktop, etc.) always speak the same
+/// shape: PKCE-only (no client secret), `authorization_code` grant, `code`
+/// response type. A request matching that profile we admit publicly; any
+/// other shape still requires the operator's self-session bearer.
+///
+/// Risk model: even an open MCP DCR doesn't grant access to data — the
+/// client still has to walk the full `/authorize` flow with a real human
+/// signing in via accounts.ohd.dev. What it does open is a vector for
+/// noisy registrations (mitigated by the rate limit middleware on the
+/// route) and for clients to choose deceptive `client_name` strings on
+/// the consent screen (mitigated by the "newly registered, never seen"
+/// banner in `render_authorize_form`).
+fn looks_like_mcp_dcr(req: &RegisterRequest) -> bool {
+    let auth_method = req
+        .token_endpoint_auth_method
+        .as_deref()
+        .unwrap_or("none");
+    if auth_method != "none" {
+        return false;
+    }
+    let grants = req
+        .grant_types
+        .as_deref()
+        .unwrap_or(&[]);
+    let only_code_grant = grants.is_empty()
+        || (grants.len() == 1 && grants[0] == "authorization_code")
+        || (grants.len() == 2
+            && grants.iter().any(|g| g == "authorization_code")
+            && grants.iter().any(|g| g == "refresh_token"));
+    if !only_code_grant {
+        return false;
+    }
+    let responses = req.response_types.as_deref().unwrap_or(&[]);
+    if !responses.is_empty() && !(responses.len() == 1 && responses[0] == "code") {
+        return false;
+    }
+    // Must register at least one redirect URI — DCR without a target is
+    // meaningless and we want the consent screen to render one.
+    req.redirect_uris.as_ref().map_or(false, |u| !u.is_empty())
 }
 
 #[derive(Serialize)]
@@ -1829,37 +1952,43 @@ async fn register_handler(
     headers: HeaderMap,
     Json(req): Json<RegisterRequest>,
 ) -> Response {
-    // v0: registration requires a self-session token from the operator. This
-    // makes the path safe to expose on a public host without becoming an open
-    // sign-up — the operator (the storage owner) is the only entity that can
-    // create clients. A future v1.x can relax this for `open` deployment mode.
+    // Two registration paths:
+    //
+    //  - **Public MCP DCR.** The request matches the MCP client shape
+    //    (PKCE-only, authorization_code, redirect_uris present). Per
+    //    MCP 2025-03-26 the AS must accept open Dynamic Client Registration
+    //    so an agent can be added without manual operator setup. The
+    //    consent screen at /oauth/authorize draws a clear banner when a
+    //    DCR client is asking for access; rate limiting on the route caps
+    //    the noise; `created_by_user_ulid` stays NULL so the operator can
+    //    see which clients arrived this way.
+    //
+    //  - **Operator-authorized DCR.** Any other shape (confidential
+    //    client, multi-grant, non-MCP topology) still requires a
+    //    self-session bearer. This keeps the door closed for
+    //    server-to-server credentials a passerby shouldn't be minting.
+    let is_mcp = looks_like_mcp_dcr(&req);
     let bearer = headers
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.strip_prefix("Bearer "));
-    let bearer = match bearer {
-        Some(b) if !b.is_empty() => b.to_string(),
-        _ => {
-            return oauth_error_response(
-                StatusCode::UNAUTHORIZED,
-                "invalid_token",
-                "client registration requires a self-session bearer token",
-            )
-        }
+    let resolved_owner: Option<ohd_auth::ResolvedToken> = match bearer {
+        Some(b) if !b.is_empty() => match state
+            .storage
+            .with_conn(|conn| ohd_auth::resolve_token(conn, b))
+        {
+            Ok(r) if r.kind == ohd_auth::TokenKind::SelfSession => Some(r),
+            _ => None,
+        },
+        _ => None,
     };
-    let resolved = match state
-        .storage
-        .with_conn(|conn| ohd_auth::resolve_token(conn, &bearer))
-    {
-        Ok(r) if r.kind == ohd_auth::TokenKind::SelfSession => r,
-        _ => {
-            return oauth_error_response(
-                StatusCode::UNAUTHORIZED,
-                "invalid_token",
-                "only self-session tokens may register clients",
-            )
-        }
-    };
+    if resolved_owner.is_none() && !is_mcp {
+        return oauth_error_response(
+            StatusCode::UNAUTHORIZED,
+            "invalid_token",
+            "client registration requires a self-session bearer token (or an MCP-shaped DCR)",
+        );
+    }
     let client_name = req.client_name.unwrap_or_else(|| "ohd-client".into());
     let redirect_uris = req.redirect_uris.unwrap_or_default();
     let grant_types = req
@@ -1904,7 +2033,10 @@ async fn register_handler(
                 grant_csv,
                 resp_csv,
                 now,
-                resolved.user_ulid.to_vec(),
+                // NULL for the public MCP DCR path so the consent UI
+                // can flag "newly registered, never connected before";
+                // Some(user_ulid) for operator-authorized registration.
+                resolved_owner.as_ref().map(|t| t.user_ulid.to_vec()),
             ],
         )
         .map_err(ohd_storage_core::Error::from)

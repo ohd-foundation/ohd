@@ -38,7 +38,7 @@
 
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
-use axum::response::IntoResponse;
+use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::{Json, Router};
 use ohd_mcp_core::wire::{self, ServerInfo};
@@ -69,6 +69,30 @@ struct McpState {
     storage: Arc<Storage>,
 }
 
+/// `WWW-Authenticate` value emitted on every 401 from `/mcp`. Points
+/// at the RFC 9728 resource metadata so an MCP-OAuth-capable client
+/// (Claude Code, Claude Desktop, …) walks the discovery → DCR →
+/// authorize → token flow without the user having to paste a bearer.
+const WWW_AUTHENTICATE: &str =
+    "Bearer resource_metadata=\"https://mcp.ohd.dev/.well-known/oauth-protected-resource\"";
+
+fn unauthorized(message: &str) -> Response {
+    let mut resp = (
+        StatusCode::UNAUTHORIZED,
+        Json(json!({
+            "jsonrpc": "2.0",
+            "id": Value::Null,
+            "error": { "code": -32_000, "message": message },
+        })),
+    )
+        .into_response();
+    resp.headers_mut().insert(
+        axum::http::header::WWW_AUTHENTICATE,
+        axum::http::HeaderValue::from_static(WWW_AUTHENTICATE),
+    );
+    resp
+}
+
 /// One MCP JSON-RPC request: auth, then [`wire::handle_json_rpc`].
 async fn handle_rpc(
     State(state): State<McpState>,
@@ -76,38 +100,19 @@ async fn handle_rpc(
     body: String,
 ) -> impl IntoResponse {
     // 1. Bearer auth. The connectrpc handlers do the same lookup; failure
-    //    surfaces as HTTP 401 here rather than a JSON-RPC error — agents
-    //    treat 401 as "I need a new token", not "the call failed".
+    //    surfaces as HTTP 401 here, **with** a `WWW-Authenticate` header
+    //    that tells an MCP-OAuth-capable client where to find the
+    //    protected-resource metadata so it can self-bootstrap a session.
     let bearer = match extract_bearer(&headers) {
         Some(b) => b,
-        None => {
-            return (
-                StatusCode::UNAUTHORIZED,
-                Json(json!({
-                    "jsonrpc": "2.0",
-                    "id": Value::Null,
-                    "error": { "code": -32_000, "message": "missing bearer token" },
-                })),
-            )
-                .into_response();
-        }
+        None => return unauthorized("missing bearer token"),
     };
     let token = match state
         .storage
         .with_conn(|conn| ohd_auth::resolve_token(conn, bearer))
     {
         Ok(t) => t,
-        Err(e) => {
-            return (
-                StatusCode::UNAUTHORIZED,
-                Json(json!({
-                    "jsonrpc": "2.0",
-                    "id": Value::Null,
-                    "error": { "code": -32_000, "message": format!("auth: {e}") },
-                })),
-            )
-                .into_response();
-        }
+        Err(e) => return unauthorized(&format!("auth: {e}")),
     };
 
     // 2. Resolve the scope from the token kind. SelfSession is unscoped
