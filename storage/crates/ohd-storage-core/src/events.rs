@@ -383,8 +383,14 @@ pub fn list_event_types(
     conn: &Connection,
     filter: &EventFilter,
 ) -> Result<Vec<EventTypeSummary>> {
+    // Return the **dotted** form `(namespace.name)` — the chip set on
+    // Android passes this string straight back into `event_types_in` of
+    // a follow-up `query_events`, which calls `EventTypeName::parse`.
+    // That parser requires a namespace dot, so returning the leaf
+    // (`heart_rate`) instead of the qualified (`std.heart_rate`) made
+    // the History "tap a chip" path silently return zero rows.
     let mut sql = String::from(
-        "SELECT et.name, COUNT(*) AS n
+        "SELECT et.namespace || '.' || et.name AS event_type, COUNT(*) AS n
            FROM events e JOIN event_types et ON e.event_type_id = et.id
           WHERE 1=1",
     );
@@ -431,7 +437,9 @@ pub fn list_event_types(
             args.push(name.clone().into());
         }
     }
-    sql.push_str(" GROUP BY et.name ORDER BY n DESC, et.name ASC");
+    sql.push_str(
+        " GROUP BY et.namespace, et.name ORDER BY n DESC, et.namespace ASC, et.name ASC",
+    );
 
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(rusqlite::params_from_iter(args.iter()), |r| {
