@@ -76,7 +76,13 @@ pub type ToolResult<T> = Result<T, ToolError>;
 /// Catalogue entry as both consumers see it. The `input_schema` field is
 /// JSON Schema 2020-12 (compatible with Anthropic tool-use and MCP
 /// `tools/list`).
+// MCP 2025-03-26 wire shape is camelCase (`inputSchema`). The uniffi
+// catalog consumers receive the same JSON via `catalog_json()` and
+// don't care about the field name as long as it's stable; renaming
+// at the serde layer keeps a single Rust struct serving both
+// transports without a hand-converted MCP variant.
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Tool {
     pub name: ToolName,
     pub description: String,

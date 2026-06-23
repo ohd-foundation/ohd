@@ -49,7 +49,11 @@ object CordTools {
             AnthropicClient.Tool(
                 name = row.getString("name"),
                 description = row.getString("description"),
-                inputSchema = row.getJSONObject("input_schema"),
+                // MCP 2025-03-26 wire shape is `inputSchema` (camelCase).
+                // Fall back to `input_schema` for older catalog blobs so a
+                // cached payload from before the rename still parses.
+                inputSchema = row.optJSONObject("inputSchema")
+                    ?: row.getJSONObject("input_schema"),
             )
         }
     }.getOrElse {
