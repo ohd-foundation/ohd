@@ -149,6 +149,13 @@ pub fn catalog() -> Vec<Tool> {
         t!(tools::start_medication_regimen),
         t!(tools::discontinue_medication_regimen),
         t!(tools::list_active_regimens),
+        // Clinical cases + events.
+        t!(tools::open_case),
+        t!(tools::close_case),
+        t!(tools::record_doctor_visit),
+        t!(tools::record_prescription),
+        t!(tools::record_lab_result),
+        t!(tools::get_case_timeline),
     ]
 }
 
@@ -198,6 +205,12 @@ pub fn dispatch(name: &str, input: &Value, storage: &Storage) -> ToolResult<Valu
         tools::start_medication_regimen::NAME => tools::start_medication_regimen::execute(input, storage),
         tools::discontinue_medication_regimen::NAME => tools::discontinue_medication_regimen::execute(input, storage),
         tools::list_active_regimens::NAME => tools::list_active_regimens::execute(input, storage),
+        tools::open_case::NAME => tools::open_case::execute(input, storage),
+        tools::close_case::NAME => tools::close_case::execute(input, storage),
+        tools::record_doctor_visit::NAME => tools::record_doctor_visit::execute(input, storage),
+        tools::record_prescription::NAME => tools::record_prescription::execute(input, storage),
+        tools::record_lab_result::NAME => tools::record_lab_result::execute(input, storage),
+        tools::get_case_timeline::NAME => tools::get_case_timeline::execute(input, storage),
         other => Err(ToolError::UnknownTool(other.to_string())),
     }
 }
@@ -377,6 +390,12 @@ fn write_event_type(name: &str, input: &Value) -> Option<String> {
         }
         "start_medication_regimen" => Some("medication.regimen_started".to_string()),
         "discontinue_medication_regimen" => Some("medication.regimen_discontinued".to_string()),
+        // Clinical-record writes. record_prescription also starts a regimen,
+        // but the primary write the grant authorizes is the clinical record;
+        // a grant permitting clinical.prescription is the right gate.
+        "record_doctor_visit" => Some("clinical.visit".to_string()),
+        "record_prescription" => Some("clinical.prescription".to_string()),
+        "record_lab_result" => Some("clinical.lab_result".to_string()),
         _ => None,
     }
 }

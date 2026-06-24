@@ -145,9 +145,11 @@ fn catalog_contains_phase3_operator_tools() {
 fn full_catalog_count() {
     // Base 28 (1 utility, 8 read, 8 write, 11 operator)
     // + 11 persistent-fact tools (4 read, 7 write)
-    // + 3 medication-regimen tools (1 read list_active_regimens, 2 write
-    //   start/discontinue) = 42.
-    assert_eq!(catalog().len(), 42);
+    // + 3 medication-regimen tools (1 read, 2 write)
+    // + 6 case/clinical tools (1 read get_case_timeline, 3 write
+    //   record_doctor_visit/prescription/lab_result, 2 operator
+    //   open_case/close_case) = 48.
+    assert_eq!(catalog().len(), 48);
 }
 
 #[test]
@@ -308,4 +310,73 @@ fn health_profile_includes_active_regimens() {
     let v: serde_json::Value = serde_json::from_str(&dispatch_json("get_health_profile", "{}", &storage)).unwrap();
     assert_eq!(v["medications"].as_array().unwrap().len(), 1, "regimen in health profile: {v}");
     assert_eq!(v["medications"][0]["name"], "Lisinopril");
+}
+
+// ---------------------------------------------------------------------------
+// Clinical cases + events (plan deep-dancing-teacup.md, phase 4)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn doctor_visit_prescription_timeline_round_trip() {
+    let storage = open_test_storage();
+
+    // record a visit → opens a case
+    let visit = dispatch_json(
+        "record_doctor_visit",
+        r#"{"practitioner_name":"Dr. Novak","specialty":"gastroenterology","reason":"stomach pain"}"#,
+        &storage,
+    );
+    let v: serde_json::Value = serde_json::from_str(&visit).unwrap();
+    assert_eq!(v["ok"], true, "visit recorded: {visit}");
+    let case_ulid = v["case_ulid"].as_str().expect("case_ulid").to_string();
+
+    // prescribe within the case → also starts a regimen
+    let rx = dispatch_json(
+        "record_prescription",
+        &format!(r#"{{"case_id":"{case_ulid}","medication_name":"Metformin","dose_value":500,"dose_unit":"mg","frequency":"twice daily"}}"#),
+        &storage,
+    );
+    let v: serde_json::Value = serde_json::from_str(&rx).unwrap();
+    assert_eq!(v["ok"], true, "prescription recorded: {rx}");
+
+    // the prescribed drug now shows as an active regimen
+    let v: serde_json::Value = serde_json::from_str(&dispatch_json("list_active_regimens", "{}", &storage)).unwrap();
+    assert_eq!(v["count"], 1, "prescription started a regimen: {v}");
+    assert_eq!(v["regimens"][0]["name"], "Metformin");
+    assert_eq!(v["regimens"][0]["case_id"], case_ulid);
+
+    // a lab result in the same case
+    dispatch_json(
+        "record_lab_result",
+        &format!(r#"{{"case_id":"{case_ulid}","test_name":"HbA1c","value":7.2,"unit":"%","reference_range":"4-5.6"}}"#),
+        &storage,
+    );
+
+    // the case timeline returns everything tagged to the case: the visit,
+    // the prescription, the lab result, AND the regimen the prescription
+    // started (it carries case_id for provenance — which visit put the
+    // user on this drug).
+    let tl = dispatch_json("get_case_timeline", &format!(r#"{{"case_ulid":"{case_ulid}"}}"#), &storage);
+    let v: serde_json::Value = serde_json::from_str(&tl).unwrap();
+    assert_eq!(v["count"], 4, "visit + prescription + regimen + lab tagged to the case: {tl}");
+    let types: Vec<&str> = v["events"].as_array().unwrap().iter()
+        .filter_map(|e| e["event_type"].as_str()).collect();
+    assert!(types.contains(&"clinical.visit"));
+    assert!(types.contains(&"clinical.prescription"));
+    assert!(types.contains(&"clinical.lab_result"));
+    assert!(types.contains(&"medication.regimen_started"));
+
+    // close the case
+    let close = dispatch_json("close_case", &format!(r#"{{"case_ulid":"{case_ulid}"}}"#), &storage);
+    let v: serde_json::Value = serde_json::from_str(&close).unwrap();
+    assert_eq!(v["ok"], true, "case closed: {close}");
+}
+
+#[test]
+fn open_case_returns_ulid() {
+    let storage = open_test_storage();
+    let out = dispatch_json("open_case", r#"{"case_type":"illness","label":"flu"}"#, &storage);
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(v["ok"], true, "{out}");
+    assert!(v["case_ulid"].as_str().is_some_and(|s| !s.is_empty()));
 }
