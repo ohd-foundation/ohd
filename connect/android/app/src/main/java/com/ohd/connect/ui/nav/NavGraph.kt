@@ -377,6 +377,11 @@ fun LogPickerSheet(
                 label = "Symptom",
                 onClick = { dismissThen(OhdRoute.LogSymptom) },
             )
+            LogPickerRow(
+                icon = OhdIcons.Building2,
+                label = "Doctor visit",
+                onClick = { dismissThen(OhdRoute.RecordVisit) },
+            )
             Spacer(Modifier.height(8.dp))
         }
     }

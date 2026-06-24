@@ -6,6 +6,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -47,6 +48,7 @@ fun OhdMedLogItem(
     takenState: TakenState = TakenState.Pending,
     onLog: () -> Unit = {},
     onLongPress: () -> Unit = {},
+    onOpen: (() -> Unit)? = null,
 ) {
     Row(
         modifier = modifier
@@ -57,7 +59,9 @@ fun OhdMedLogItem(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(
-            modifier = Modifier.weight(1f),
+            modifier = Modifier
+                .weight(1f)
+                .let { if (onOpen != null) it.clickable { onOpen() } else it },
             verticalArrangement = Arrangement.spacedBy(2.dp),
         ) {
             Text(

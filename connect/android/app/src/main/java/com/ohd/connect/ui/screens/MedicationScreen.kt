@@ -38,7 +38,6 @@ import com.ohd.connect.ui.components.OhdMedLogItem
 import com.ohd.connect.ui.components.OhdTopBar
 import com.ohd.connect.ui.components.TakenState
 import com.ohd.connect.ui.components.TopBarAction
-import com.ohd.connect.ui.screens._shared.AddOnHandDialog
 import com.ohd.connect.ui.theme.OhdBody
 import com.ohd.connect.ui.theme.OhdColors
 import kotlinx.coroutines.Dispatchers
@@ -75,8 +74,10 @@ fun MedicationScreen(
     var loading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf<String?>(null) }
     var regimens by remember { mutableStateOf<List<Regimen>>(emptyList()) }
-    // regimen_id → most-recent medication.taken timestamp.
-    var lastDoseAt by remember { mutableStateOf<Map<String, Long>>(emptyMap()) }
+    // All medication.taken events, newest-first, flattened to Dose. A regimen
+    // claims a dose by regimen_id OR (for doses logged by name only — e.g.
+    // "took my Mounjaro" via MCP before a regimen existed) by matching name.
+    var doses by remember { mutableStateOf<List<Dose>>(emptyList()) }
 
     var actionTarget by remember { mutableStateOf<Regimen?>(null) }
     var addOpen by remember { mutableStateOf(false) }
@@ -109,19 +110,24 @@ fun MedicationScreen(
                 },
                 onFailure = { error = it.message ?: "Couldn't load medications" },
             )
-            // Map regimen_id → latest dose timestamp (best-effort).
+            // Flatten every medication.taken into a Dose, newest-first.
             dosesRes.getOrNull()?.let { raw ->
                 runCatching {
                     val events = JSONObject(raw).optJSONArray("events") ?: return@runCatching
-                    val map = HashMap<String, Long>()
-                    for (i in 0 until events.length()) {
-                        val e = events.optJSONObject(i) ?: continue
-                        val rid = e.optJSONObject("channels")?.optString("regimen_id", "") ?: ""
-                        if (rid.isEmpty()) continue
-                        val ts = e.optLong("ts_ms", 0L)
-                        if (ts > (map[rid] ?: 0L)) map[rid] = ts
-                    }
-                    lastDoseAt = map
+                    val parsed = (0 until events.length()).mapNotNull { i ->
+                        val e = events.optJSONObject(i) ?: return@mapNotNull null
+                        val ch = e.optJSONObject("channels")
+                        Dose(
+                            regimenId = ch?.optString("regimen_id", "") ?: "",
+                            name = ch?.optString("name", "") ?: "",
+                            ts = e.optLong("ts_ms", 0L),
+                            doseValue = ch?.takeIf { it.has("dose_value") }?.optDouble("dose_value"),
+                            doseUnit = ch?.optString("dose_unit", "")?.ifEmpty { null },
+                            skipped = ch?.optBoolean("skipped", false)
+                                ?: false || (ch?.optString("status", "") == "skipped"),
+                        )
+                    }.sortedByDescending { it.ts }
+                    doses = parsed
                 }
             }
             loading = false
@@ -158,11 +164,12 @@ fun MedicationScreen(
         }
     }
 
-    fun addRegimen(name: String, dose: Double?, unit: String) {
+    fun addRegimen(name: String, dose: Double?, unit: String, frequency: String) {
         scope.launch(Dispatchers.IO) {
             val body = JSONObject().put("name", name)
             if (dose != null) body.put("dose_value", dose)
             if (unit.isNotBlank()) body.put("dose_unit", unit)
+            if (frequency.isNotBlank()) body.put("frequency", frequency)
             StorageRepository.executeToolJson("start_medication_regimen", body.toString())
             withContext(Dispatchers.Main) { onToast("Started $name") }
             reload()
@@ -215,13 +222,18 @@ fun MedicationScreen(
             }
 
             regimens.forEachIndexed { idx, r ->
-                val ts = lastDoseAt[r.regimenId]
+                val last = doses.firstOrNull { it.matches(r) }
                 OhdMedLogItem(
                     name = r.name,
-                    sub = subtitleFor(r, ts),
-                    takenState = if (ts != null && isToday(ts)) TakenState.Taken else TakenState.Pending,
+                    sub = subtitleFor(r, last),
+                    takenState = if (last != null && !last.skipped && isToday(last.ts)) {
+                        TakenState.Taken
+                    } else {
+                        TakenState.Pending
+                    },
                     onLog = { logDose(r, r.doseValue, r.doseUnit, skipped = false) },
                     onLongPress = { actionTarget = r },
+                    onOpen = { actionTarget = r },
                 )
                 if (idx < regimens.lastIndex) OhdDivider()
             }
@@ -240,10 +252,12 @@ fun MedicationScreen(
         }
     }
 
-    // Long-press → log actual dose / skip / discontinue.
+    // Tap the row (or long-press the button) → dose history + log actual
+    // dose / skip / remove.
     actionTarget?.let { r ->
         RegimenActionDialog(
             regimen = r,
+            recent = doses.filter { it.matches(r) }.take(6),
             onDismiss = { actionTarget = null },
             onLog = { dose, unit ->
                 logDose(r, dose, unit, skipped = false)
@@ -261,11 +275,11 @@ fun MedicationScreen(
     }
 
     if (addOpen) {
-        AddOnHandDialog(
+        AddRegimenDialog(
             onDismiss = { addOpen = false },
-            onAdd = { name, dose, unit ->
+            onAdd = { name, dose, unit, frequency ->
                 addOpen = false
-                addRegimen(name, dose, unit)
+                addRegimen(name, dose, unit, frequency)
             },
         )
     }
@@ -280,25 +294,58 @@ private data class Regimen(
     val frequency: String?,
 )
 
-private fun subtitleFor(r: Regimen, lastDoseMs: Long?): String {
+/** A logged medication.taken event, flattened. */
+private data class Dose(
+    val regimenId: String,
+    val name: String,
+    val ts: Long,
+    val doseValue: Double?,
+    val doseUnit: String?,
+    val skipped: Boolean,
+) {
+    /**
+     * A dose belongs to a regimen when their regimen_ids match, OR — for
+     * doses logged by name only (e.g. an MCP "took my Mounjaro" recorded
+     * before any regimen existed) — when the names match case-insensitively.
+     */
+    fun matches(r: Regimen): Boolean =
+        (regimenId.isNotEmpty() && regimenId == r.regimenId) ||
+            (name.isNotEmpty() && name.equals(r.name, ignoreCase = true))
+
+    /** "5 mg" / "5" / null. */
+    fun amountLabel(): String? = when {
+        doseValue != null && !doseUnit.isNullOrBlank() -> "${fmtDose(doseValue)} $doseUnit"
+        doseValue != null -> fmtDose(doseValue)
+        else -> null
+    }
+}
+
+/** "yesterday" / "just now" / "3d ago" from a relative string. */
+private fun niceWhen(ts: Long): String {
+    val rel = fmtRelative(ts)
+    return when {
+        rel.endsWith("s ago") -> "just now"
+        rel == "1d ago" -> "yesterday"
+        else -> rel
+    }
+}
+
+private fun subtitleFor(r: Regimen, last: Dose?): String {
     val dose = when {
         r.doseValue != null && !r.doseUnit.isNullOrBlank() ->
             "${fmtDose(r.doseValue)} ${r.doseUnit}"
         r.doseValue != null -> fmtDose(r.doseValue)
         else -> null
     }
-    val freq = r.frequency
-    val regimenLine = listOfNotNull(dose, freq).joinToString(" · ").ifEmpty { "Regimen" }
-    return if (lastDoseMs == null) {
-        regimenLine
-    } else {
-        val rel = fmtRelative(lastDoseMs)
-        val nice = when {
-            rel.endsWith("s ago") -> "just now"
-            rel == "1d ago" -> "yesterday"
-            else -> rel
+    val regimenLine = listOfNotNull(dose, r.frequency).joinToString(" · ").ifEmpty { "Regimen" }
+    return when {
+        last == null -> "$regimenLine · no doses logged yet"
+        last.skipped -> "$regimenLine · skipped ${niceWhen(last.ts)}"
+        else -> {
+            val amt = last.amountLabel()
+            val tail = if (amt != null) "last $amt · ${niceWhen(last.ts)}" else "last dose ${niceWhen(last.ts)}"
+            "$regimenLine · $tail"
         }
-        "$regimenLine · last dose $nice"
     }
 }
 
@@ -318,6 +365,7 @@ private fun isToday(ts: Long): Boolean {
 @Composable
 private fun RegimenActionDialog(
     regimen: Regimen,
+    recent: List<Dose>,
     onDismiss: () -> Unit,
     onLog: (dose: Double?, unit: String?) -> Unit,
     onSkip: () -> Unit,
@@ -349,8 +397,30 @@ private fun RegimenActionDialog(
                         OhdInput(value = unit, onValueChange = { unit = it }, placeholder = "Unit")
                     }
                 }
+
+                // Recent doses — answers "when did I take it and how much".
+                if (recent.isNotEmpty()) {
+                    Text(
+                        "RECENT",
+                        fontFamily = OhdBody, fontWeight = FontWeight.W500,
+                        fontSize = 10.sp, letterSpacing = 2.sp, color = OhdColors.Muted,
+                    )
+                    recent.forEach { d ->
+                        val label = if (d.skipped) {
+                            "Skipped"
+                        } else {
+                            d.amountLabel() ?: "Dose"
+                        }
+                        Text(
+                            "$label · ${niceWhen(d.ts)}",
+                            fontFamily = OhdBody, fontSize = 13.sp,
+                            color = if (d.skipped) OhdColors.Muted else OhdColors.Ink,
+                        )
+                    }
+                }
+
                 TextButton(onClick = onDiscontinue) {
-                    Text("Discontinue this medication", color = OhdColors.Red)
+                    Text("Remove from my medications", color = OhdColors.Red)
                 }
             }
         },
@@ -361,6 +431,63 @@ private fun RegimenActionDialog(
         },
         dismissButton = {
             TextButton(onClick = onSkip) { Text("Skipped") }
+        },
+    )
+}
+
+/**
+ * Start-a-regimen dialog. Unlike the old on-hand dialog this captures a
+ * free-text frequency ("twice daily", "weekly") so the medication carries
+ * its schedule, and writes straight through start_medication_regimen.
+ */
+@Composable
+private fun AddRegimenDialog(
+    onDismiss: () -> Unit,
+    onAdd: (name: String, dose: Double?, unit: String, frequency: String) -> Unit,
+) {
+    var name by remember { mutableStateOf("") }
+    var doseText by remember { mutableStateOf("") }
+    var unit by remember { mutableStateOf("") }
+    var frequency by remember { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Add a medication") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                OhdInput(value = name, onValueChange = { name = it }, placeholder = "Name (e.g. Mounjaro)")
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Box(Modifier.weight(1f)) {
+                        OhdInput(
+                            value = doseText, onValueChange = { doseText = it },
+                            placeholder = "Dose",
+                            keyboardType = androidx.compose.ui.text.input.KeyboardType.Decimal,
+                        )
+                    }
+                    Box(Modifier.weight(1f)) {
+                        OhdInput(value = unit, onValueChange = { unit = it }, placeholder = "Unit (mg)")
+                    }
+                }
+                OhdInput(
+                    value = frequency, onValueChange = { frequency = it },
+                    placeholder = "Frequency (e.g. weekly, twice daily)",
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = name.isNotBlank(),
+                onClick = {
+                    onAdd(
+                        name.trim(),
+                        doseText.trim().replace(',', '.').toDoubleOrNull(),
+                        unit.trim(),
+                        frequency.trim(),
+                    )
+                },
+            ) { Text("Add") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
         },
     )
 }
