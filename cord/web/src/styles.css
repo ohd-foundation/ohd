@@ -1,3 +1,9 @@
+/* Canonical brand tokens, generated from spec/brand/tokens.json. Provides
+   --brand-red / --deep-red / --ink / --paper / --accent-tint / etc. The
+   hand-authored variables below may be migrated onto these over time; for
+   now both coexist (different names, no collision). */
+@import "./tokens.generated.css";
+
 :root {
   --bg: #ffffff;
   --surface: #ffffff;

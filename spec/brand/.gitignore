@@ -1,0 +1,5 @@
+# Generated staging area — `make brand` rebuilds it from source/branding.svg.
+# The consumed copies live in the per-app trees (cord/web/public/brand,
+# landing/public/brand, connect/.../drawable-nodpi) and ARE tracked so the
+# apps build without first running this pipeline.
+built/
