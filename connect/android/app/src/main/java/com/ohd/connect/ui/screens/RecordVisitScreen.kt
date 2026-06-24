@@ -9,11 +9,13 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -25,6 +27,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.ohd.connect.data.ShareKind
 import com.ohd.connect.data.StorageRepository
 import com.ohd.connect.ui.components.OhdButton
 import com.ohd.connect.ui.components.OhdButtonVariant
@@ -82,6 +85,41 @@ fun RecordVisitScreen(
     var labs by remember { mutableStateOf<List<LabDraft>>(emptyList()) }
 
     var saving by remember { mutableStateOf(false) }
+
+    // People you've shared with double as your practitioner contacts (the
+    // grant list — no separate person entity yet). Tapping one fills the
+    // practitioner field; free-text typing still works. Emergency + agent
+    // grants are dropped — they aren't people you'd attribute a visit to.
+    var contacts by remember { mutableStateOf<List<String>>(emptyList()) }
+    LaunchedEffect(Unit) {
+        val loaded = withContext(Dispatchers.IO) {
+            // Source 1: people you've shared with (grants) — minus emergency/agent.
+            val fromGrants = StorageRepository.listGrants().getOrNull()
+                ?.filter {
+                    val k = ShareKind.classify(it)
+                    k != ShareKind.Emergency && k != ShareKind.Agent
+                }
+                ?.map { it.granteeLabel }
+                ?: emptyList()
+            // Source 2: practitioners from past visits — so a doctor you've
+            // seen before is one tap away even without a formal share.
+            val fromVisits = StorageRepository.executeToolJson(
+                "query_events",
+                JSONObject().put("event_type", "clinical.visit")
+                    .put("visibility", "all").put("limit", 200).toString(),
+            ).getOrNull()?.let { raw ->
+                runCatching {
+                    val events = JSONObject(raw).optJSONArray("events")
+                    (0 until (events?.length() ?: 0)).mapNotNull { i ->
+                        events!!.optJSONObject(i)?.optJSONObject("channels")
+                            ?.optString("practitioner_name", "")?.ifEmpty { null }
+                    }
+                }.getOrNull() ?: emptyList()
+            } ?: emptyList()
+            (fromGrants + fromVisits).filter { it.isNotBlank() }.distinct()
+        }
+        contacts = loaded
+    }
 
     fun save() {
         if (practitioner.isBlank() || saving) return
@@ -169,6 +207,24 @@ fun RecordVisitScreen(
             // ---- Who / where ----
             OhdSectionHeader(text = "VISIT")
             OhdInput(value = practitioner, onValueChange = { practitioner = it }, placeholder = "Practitioner (e.g. Dr. Novák)")
+            if (contacts.isNotEmpty()) {
+                Text(
+                    "From your contacts",
+                    fontFamily = OhdBody, fontSize = 11.sp, color = OhdColors.Muted,
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    contacts.forEach { name ->
+                        OhdButton(
+                            label = name,
+                            variant = if (practitioner == name) OhdButtonVariant.Primary else OhdButtonVariant.Ghost,
+                            onClick = { practitioner = name },
+                        )
+                    }
+                }
+            }
             OhdInput(value = specialty, onValueChange = { specialty = it }, placeholder = "Specialty (optional)")
             OhdInput(value = facility, onValueChange = { facility = it }, placeholder = "Facility (optional)")
             OhdInput(value = reason, onValueChange = { reason = it }, placeholder = "Reason for visit (optional)")
