@@ -48,6 +48,8 @@ import com.ohd.connect.ui.theme.OhdConnectTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
+import org.json.JSONObject
 
 /**
  * Emergency / Break-glass settings — patient side only. Mirrors
@@ -93,6 +95,25 @@ fun EmergencySettingsScreen(
         cfgState.value = loaded
     }
     val cfg = cfgState.value
+
+    // The actual data behind the per-channel toggles. The toggles gate
+    // real profile facts (blood type / allergies / conditions / active
+    // regimens) now that the health-profile subsystem backs them, so we
+    // load the same `get_health_profile` bundle a responder would receive
+    // and show the user exactly what's on record under each toggle. Empty
+    // = nothing to share regardless of the switch. Emergency mode so the
+    // advance-directives set is included.
+    val profileState = remember { mutableStateOf(EmergencyProfilePreview()) }
+    LaunchedEffect(Unit) {
+        val loaded = withContext(Dispatchers.IO) {
+            StorageRepository.executeToolJson("get_health_profile", "{\"mode\":\"emergency\"}")
+                .getOrNull()
+                ?.let { runCatching { parseEmergencyProfile(it) }.getOrNull() }
+        }
+        if (loaded != null) profileState.value = loaded
+    }
+    val profile = profileState.value
+
     val update: ((EmergencyConfig) -> EmergencyConfig) -> Unit = { transform ->
         val next = transform(cfgState.value)
         cfgState.value = next
@@ -255,30 +276,35 @@ fun EmergencySettingsScreen(
                         "Critical for safe drug administration.",
                         ch.allergies,
                         disabled,
+                        preview = previewLine(profile.allergies),
                     ) { v -> update { it.copy(channels = ch.copy(allergies = v)) } }
                     ToggleRow(
                         "Active medications",
                         "Drug interactions and current treatment context.",
                         ch.medications,
                         disabled,
+                        preview = previewLine(profile.medications),
                     ) { v -> update { it.copy(channels = ch.copy(medications = v)) } }
                     ToggleRow(
                         "Blood type",
                         "Transfusion safety.",
                         ch.bloodType,
                         disabled,
+                        preview = profile.bloodType?.let { "On record: $it" } ?: "Not set",
                     ) { v -> update { it.copy(channels = ch.copy(bloodType = v)) } }
                     ToggleRow(
                         "Advance directives",
                         "DNR, organ donation preferences.",
                         ch.advanceDirectives,
                         disabled,
+                        preview = previewLine(profile.directives),
                     ) { v -> update { it.copy(channels = ch.copy(advanceDirectives = v)) } }
                     ToggleRow(
                         "Active diagnoses",
                         "Chronic conditions affecting treatment.",
                         ch.diagnoses,
                         disabled,
+                        preview = previewLine(profile.conditions),
                     ) { v -> update { it.copy(channels = ch.copy(diagnoses = v)) } }
                     ToggleRow(
                         "Glucose readings",
@@ -444,7 +470,7 @@ fun EmergencySettingsScreen(
             OutlinedButton(
                 enabled = !disabled,
                 onClick = {
-                    scope.launch { runTestEmergencyAlert(ctx, cfg, onToast) }
+                    scope.launch { runTestEmergencyAlert(ctx, cfg, profile, onToast) }
                 },
                 modifier = Modifier.fillMaxWidth(),
             ) { Text("Run test alert") }
@@ -551,24 +577,39 @@ fun EmergencySettingsScreen(
 private suspend fun runTestEmergencyAlert(
     ctx: android.content.Context,
     cfg: EmergencyConfig,
+    profile: EmergencyProfilePreview,
     onToast: (String) -> Unit,
 ) {
     val ch = cfg.channels
+    // Show the ACTUAL data a responder would receive, not just the field
+    // labels — the toggles gate real health-profile facts. A toggle that's
+    // on but has nothing on record contributes nothing, so we only list a
+    // field when it's both enabled and has data.
     val visibleFields = buildList {
-        if (ch.allergies) add("Allergies")
-        if (ch.bloodType) add("Blood type")
-        if (ch.medications) add("Current medications")
-        if (ch.advanceDirectives) add("Advance directives")
-        if (ch.diagnoses) add("Active diagnoses")
-        if (ch.glucose) add("Glucose")
-        if (ch.heartRate) add("Heart rate")
-        if (ch.bloodPressure) add("Blood pressure")
-        if (ch.spo2) add("SpO2")
-        if (ch.temperature) add("Temperature")
-    }.take(5).ifEmpty { listOf("(no channels enabled)") }
+        if (ch.allergies && profile.allergies.isNotEmpty()) {
+            add("Allergies: " + profile.allergies.joinToString(", "))
+        }
+        if (ch.bloodType && profile.bloodType != null) add("Blood type ${profile.bloodType}")
+        if (ch.medications && profile.medications.isNotEmpty()) {
+            add("Meds: " + profile.medications.joinToString(", "))
+        }
+        if (ch.advanceDirectives && profile.directives.isNotEmpty()) {
+            add("Directives: " + profile.directives.joinToString(", "))
+        }
+        if (ch.diagnoses && profile.conditions.isNotEmpty()) {
+            add("Diagnoses: " + profile.conditions.joinToString(", "))
+        }
+        // Vitals come from measurement events, not the static profile —
+        // list the label so the user knows the channel is on.
+        if (ch.glucose) add("Glucose (recent readings)")
+        if (ch.heartRate) add("Heart rate (recent readings)")
+        if (ch.bloodPressure) add("Blood pressure (recent readings)")
+        if (ch.spo2) add("SpO2 (recent readings)")
+        if (ch.temperature) add("Temperature (recent readings)")
+    }.take(6).ifEmpty { listOf("(nothing on record / no channels enabled)") }
 
     val body = "If a real responder approved now, they would see: " +
-        visibleFields.joinToString(", ") + "."
+        visibleFields.joinToString("; ") + "."
     NotificationCenter.append(
         ctx,
         NotificationCenter.NotificationEntry(
@@ -599,6 +640,71 @@ private suspend fun runTestEmergencyAlert(
 
     onToast("Test alert fired. Check notifications + Recent Events.")
 }
+
+/**
+ * The slice of `get_health_profile` the emergency screen previews — just
+ * the human-readable strings for each clinical channel toggle. Kept flat
+ * (lists of display names) because this screen only ever shows them; the
+ * authoritative facts live server-side and are edited in HealthProfileScreen.
+ */
+private data class EmergencyProfilePreview(
+    val bloodType: String? = null,
+    val allergies: List<String> = emptyList(),
+    val conditions: List<String> = emptyList(),
+    val medications: List<String> = emptyList(),
+    val directives: List<String> = emptyList(),
+)
+
+/** Parse the `get_health_profile` JSON (emergency mode) into display strings. */
+private fun parseEmergencyProfile(raw: String): EmergencyProfilePreview {
+    val o = JSONObject(raw)
+    val bt = o.optJSONObject("blood_type")?.let { b ->
+        val group = b.optString("group", "")
+        val rh = when (b.optString("rh", "")) {
+            "positive" -> "+"
+            "negative" -> "−"
+            else -> ""
+        }
+        (group + rh).ifBlank { null }
+    }
+    return EmergencyProfilePreview(
+        bloodType = bt,
+        allergies = names(o.optJSONArray("allergies"), "allergen"),
+        conditions = names(o.optJSONArray("conditions"), "name"),
+        medications = medNames(o.optJSONArray("medications")),
+        directives = names(o.optJSONArray("advance_directives"), "kind"),
+    )
+}
+
+/** Pull a single text field from every object in an array, skipping blanks. */
+private fun names(arr: JSONArray?, key: String): List<String> {
+    if (arr == null) return emptyList()
+    return (0 until arr.length()).mapNotNull { i ->
+        arr.optJSONObject(i)?.optString(key, "")?.takeIf { it.isNotBlank() }
+    }
+}
+
+/** Active regimens → "metformin 500 mg" style labels for the meds preview. */
+private fun medNames(arr: JSONArray?): List<String> {
+    if (arr == null) return emptyList()
+    return (0 until arr.length()).mapNotNull { i ->
+        val m = arr.optJSONObject(i) ?: return@mapNotNull null
+        val name = m.optString("name", "").ifBlank { return@mapNotNull null }
+        val dose = m.optDouble("dose_value", Double.NaN)
+        val unit = m.optString("dose_unit", "")
+        val doseStr = if (!dose.isNaN()) {
+            val n = if (dose % 1.0 == 0.0) dose.toLong().toString() else dose.toString()
+            listOf(n, unit).filter { it.isNotBlank() }.joinToString(" ")
+        } else {
+            ""
+        }
+        listOf(name, doseStr).filter { it.isNotBlank() }.joinToString(" ")
+    }
+}
+
+/** "penicillin, peanuts" or "None recorded" for the toggle preview line. */
+private fun previewLine(items: List<String>): String =
+    if (items.isEmpty()) "None recorded" else items.joinToString(", ")
 
 @Composable
 private fun Section(
@@ -642,6 +748,7 @@ private fun ToggleRow(
     sub: String? = null,
     checked: Boolean,
     disabled: Boolean = false,
+    preview: String? = null,
     onChange: (Boolean) -> Unit,
 ) {
     Row(
@@ -656,6 +763,20 @@ private fun ToggleRow(
                     text = sub,
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            // The actual data this toggle would expose, pulled live from the
+            // health profile. More prominent than [sub] (primary colour) so
+            // the user can see precisely what a responder would receive.
+            if (preview != null) {
+                Text(
+                    text = preview,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = if (checked && !disabled) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
                 )
             }
         }
