@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Adaptive launcher icon. Background color + foreground logo both
+     resolve per system theme: white bg + dark OHD logo in light mode,
+     #202020 bg + light OHD logo in dark mode (mipmap-night-* foreground,
+     values-night color). -->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@color/ic_launcher_background" />
+    <foreground android:drawable="@mipmap/ic_launcher_foreground" />
+</adaptive-icon>

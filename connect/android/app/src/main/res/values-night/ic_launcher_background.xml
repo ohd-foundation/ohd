@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Dark theme: OHD ink/gray. -->
+    <color name="ic_launcher_background">#FF202020</color>
+</resources>
