@@ -12,9 +12,9 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -27,6 +27,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ohd.connect.data.StorageRepository
@@ -34,7 +35,9 @@ import com.ohd.connect.ui.components.OhdButton
 import com.ohd.connect.ui.components.OhdButtonVariant
 import com.ohd.connect.ui.components.OhdDivider
 import com.ohd.connect.ui.components.OhdInput
+import com.ohd.connect.ui.components.OhdListItem
 import com.ohd.connect.ui.components.OhdMedLogItem
+import com.ohd.connect.ui.components.OhdSectionHeader
 import com.ohd.connect.ui.components.OhdTopBar
 import com.ohd.connect.ui.components.TakenState
 import com.ohd.connect.ui.components.TopBarAction
@@ -46,20 +49,26 @@ import kotlinx.coroutines.withContext
 import org.json.JSONObject
 
 /**
- * Medications — the active-regimen surface.
+ * Medications — the tracked-medication surface, split by where each item
+ * comes from (plan deep-dancing-teacup.md):
  *
- * Regimens (the medications the user is currently on) are real persisted
- * state now, not stub data: read from `list_active_regimens` and written
- * through `start_medication_regimen` / `discontinue_medication_regimen` /
- * `log_medication` — the same MCP tools Claude/Gemini call, via
- * [StorageRepository.executeToolJson]. A regimen started in chat shows up
- * here and vice-versa.
+ *  - **ON A TREATMENT PLAN** — regimens tied to a clinical case (`case_id`),
+ *    e.g. a drug prescribed at a visit.
+ *  - **MY MEDICATIONS** — personal regimens (no case) shown in the one-tap
+ *    take-list. The user's own ongoing meds + self-added vitamins.
+ *  - **ON HAND** — things the user holds but doesn't take on a cadence
+ *    (`on_hand && !quick`, e.g. an EpiPen): inventory, no take button, so it
+ *    doesn't clutter daily logging.
  *
- * Dose logging follows [[project-no-judgment-logging]]: the dialog
- * records the ACTUAL dose taken (prefilled from the regimen but freely
- * editable) and gives **Skip** equal billing with **Log dose** — a
- * missed dose is first-class data, not a failure. No schedule-derived
- * "missed" shaming: frequency is free text we don't police.
+ * All of it is real persisted state read from `list_active_regimens` and
+ * written through `start_medication_regimen` /
+ * `discontinue_medication_regimen` / `log_medication` — the same MCP tools
+ * Claude/Gemini call. A regimen started in chat shows up here and vice-versa.
+ *
+ * Dose logging follows [[project-no-judgment-logging]]: the dialog records
+ * the ACTUAL dose taken (prefilled, editable) and gives **Skip** equal
+ * billing with **Log dose**. A one-off dose (a pill taken that isn't on any
+ * list) logs straight through with no regimen.
  */
 @Composable
 fun MedicationScreen(
@@ -81,6 +90,7 @@ fun MedicationScreen(
 
     var actionTarget by remember { mutableStateOf<Regimen?>(null) }
     var addOpen by remember { mutableStateOf(false) }
+    var oneOffOpen by remember { mutableStateOf(false) }
 
     suspend fun reload() {
         val regsRes = StorageRepository.executeToolJson("list_active_regimens", "{}")
@@ -103,6 +113,12 @@ fun MedicationScreen(
                                 doseValue = if (o.has("dose_value")) o.optDouble("dose_value") else null,
                                 doseUnit = o.optString("dose_unit", "").ifEmpty { null },
                                 frequency = o.optString("frequency", "").ifEmpty { null },
+                                schedule = o.optString("schedule", "").ifEmpty { null },
+                                caseId = o.optString("case_id", "").ifEmpty { null },
+                                // Legacy regimens have no flags: default to the
+                                // take-list (quick), not inventory.
+                                onHand = o.optBoolean("on_hand", false),
+                                quick = o.optBoolean("quick", true),
                             )
                         }
                         error = null
@@ -153,28 +169,47 @@ fun MedicationScreen(
         }
     }
 
+    fun oneOffDose(name: String, dose: Double?, unit: String) {
+        scope.launch(Dispatchers.IO) {
+            val body = JSONObject().put("name", name).put("status", "taken")
+            if (dose != null) body.put("dose_value", dose)
+            if (unit.isNotBlank()) body.put("dose_unit", unit)
+            StorageRepository.executeToolJson("log_medication", body.toString())
+            withContext(Dispatchers.Main) { onToast("Logged $name") }
+            reload()
+        }
+    }
+
     fun discontinue(r: Regimen) {
         scope.launch(Dispatchers.IO) {
             StorageRepository.executeToolJson(
                 "discontinue_medication_regimen",
                 JSONObject().put("regimen_id", r.regimenId).toString(),
             )
-            withContext(Dispatchers.Main) { onToast("Discontinued ${r.name}") }
+            withContext(Dispatchers.Main) { onToast("Removed ${r.name}") }
             reload()
         }
     }
 
-    fun addRegimen(name: String, dose: Double?, unit: String, frequency: String) {
+    fun addRegimen(name: String, dose: Double?, unit: String, frequency: String, onHand: Boolean, quick: Boolean) {
         scope.launch(Dispatchers.IO) {
             val body = JSONObject().put("name", name)
             if (dose != null) body.put("dose_value", dose)
             if (unit.isNotBlank()) body.put("dose_unit", unit)
             if (frequency.isNotBlank()) body.put("frequency", frequency)
+            body.put("on_hand", onHand)
+            body.put("quick", quick)
             StorageRepository.executeToolJson("start_medication_regimen", body.toString())
-            withContext(Dispatchers.Main) { onToast("Started $name") }
+            withContext(Dispatchers.Main) { onToast("Added $name") }
             reload()
         }
     }
+
+    // Partition into the three sections. case_id wins (a prescribed med is
+    // "on a plan" even if also on-hand); then explicit inventory; else personal.
+    val plan = regimens.filter { !it.caseId.isNullOrBlank() }
+    val onHand = regimens.filter { it.caseId.isNullOrBlank() && it.onHand && !it.quick }
+    val personal = regimens.filter { it.caseId.isNullOrBlank() && !(it.onHand && !it.quick) }
 
     Column(
         modifier = Modifier
@@ -191,29 +226,17 @@ fun MedicationScreen(
         Column(
             modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
         ) {
-            Box(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
-            ) {
-                Text(
-                    text = "CURRENT MEDICATIONS",
-                    fontFamily = OhdBody,
-                    fontWeight = FontWeight.W500,
-                    fontSize = 11.sp,
-                    letterSpacing = 2.sp,
-                    color = OhdColors.Muted,
-                )
-            }
-
             error?.let {
                 Text(
                     it, color = OhdColors.Red, fontFamily = OhdBody, fontSize = 13.sp,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
                 )
             }
 
             if (!loading && regimens.isEmpty() && error == null) {
+                Spacer(Modifier.height(8.dp))
                 Text(
-                    "No active medications. Add one below, or ask CORD to record a prescription.",
+                    "No medications yet. Add one below, log a one-off dose, or ask CORD to record a prescription.",
                     fontFamily = OhdBody,
                     fontSize = 13.sp,
                     color = OhdColors.Muted,
@@ -221,26 +244,35 @@ fun MedicationScreen(
                 )
             }
 
-            regimens.forEachIndexed { idx, r ->
-                val last = doses.firstOrNull { it.matches(r) }
-                OhdMedLogItem(
-                    name = r.name,
-                    sub = subtitleFor(r, last),
-                    takenState = if (last != null && !last.skipped && isToday(last.ts)) {
-                        TakenState.Taken
-                    } else {
-                        TakenState.Pending
-                    },
-                    onLog = { logDose(r, r.doseValue, r.doseUnit, skipped = false) },
-                    onLongPress = { actionTarget = r },
-                    onOpen = { actionTarget = r },
-                )
-                if (idx < regimens.lastIndex) OhdDivider()
+            // ---- ON A TREATMENT PLAN ----
+            MedSection(title = "ON A TREATMENT PLAN", regimens = plan, doses = doses,
+                onLog = { r -> logDose(r, r.doseValue, r.doseUnit, skipped = false) },
+                onOpen = { r -> actionTarget = r })
+
+            // ---- MY MEDICATIONS ----
+            MedSection(title = "MY MEDICATIONS", regimens = personal, doses = doses,
+                onLog = { r -> logDose(r, r.doseValue, r.doseUnit, skipped = false) },
+                onOpen = { r -> actionTarget = r })
+
+            // ---- ON HAND (inventory, no take button) ----
+            if (onHand.isNotEmpty()) {
+                Spacer(Modifier.height(8.dp))
+                OhdSectionHeader(text = "ON HAND")
+                onHand.forEachIndexed { idx, r ->
+                    OhdListItem(
+                        primary = r.name,
+                        secondary = inventoryLine(r),
+                        meta = "On hand",
+                        onClick = { actionTarget = r },
+                    )
+                    if (idx < onHand.lastIndex) OhdDivider()
+                }
             }
 
             Spacer(Modifier.height(8.dp))
-            Box(
+            Column(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 OhdButton(
                     label = "+ Add medication",
@@ -248,12 +280,17 @@ fun MedicationScreen(
                     variant = OhdButtonVariant.Ghost,
                     modifier = Modifier.fillMaxWidth(),
                 )
+                OhdButton(
+                    label = "Log a one-off dose",
+                    onClick = { oneOffOpen = true },
+                    variant = OhdButtonVariant.Ghost,
+                    modifier = Modifier.fillMaxWidth(),
+                )
             }
         }
     }
 
-    // Tap the row (or long-press the button) → dose history + log actual
-    // dose / skip / remove.
+    // Tap a row → dose history + log actual dose / skip / remove.
     actionTarget?.let { r ->
         RegimenActionDialog(
             regimen = r,
@@ -277,11 +314,51 @@ fun MedicationScreen(
     if (addOpen) {
         AddRegimenDialog(
             onDismiss = { addOpen = false },
-            onAdd = { name, dose, unit, frequency ->
+            onAdd = { name, dose, unit, frequency, onHandFlag, quickFlag ->
                 addOpen = false
-                addRegimen(name, dose, unit, frequency)
+                addRegimen(name, dose, unit, frequency, onHandFlag, quickFlag)
             },
         )
+    }
+
+    if (oneOffOpen) {
+        OneOffDoseDialog(
+            onDismiss = { oneOffOpen = false },
+            onLog = { name, dose, unit ->
+                oneOffOpen = false
+                oneOffDose(name, dose, unit)
+            },
+        )
+    }
+}
+
+/** A take-listable section (plan / personal). Renders nothing when empty. */
+@Composable
+private fun MedSection(
+    title: String,
+    regimens: List<Regimen>,
+    doses: List<Dose>,
+    onLog: (Regimen) -> Unit,
+    onOpen: (Regimen) -> Unit,
+) {
+    if (regimens.isEmpty()) return
+    Spacer(Modifier.height(8.dp))
+    OhdSectionHeader(text = title)
+    regimens.forEachIndexed { idx, r ->
+        val last = doses.firstOrNull { it.matches(r) }
+        OhdMedLogItem(
+            name = r.name,
+            sub = subtitleFor(r, last),
+            takenState = if (last != null && !last.skipped && isToday(last.ts)) {
+                TakenState.Taken
+            } else {
+                TakenState.Pending
+            },
+            onLog = { onLog(r) },
+            onLongPress = { onOpen(r) },
+            onOpen = { onOpen(r) },
+        )
+        if (idx < regimens.lastIndex) OhdDivider()
     }
 }
 
@@ -292,6 +369,10 @@ private data class Regimen(
     val doseValue: Double?,
     val doseUnit: String?,
     val frequency: String?,
+    val schedule: String?,
+    val caseId: String?,
+    val onHand: Boolean,
+    val quick: Boolean,
 )
 
 /** A logged medication.taken event, flattened. */
@@ -330,14 +411,33 @@ private fun niceWhen(ts: Long): String {
     }
 }
 
-private fun subtitleFor(r: Regimen, last: Dose?): String {
-    val dose = when {
-        r.doseValue != null && !r.doseUnit.isNullOrBlank() ->
-            "${fmtDose(r.doseValue)} ${r.doseUnit}"
-        r.doseValue != null -> fmtDose(r.doseValue)
-        else -> null
+/**
+ * Human label for the stored `schedule` channel. `anchor:<name>` becomes a
+ * readable phrase; a cron expr / free text is shown as-is for now (the
+ * humanizing/eval engine is a later subsystem).
+ */
+private fun scheduleLabel(s: String?): String? {
+    if (s.isNullOrBlank()) return null
+    if (!s.startsWith("anchor:")) return s
+    return when (val a = s.removePrefix("anchor:")) {
+        "as_needed" -> "as needed"
+        "waking" -> "on waking"
+        "first_food" -> "with first food"
+        "bedtime" -> "at bedtime"
+        "each_meal" -> "with each meal"
+        else -> "with $a"
     }
-    val regimenLine = listOfNotNull(dose, r.frequency).joinToString(" · ").ifEmpty { "Regimen" }
+}
+
+private fun doseLabel(r: Regimen): String? = when {
+    r.doseValue != null && !r.doseUnit.isNullOrBlank() -> "${fmtDose(r.doseValue)} ${r.doseUnit}"
+    r.doseValue != null -> fmtDose(r.doseValue)
+    else -> null
+}
+
+private fun subtitleFor(r: Regimen, last: Dose?): String {
+    val cadence = scheduleLabel(r.schedule) ?: r.frequency
+    val regimenLine = listOfNotNull(doseLabel(r), cadence).joinToString(" · ").ifEmpty { "Regimen" }
     return when {
         last == null -> "$regimenLine · no doses logged yet"
         last.skipped -> "$regimenLine · skipped ${niceWhen(last.ts)}"
@@ -349,6 +449,11 @@ private fun subtitleFor(r: Regimen, last: Dose?): String {
     }
 }
 
+/** Inventory subtitle for the ON HAND section — dose + schedule, no logging. */
+private fun inventoryLine(r: Regimen): String? =
+    listOfNotNull(doseLabel(r), scheduleLabel(r.schedule) ?: r.frequency)
+        .joinToString(" · ").ifEmpty { null }
+
 private fun fmtDose(d: Double): String =
     if (d == d.toLong().toDouble()) d.toLong().toString() else d.toString()
 
@@ -358,9 +463,9 @@ private fun isToday(ts: Long): Boolean {
 }
 
 /**
- * Long-press action sheet for a regimen. Records the ACTUAL dose taken
- * (prefilled, editable), with Skip given equal weight to Log dose, plus a
- * destructive Discontinue. No-judgment per project principle.
+ * Action sheet for a regimen. Records the ACTUAL dose taken (prefilled,
+ * editable), with Skip given equal weight to Log dose, plus a destructive
+ * Remove. No-judgment per project principle.
  */
 @Composable
 private fun RegimenActionDialog(
@@ -380,6 +485,9 @@ private fun RegimenActionDialog(
         title = { Text(regimen.name) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                scheduleLabel(regimen.schedule)?.let {
+                    Text("Schedule: $it", fontFamily = OhdBody, fontSize = 13.sp, color = OhdColors.Muted)
+                }
                 Text(
                     "Record the dose you actually took — adjust it if it differs from " +
                         "the prescription.",
@@ -390,7 +498,7 @@ private fun RegimenActionDialog(
                         OhdInput(
                             value = doseText, onValueChange = { doseText = it },
                             placeholder = "Dose",
-                            keyboardType = androidx.compose.ui.text.input.KeyboardType.Decimal,
+                            keyboardType = KeyboardType.Decimal,
                         )
                     }
                     Box(Modifier.weight(1f)) {
@@ -406,11 +514,7 @@ private fun RegimenActionDialog(
                         fontSize = 10.sp, letterSpacing = 2.sp, color = OhdColors.Muted,
                     )
                     recent.forEach { d ->
-                        val label = if (d.skipped) {
-                            "Skipped"
-                        } else {
-                            d.amountLabel() ?: "Dose"
-                        }
+                        val label = if (d.skipped) "Skipped" else d.amountLabel() ?: "Dose"
                         Text(
                             "$label · ${niceWhen(d.ts)}",
                             fontFamily = OhdBody, fontSize = 13.sp,
@@ -436,19 +540,22 @@ private fun RegimenActionDialog(
 }
 
 /**
- * Start-a-regimen dialog. Unlike the old on-hand dialog this captures a
- * free-text frequency ("twice daily", "weekly") so the medication carries
- * its schedule, and writes straight through start_medication_regimen.
+ * Start-a-regimen dialog. Captures a free-text frequency, plus the two
+ * tracking flags: **on hand** (the user has it) and **quick** (show in the
+ * one-tap take-list). Turn quick off for something you hold but don't take
+ * on a cadence (an EpiPen) — it lands in ON HAND instead.
  */
 @Composable
 private fun AddRegimenDialog(
     onDismiss: () -> Unit,
-    onAdd: (name: String, dose: Double?, unit: String, frequency: String) -> Unit,
+    onAdd: (name: String, dose: Double?, unit: String, frequency: String, onHand: Boolean, quick: Boolean) -> Unit,
 ) {
     var name by remember { mutableStateOf("") }
     var doseText by remember { mutableStateOf("") }
     var unit by remember { mutableStateOf("") }
     var frequency by remember { mutableStateOf("") }
+    var onHand by remember { mutableStateOf(true) }
+    var quick by remember { mutableStateOf(true) }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Add a medication") },
@@ -460,7 +567,7 @@ private fun AddRegimenDialog(
                         OhdInput(
                             value = doseText, onValueChange = { doseText = it },
                             placeholder = "Dose",
-                            keyboardType = androidx.compose.ui.text.input.KeyboardType.Decimal,
+                            keyboardType = KeyboardType.Decimal,
                         )
                     }
                     Box(Modifier.weight(1f)) {
@@ -471,6 +578,8 @@ private fun AddRegimenDialog(
                     value = frequency, onValueChange = { frequency = it },
                     placeholder = "Frequency (e.g. weekly, twice daily)",
                 )
+                ToggleLine("I have this on hand", onHand) { onHand = it }
+                ToggleLine("Show in my quick list", quick) { quick = it }
             }
         },
         confirmButton = {
@@ -482,6 +591,8 @@ private fun AddRegimenDialog(
                         doseText.trim().replace(',', '.').toDoubleOrNull(),
                         unit.trim(),
                         frequency.trim(),
+                        onHand,
+                        quick,
                     )
                 },
             ) { Text("Add") }
@@ -490,4 +601,62 @@ private fun AddRegimenDialog(
             TextButton(onClick = onDismiss) { Text("Cancel") }
         },
     )
+}
+
+/** Log a single dose of something not on any list (a one-off). */
+@Composable
+private fun OneOffDoseDialog(
+    onDismiss: () -> Unit,
+    onLog: (name: String, dose: Double?, unit: String) -> Unit,
+) {
+    var name by remember { mutableStateOf("") }
+    var doseText by remember { mutableStateOf("") }
+    var unit by remember { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Log a one-off dose") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    "A dose of something you're not tracking — logged once, not added to a list.",
+                    fontFamily = OhdBody, fontSize = 13.sp, color = OhdColors.Muted,
+                )
+                OhdInput(value = name, onValueChange = { name = it }, placeholder = "Name (e.g. ibuprofen)")
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Box(Modifier.weight(1f)) {
+                        OhdInput(
+                            value = doseText, onValueChange = { doseText = it },
+                            placeholder = "Dose",
+                            keyboardType = KeyboardType.Decimal,
+                        )
+                    }
+                    Box(Modifier.weight(1f)) {
+                        OhdInput(value = unit, onValueChange = { unit = it }, placeholder = "Unit (mg)")
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = name.isNotBlank(),
+                onClick = {
+                    onLog(name.trim(), doseText.trim().replace(',', '.').toDoubleOrNull(), unit.trim())
+                },
+            ) { Text("Log") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        },
+    )
+}
+
+@Composable
+private fun ToggleLine(label: String, checked: Boolean, onChange: (Boolean) -> Unit) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(label, fontFamily = OhdBody, fontSize = 14.sp, color = OhdColors.Ink, modifier = Modifier.weight(1f))
+        Switch(checked = checked, onCheckedChange = onChange)
+    }
 }
