@@ -1476,7 +1476,14 @@ fn query_events_inner(
         EventVisibility::TopLevelOnly => sql.push_str(" AND top_level = 1"),
         EventVisibility::NonTopLevelOnly => sql.push_str(" AND top_level = 0"),
     }
-    sql.push_str(" ORDER BY timestamp_ms DESC");
+    // Secondary sort on the autoincrement rowid: events sharing a
+    // timestamp_ms (rapid successive writes — e.g. an agent correcting a
+    // value twice in one millisecond) then come back in deterministic
+    // insertion order, newest first. Without this, ties are ordered
+    // arbitrarily and "latest wins" projections (blood type, profile
+    // facts) are non-deterministic, since the ULID tail is random rather
+    // than monotonic.
+    sql.push_str(" ORDER BY timestamp_ms DESC, id DESC");
     let limit = filter.limit.unwrap_or(1000).min(10_000);
     sql.push_str(&format!(" LIMIT {limit}"));
 

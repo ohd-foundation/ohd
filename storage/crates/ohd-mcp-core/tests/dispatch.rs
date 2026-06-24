@@ -143,9 +143,12 @@ fn catalog_contains_phase3_operator_tools() {
 
 #[test]
 fn full_catalog_count() {
-    // 28 tools total — replaces the Python MCP server entirely.
-    //   1 utility (now), 8 read, 8 write, 11 operator.
-    assert_eq!(catalog().len(), 28);
+    // Base 28 (1 utility, 8 read, 8 write, 11 operator) + 11 persistent-fact
+    // tools (4 read: list_allergies / list_conditions /
+    // list_emergency_contacts / get_health_profile; 7 write: record/remove
+    // allergy, record/resolve condition, set_blood_type, record/remove
+    // emergency_contact) = 39.
+    assert_eq!(catalog().len(), 39);
 }
 
 #[test]
@@ -170,4 +173,73 @@ fn dispatch_unknown_tool_returns_error_json() {
     let out = dispatch_json("not_a_tool", "{}", &storage);
     let v: serde_json::Value = serde_json::from_str(&out).expect("valid json");
     assert!(v["error"].as_str().unwrap().contains("unknown tool"));
+}
+
+// ---------------------------------------------------------------------------
+// Persistent facts (plan deep-dancing-teacup.md)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn allergy_record_list_remove_round_trip() {
+    let storage = open_test_storage();
+
+    // record → appears in list
+    let rec = dispatch_json("record_allergy", r#"{"allergen":"Penicillin","severity":"severe","reaction":"hives"}"#, &storage);
+    let v: serde_json::Value = serde_json::from_str(&rec).unwrap();
+    assert_eq!(v["ok"], true, "record_allergy ok: {rec}");
+
+    let listed = dispatch_json("list_allergies", "{}", &storage);
+    let v: serde_json::Value = serde_json::from_str(&listed).unwrap();
+    assert_eq!(v["count"], 1, "one allergy listed: {listed}");
+    assert_eq!(v["allergies"][0]["allergen"], "Penicillin");
+    assert_eq!(v["allergies"][0]["severity"], "severe");
+    assert_eq!(v["allergies"][0]["fact_id"], "penicillin");
+
+    // re-record same allergen (updates in place, still one)
+    dispatch_json("record_allergy", r#"{"allergen":"Penicillin","severity":"moderate"}"#, &storage);
+    let v: serde_json::Value = serde_json::from_str(&dispatch_json("list_allergies", "{}", &storage)).unwrap();
+    assert_eq!(v["count"], 1, "still one after update");
+    assert_eq!(v["allergies"][0]["severity"], "moderate", "latest wins");
+
+    // remove → gone from list
+    dispatch_json("remove_allergy", r#"{"allergen":"Penicillin"}"#, &storage);
+    let v: serde_json::Value = serde_json::from_str(&dispatch_json("list_allergies", "{}", &storage)).unwrap();
+    assert_eq!(v["count"], 0, "removed allergy gone");
+}
+
+#[test]
+fn condition_record_resolve_round_trip() {
+    let storage = open_test_storage();
+    dispatch_json("record_condition", r#"{"name":"Type 2 Diabetes","icd10":"E11"}"#, &storage);
+    let v: serde_json::Value = serde_json::from_str(&dispatch_json("list_conditions", "{}", &storage)).unwrap();
+    assert_eq!(v["count"], 1);
+    assert_eq!(v["conditions"][0]["icd10"], "E11");
+    dispatch_json("resolve_condition", r#"{"name":"Type 2 Diabetes"}"#, &storage);
+    let v: serde_json::Value = serde_json::from_str(&dispatch_json("list_conditions", "{}", &storage)).unwrap();
+    assert_eq!(v["count"], 0, "resolved condition omitted");
+}
+
+#[test]
+fn blood_type_singleton_latest_wins() {
+    let storage = open_test_storage();
+    dispatch_json("set_blood_type", r#"{"group":"A","rh":"positive"}"#, &storage);
+    dispatch_json("set_blood_type", r#"{"group":"O","rh":"negative"}"#, &storage);
+    let v: serde_json::Value = serde_json::from_str(&dispatch_json("get_health_profile", "{}", &storage)).unwrap();
+    assert_eq!(v["blood_type"]["group"], "O", "latest blood type wins: {v}");
+    assert_eq!(v["blood_type"]["rh"], "negative");
+}
+
+#[test]
+fn health_profile_bundles_everything() {
+    let storage = open_test_storage();
+    dispatch_json("record_allergy", r#"{"allergen":"peanuts"}"#, &storage);
+    dispatch_json("record_condition", r#"{"name":"asthma"}"#, &storage);
+    dispatch_json("set_blood_type", r#"{"group":"AB","rh":"positive"}"#, &storage);
+    dispatch_json("record_emergency_contact", r#"{"name":"Jane","relation":"spouse","phone":"+420123"}"#, &storage);
+    let v: serde_json::Value = serde_json::from_str(&dispatch_json("get_health_profile", "{}", &storage)).unwrap();
+    assert_eq!(v["allergies"].as_array().unwrap().len(), 1);
+    assert_eq!(v["conditions"].as_array().unwrap().len(), 1);
+    assert_eq!(v["blood_type"]["group"], "AB");
+    assert_eq!(v["emergency_contacts"].as_array().unwrap().len(), 1);
+    assert_eq!(v["emergency_contacts"][0]["name"], "Jane");
 }

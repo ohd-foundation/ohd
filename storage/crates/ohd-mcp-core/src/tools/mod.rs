@@ -26,3 +26,18 @@ pub mod force_close_case;
 pub mod create_grant;
 pub mod issue_retrospective_grant;
 pub mod audit_query;
+
+// Persistent-facts + clinical subsystem (plan deep-dancing-teacup.md).
+pub mod profile_common;
+pub mod regimen_common;
+pub mod record_allergy;
+pub mod remove_allergy;
+pub mod list_allergies;
+pub mod record_condition;
+pub mod resolve_condition;
+pub mod list_conditions;
+pub mod set_blood_type;
+pub mod record_emergency_contact;
+pub mod remove_emergency_contact;
+pub mod list_emergency_contacts;
+pub mod get_health_profile;

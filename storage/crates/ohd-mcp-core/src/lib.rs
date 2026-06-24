@@ -133,6 +133,18 @@ pub fn catalog() -> Vec<Tool> {
         t!(tools::create_grant),
         t!(tools::issue_retrospective_grant),
         t!(tools::audit_query),
+        // Persistent facts + health profile.
+        t!(tools::record_allergy),
+        t!(tools::remove_allergy),
+        t!(tools::list_allergies),
+        t!(tools::record_condition),
+        t!(tools::resolve_condition),
+        t!(tools::list_conditions),
+        t!(tools::set_blood_type),
+        t!(tools::record_emergency_contact),
+        t!(tools::remove_emergency_contact),
+        t!(tools::list_emergency_contacts),
+        t!(tools::get_health_profile),
     ]
 }
 
@@ -168,6 +180,17 @@ pub fn dispatch(name: &str, input: &Value, storage: &Storage) -> ToolResult<Valu
         tools::create_grant::NAME => tools::create_grant::execute(input, storage),
         tools::issue_retrospective_grant::NAME => tools::issue_retrospective_grant::execute(input, storage),
         tools::audit_query::NAME => tools::audit_query::execute(input, storage),
+        tools::record_allergy::NAME => tools::record_allergy::execute(input, storage),
+        tools::remove_allergy::NAME => tools::remove_allergy::execute(input, storage),
+        tools::list_allergies::NAME => tools::list_allergies::execute(input, storage),
+        tools::record_condition::NAME => tools::record_condition::execute(input, storage),
+        tools::resolve_condition::NAME => tools::resolve_condition::execute(input, storage),
+        tools::list_conditions::NAME => tools::list_conditions::execute(input, storage),
+        tools::set_blood_type::NAME => tools::set_blood_type::execute(input, storage),
+        tools::record_emergency_contact::NAME => tools::record_emergency_contact::execute(input, storage),
+        tools::remove_emergency_contact::NAME => tools::remove_emergency_contact::execute(input, storage),
+        tools::list_emergency_contacts::NAME => tools::list_emergency_contacts::execute(input, storage),
+        tools::get_health_profile::NAME => tools::get_health_profile::execute(input, storage),
         other => Err(ToolError::UnknownTool(other.to_string())),
     }
 }
@@ -338,6 +361,13 @@ fn write_event_type(name: &str, input: &Value) -> Option<String> {
             .get("symptom")
             .and_then(|v| v.as_str())
             .map(|s| format!("symptom.{}", tools::log_symptom::slugify(s))),
+        // Persistent-fact + clinical write tools land on fixed types.
+        "record_allergy" | "remove_allergy" => Some("profile.allergy".to_string()),
+        "record_condition" | "resolve_condition" => Some("profile.condition".to_string()),
+        "set_blood_type" => Some("profile.blood_type".to_string()),
+        "record_emergency_contact" | "remove_emergency_contact" => {
+            Some("profile.emergency_contact".to_string())
+        }
         _ => None,
     }
 }
