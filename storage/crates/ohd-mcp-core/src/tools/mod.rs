@@ -41,3 +41,6 @@ pub mod record_emergency_contact;
 pub mod remove_emergency_contact;
 pub mod list_emergency_contacts;
 pub mod get_health_profile;
+pub mod start_medication_regimen;
+pub mod discontinue_medication_regimen;
+pub mod list_active_regimens;

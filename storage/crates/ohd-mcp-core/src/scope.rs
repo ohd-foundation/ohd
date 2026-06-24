@@ -42,13 +42,12 @@ pub fn tool_kind(name: &str) -> ToolKind {
         "query_events" | "query_latest" | "describe_data" | "summarize" | "correlate"
         | "chart" | "get_food_log" | "get_medications_taken"
         | "list_allergies" | "list_conditions" | "list_emergency_contacts"
-        | "get_health_profile" => ToolKind::Read,
+        | "get_health_profile" | "list_active_regimens" => ToolKind::Read,
         "log_symptom" | "log_food" | "log_medication" | "log_measurement" | "log_exercise"
         | "log_mood" | "log_sleep" | "log_free_event"
         | "record_allergy" | "remove_allergy" | "record_condition" | "resolve_condition"
-        | "set_blood_type" | "record_emergency_contact" | "remove_emergency_contact" => {
-            ToolKind::Write
-        }
+        | "set_blood_type" | "record_emergency_contact" | "remove_emergency_contact"
+        | "start_medication_regimen" | "discontinue_medication_regimen" => ToolKind::Write,
         _ => ToolKind::Operator,
     }
 }

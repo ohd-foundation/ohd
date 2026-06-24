@@ -143,12 +143,11 @@ fn catalog_contains_phase3_operator_tools() {
 
 #[test]
 fn full_catalog_count() {
-    // Base 28 (1 utility, 8 read, 8 write, 11 operator) + 11 persistent-fact
-    // tools (4 read: list_allergies / list_conditions /
-    // list_emergency_contacts / get_health_profile; 7 write: record/remove
-    // allergy, record/resolve condition, set_blood_type, record/remove
-    // emergency_contact) = 39.
-    assert_eq!(catalog().len(), 39);
+    // Base 28 (1 utility, 8 read, 8 write, 11 operator)
+    // + 11 persistent-fact tools (4 read, 7 write)
+    // + 3 medication-regimen tools (1 read list_active_regimens, 2 write
+    //   start/discontinue) = 42.
+    assert_eq!(catalog().len(), 42);
 }
 
 #[test]
@@ -242,4 +241,71 @@ fn health_profile_bundles_everything() {
     assert_eq!(v["blood_type"]["group"], "AB");
     assert_eq!(v["emergency_contacts"].as_array().unwrap().len(), 1);
     assert_eq!(v["emergency_contacts"][0]["name"], "Jane");
+}
+
+// ---------------------------------------------------------------------------
+// Medication regimens (plan deep-dancing-teacup.md, phase 3)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn regimen_start_list_discontinue_round_trip() {
+    let storage = open_test_storage();
+
+    let started = dispatch_json(
+        "start_medication_regimen",
+        r#"{"name":"Metformin","dose_value":500,"dose_unit":"mg","frequency":"twice daily"}"#,
+        &storage,
+    );
+    let v: serde_json::Value = serde_json::from_str(&started).unwrap();
+    assert_eq!(v["ok"], true, "start ok: {started}");
+    let regimen_id = v["regimen_id"].as_str().expect("regimen_id returned").to_string();
+    assert!(!regimen_id.is_empty());
+
+    let listed = dispatch_json("list_active_regimens", "{}", &storage);
+    let v: serde_json::Value = serde_json::from_str(&listed).unwrap();
+    assert_eq!(v["count"], 1, "one active regimen: {listed}");
+    assert_eq!(v["regimens"][0]["name"], "Metformin");
+    assert_eq!(v["regimens"][0]["dose_value"], 500.0);
+    assert_eq!(v["regimens"][0]["regimen_id"], regimen_id);
+
+    // a dose linked to the regimen, recording the ACTUAL dose taken
+    let dose = dispatch_json(
+        "log_medication",
+        &format!(r#"{{"name":"Metformin","regimen_id":"{regimen_id}","dose_value":250,"dose_unit":"mg","status":"taken","dose_note":"half — felt nauseous"}}"#),
+        &storage,
+    );
+    let v: serde_json::Value = serde_json::from_str(&dose).unwrap();
+    assert_eq!(v["ok"], true, "dose logged: {dose}");
+
+    // discontinue → no longer active
+    let stop = dispatch_json(
+        "discontinue_medication_regimen",
+        &format!(r#"{{"regimen_id":"{regimen_id}","reason":"course finished"}}"#),
+        &storage,
+    );
+    let v: serde_json::Value = serde_json::from_str(&stop).unwrap();
+    assert_eq!(v["ok"], true, "discontinue ok: {stop}");
+    let v: serde_json::Value = serde_json::from_str(&dispatch_json("list_active_regimens", "{}", &storage)).unwrap();
+    assert_eq!(v["count"], 0, "discontinued regimen gone");
+}
+
+#[test]
+fn skipped_dose_records_skipped_bool() {
+    let storage = open_test_storage();
+    dispatch_json("log_medication", r#"{"name":"aspirin","status":"skipped","adherence_reason":"forgot"}"#, &storage);
+    let v: serde_json::Value = serde_json::from_str(
+        &dispatch_json("query_events", r#"{"event_type":"medication.taken","visibility":"all"}"#, &storage),
+    ).unwrap();
+    let ch = &v["events"][0]["channels"];
+    assert_eq!(ch["status"], "skipped");
+    assert_eq!(ch["skipped"], true, "skipped bool channel present: {v}");
+}
+
+#[test]
+fn health_profile_includes_active_regimens() {
+    let storage = open_test_storage();
+    dispatch_json("start_medication_regimen", r#"{"name":"Lisinopril","dose_value":10,"dose_unit":"mg"}"#, &storage);
+    let v: serde_json::Value = serde_json::from_str(&dispatch_json("get_health_profile", "{}", &storage)).unwrap();
+    assert_eq!(v["medications"].as_array().unwrap().len(), 1, "regimen in health profile: {v}");
+    assert_eq!(v["medications"][0]["name"], "Lisinopril");
 }

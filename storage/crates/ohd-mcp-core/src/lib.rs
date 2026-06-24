@@ -145,6 +145,10 @@ pub fn catalog() -> Vec<Tool> {
         t!(tools::remove_emergency_contact),
         t!(tools::list_emergency_contacts),
         t!(tools::get_health_profile),
+        // Medication regimens.
+        t!(tools::start_medication_regimen),
+        t!(tools::discontinue_medication_regimen),
+        t!(tools::list_active_regimens),
     ]
 }
 
@@ -191,6 +195,9 @@ pub fn dispatch(name: &str, input: &Value, storage: &Storage) -> ToolResult<Valu
         tools::remove_emergency_contact::NAME => tools::remove_emergency_contact::execute(input, storage),
         tools::list_emergency_contacts::NAME => tools::list_emergency_contacts::execute(input, storage),
         tools::get_health_profile::NAME => tools::get_health_profile::execute(input, storage),
+        tools::start_medication_regimen::NAME => tools::start_medication_regimen::execute(input, storage),
+        tools::discontinue_medication_regimen::NAME => tools::discontinue_medication_regimen::execute(input, storage),
+        tools::list_active_regimens::NAME => tools::list_active_regimens::execute(input, storage),
         other => Err(ToolError::UnknownTool(other.to_string())),
     }
 }
@@ -368,6 +375,8 @@ fn write_event_type(name: &str, input: &Value) -> Option<String> {
         "record_emergency_contact" | "remove_emergency_contact" => {
             Some("profile.emergency_contact".to_string())
         }
+        "start_medication_regimen" => Some("medication.regimen_started".to_string()),
+        "discontinue_medication_regimen" => Some("medication.regimen_discontinued".to_string()),
         _ => None,
     }
 }
