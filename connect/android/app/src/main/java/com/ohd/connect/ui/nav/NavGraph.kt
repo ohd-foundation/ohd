@@ -67,6 +67,7 @@ import com.ohd.connect.ui.screens.OnboardingStorageScreen
 import com.ohd.connect.ui.screens.PainScoreScreen
 import com.ohd.connect.ui.screens.PendingScreen
 import com.ohd.connect.ui.screens.RecentEventsScreen
+import com.ohd.connect.ui.screens.RecordVisitScreen
 import com.ohd.connect.ui.screens.ShareDetailScreen
 import com.ohd.connect.ui.screens.SharesScreen
 import com.ohd.connect.ui.screens.SymptomLogScreen
@@ -228,6 +229,8 @@ sealed class OhdRoute(val route: String) {
     data object OperatorGrants : OhdRoute("operator/grants")
     data object OperatorPending : OhdRoute("operator/pending")
     data object OperatorCases : OhdRoute("operator/cases")
+    /** Record a doctor visit — opens a case + writes clinical events. */
+    data object RecordVisit : OhdRoute("cases/record-visit")
     data object OperatorAudit : OhdRoute("operator/audit")
     data object OperatorEmergency : OhdRoute("operator/emergency")
     data object OperatorExport : OhdRoute("operator/export")
@@ -913,9 +916,21 @@ fun OhdNavHost(
                 title = "Cases",
                 onBack = { navController.popBackStack() },
                 contentPadding = contentPadding,
+                action = com.ohd.connect.ui.components.TopBarAction(
+                    label = "+ Visit",
+                    onClick = { navController.navigate(OhdRoute.RecordVisit.route) },
+                ),
             ) { inner ->
                 CasesScreen(contentPadding = inner)
             }
+        }
+        composable(OhdRoute.RecordVisit.route) {
+            RecordVisitScreen(
+                onBack = { navController.popBackStack() },
+                onSaved = { msg -> toast(msg) },
+                onError = { msg -> toast(msg) },
+                contentPadding = contentPadding,
+            )
         }
         composable(OhdRoute.OperatorAudit.route) {
             OperatorScaffold(
@@ -1029,6 +1044,7 @@ private fun OperatorScaffold(
     title: String,
     onBack: () -> Unit,
     contentPadding: PaddingValues,
+    action: com.ohd.connect.ui.components.TopBarAction? = null,
     body: @Composable (PaddingValues) -> Unit,
 ) {
     Column(
@@ -1037,7 +1053,7 @@ private fun OperatorScaffold(
             .background(OhdColors.Bg)
             .padding(contentPadding),
     ) {
-        OhdTopBar(title = title, onBack = onBack)
+        OhdTopBar(title = title, onBack = onBack, action = action)
         Box(modifier = Modifier.fillMaxSize()) {
             body(PaddingValues(0.dp))
         }
