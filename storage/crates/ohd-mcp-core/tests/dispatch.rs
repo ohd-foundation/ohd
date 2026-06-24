@@ -148,8 +148,11 @@ fn full_catalog_count() {
     // + 3 medication-regimen tools (1 read, 2 write)
     // + 6 case/clinical tools (1 read get_case_timeline, 3 write
     //   record_doctor_visit/prescription/lab_result, 2 operator
-    //   open_case/close_case) = 48.
-    assert_eq!(catalog().len(), 48);
+    //   open_case/close_case)
+    // + 4 watch/treatment-plan tools (2 read list_measurement_watches/
+    //   get_treatment_plan, 2 write start/stop_measurement_watch)
+    // + 1 operator delete_event = 53.
+    assert_eq!(catalog().len(), 53);
 }
 
 #[test]
@@ -373,10 +376,107 @@ fn doctor_visit_prescription_timeline_round_trip() {
 }
 
 #[test]
+fn delete_event_removes_by_ulid() {
+    let storage = open_test_storage();
+    // Log a dose, grab its ULID, delete it, confirm it's gone.
+    let logged = dispatch_json("log_medication", r#"{"name":"aspirin","status":"taken"}"#, &storage);
+    let ulid = serde_json::from_str::<serde_json::Value>(&logged).unwrap()["ulid"]
+        .as_str().expect("ulid").to_string();
+
+    let before: serde_json::Value = serde_json::from_str(
+        &dispatch_json("query_events", r#"{"event_type":"medication.taken","visibility":"all"}"#, &storage),
+    ).unwrap();
+    assert_eq!(before["events"].as_array().unwrap().len(), 1);
+
+    let del = dispatch_json("delete_event", &format!(r#"{{"ulid":"{ulid}"}}"#), &storage);
+    let v: serde_json::Value = serde_json::from_str(&del).unwrap();
+    assert_eq!(v["ok"], true, "delete ok: {del}");
+    assert_eq!(v["deleted"], 1, "one row deleted: {del}");
+
+    let after: serde_json::Value = serde_json::from_str(
+        &dispatch_json("query_events", r#"{"event_type":"medication.taken","visibility":"all"}"#, &storage),
+    ).unwrap();
+    assert_eq!(after["events"].as_array().unwrap().len(), 0, "event gone after delete");
+}
+
+#[test]
 fn open_case_returns_ulid() {
     let storage = open_test_storage();
     let out = dispatch_json("open_case", r#"{"case_type":"illness","label":"flu"}"#, &storage);
     let v: serde_json::Value = serde_json::from_str(&out).unwrap();
     assert_eq!(v["ok"], true, "{out}");
     assert!(v["case_ulid"].as_str().is_some_and(|s| !s.is_empty()));
+}
+
+#[test]
+fn measurement_watch_start_list_stop_round_trip() {
+    let storage = open_test_storage();
+
+    let started = dispatch_json(
+        "start_measurement_watch",
+        r#"{"metric":"body_temperature","label":"Temp","schedule":"0 8 * * *","quick":true}"#,
+        &storage,
+    );
+    let v: serde_json::Value = serde_json::from_str(&started).unwrap();
+    assert_eq!(v["ok"], true, "watch start ok: {started}");
+    let watch_id = v["watch_id"].as_str().expect("watch_id returned").to_string();
+    assert!(!watch_id.is_empty());
+
+    let listed = dispatch_json("list_measurement_watches", "{}", &storage);
+    let v: serde_json::Value = serde_json::from_str(&listed).unwrap();
+    assert_eq!(v["count"], 1, "one active watch: {listed}");
+    assert_eq!(v["watches"][0]["metric"], "body_temperature");
+    assert_eq!(v["watches"][0]["schedule"], "0 8 * * *");
+    assert_eq!(v["watches"][0]["quick"], true);
+    assert_eq!(v["watches"][0]["watch_id"], watch_id);
+
+    let stop = dispatch_json(
+        "stop_measurement_watch",
+        &format!(r#"{{"watch_id":"{watch_id}","reason":"recovered"}}"#),
+        &storage,
+    );
+    let v: serde_json::Value = serde_json::from_str(&stop).unwrap();
+    assert_eq!(v["ok"], true, "watch stop ok: {stop}");
+    let v: serde_json::Value =
+        serde_json::from_str(&dispatch_json("list_measurement_watches", "{}", &storage)).unwrap();
+    assert_eq!(v["count"], 0, "stopped watch gone");
+}
+
+#[test]
+fn treatment_plan_splits_case_vs_life() {
+    let storage = open_test_storage();
+
+    // A personal med (no case) and a watch on a specific case.
+    dispatch_json(
+        "start_medication_regimen",
+        r#"{"name":"Vitamin D","dose_value":1000,"dose_unit":"IU","on_hand":true,"quick":true}"#,
+        &storage,
+    );
+    let case = dispatch_json("open_case", r#"{"case_type":"illness","label":"flu"}"#, &storage);
+    let case_ulid = serde_json::from_str::<serde_json::Value>(&case).unwrap()["case_ulid"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    dispatch_json(
+        "start_measurement_watch",
+        &format!(r#"{{"metric":"body_temperature","case_id":"{case_ulid}","schedule":"0 */8 * * *"}}"#),
+        &storage,
+    );
+
+    // The case plan: the watch, not the personal vitamin.
+    let plan = dispatch_json(
+        "get_treatment_plan",
+        &format!(r#"{{"case_id":"{case_ulid}"}}"#),
+        &storage,
+    );
+    let v: serde_json::Value = serde_json::from_str(&plan).unwrap();
+    assert_eq!(v["medications"].as_array().unwrap().len(), 0, "no case meds: {plan}");
+    assert_eq!(v["watches"].as_array().unwrap().len(), 1, "case watch present: {plan}");
+
+    // The global "life" plan (no case_id): the vitamin, not the case watch.
+    let life = dispatch_json("get_treatment_plan", "{}", &storage);
+    let v: serde_json::Value = serde_json::from_str(&life).unwrap();
+    assert_eq!(v["medications"].as_array().unwrap().len(), 1, "personal med present: {life}");
+    assert_eq!(v["medications"][0]["name"], "Vitamin D");
+    assert_eq!(v["watches"].as_array().unwrap().len(), 0, "no life watch: {life}");
 }

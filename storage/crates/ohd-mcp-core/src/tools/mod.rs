@@ -56,3 +56,4 @@ pub mod record_doctor_visit;
 pub mod record_prescription;
 pub mod record_lab_result;
 pub mod get_case_timeline;
+pub mod delete_event;

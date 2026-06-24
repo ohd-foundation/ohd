@@ -13,8 +13,10 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -39,6 +41,9 @@ import com.ohd.connect.data.OhdEvent
 import com.ohd.connect.data.OhdScalar
 import com.ohd.connect.data.PutEventOutcome
 import com.ohd.connect.data.StorageRepository
+import org.json.JSONObject
+import com.ohd.connect.ui.components.OhdButton
+import com.ohd.connect.ui.components.OhdButtonVariant
 import com.ohd.connect.ui.components.OhdCard
 import com.ohd.connect.ui.components.OhdField
 import com.ohd.connect.ui.components.OhdSectionHeader
@@ -107,6 +112,7 @@ fun EditEventScreen(
         }
 
         val scope = rememberCoroutineScope()
+        var confirmDelete by remember(original.ulid) { mutableStateOf(false) }
 
         // Local edit state, one entry per channel + a timestamp field.
         // We key the state to the ULID so navigation back into a different
@@ -250,6 +256,50 @@ fun EditEventScreen(
                 fontWeight = FontWeight.W400,
                 fontSize = 12.sp,
                 color = OhdColors.Muted,
+            )
+
+            // Destructive: permanently remove the event. For a genuine
+            // mistake (a dose not taken, a wrong reading) editing leaves a
+            // misleading record around — delete removes it outright.
+            OhdButton(
+                label = "Delete this event",
+                onClick = { confirmDelete = true },
+                variant = OhdButtonVariant.Destructive,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+
+        if (confirmDelete) {
+            AlertDialog(
+            onDismissRequest = { confirmDelete = false },
+            title = { Text("Delete this event?") },
+            text = {
+                Text(
+                    "This permanently removes the event. It can't be undone. " +
+                        "To fix a value while keeping history, edit and save instead.",
+                    fontFamily = OhdBody, fontSize = 13.sp, color = OhdColors.Muted,
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmDelete = false
+                    scope.launch(Dispatchers.IO) {
+                        val res = StorageRepository.executeToolJson(
+                            "delete_event",
+                            JSONObject().put("ulid", original.ulid).toString(),
+                        )
+                        withContext(Dispatchers.Main) {
+                            res.fold(
+                                onSuccess = { onSaved("Event deleted."); onBack() },
+                                onFailure = { onError(it.message ?: "Couldn't delete the event") },
+                            )
+                        }
+                    }
+                }) { Text("Delete", color = OhdColors.Red) }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmDelete = false }) { Text("Cancel") }
+            },
             )
         }
     }

@@ -1338,6 +1338,7 @@ impl OhdStorage {
             from_ms: Some(from_ms),
             to_ms: Some(to_ms),
             event_types,
+            event_ulids: Vec::new(),
         };
         let n = self
             .inner

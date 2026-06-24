@@ -1149,6 +1149,7 @@ impl OhdcService for OhdcAdapter {
                 from_ms: req.from_ms,
                 to_ms: req.to_ms,
                 event_types: req.event_types,
+                event_ulids: Vec::new(),
             };
             let deleted = ohd_ohdc::delete_events(&self.storage, &token, &filter)
                 .map_err(error_to_connect)?;

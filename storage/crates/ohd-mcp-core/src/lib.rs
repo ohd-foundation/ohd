@@ -161,6 +161,8 @@ pub fn catalog() -> Vec<Tool> {
         t!(tools::record_prescription),
         t!(tools::record_lab_result),
         t!(tools::get_case_timeline),
+        // Destructive owner-only escape hatch.
+        t!(tools::delete_event),
     ]
 }
 
@@ -220,6 +222,7 @@ pub fn dispatch(name: &str, input: &Value, storage: &Storage) -> ToolResult<Valu
         tools::record_prescription::NAME => tools::record_prescription::execute(input, storage),
         tools::record_lab_result::NAME => tools::record_lab_result::execute(input, storage),
         tools::get_case_timeline::NAME => tools::get_case_timeline::execute(input, storage),
+        tools::delete_event::NAME => tools::delete_event::execute(input, storage),
         other => Err(ToolError::UnknownTool(other.to_string())),
     }
 }

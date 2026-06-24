@@ -466,6 +466,11 @@ pub struct DeleteFilter {
     /// Restrict to these event-type names (e.g. `"food.eaten"`). Empty = all
     /// types. Names that don't exist in `event_types` are silently ignored.
     pub event_types: Vec<String>,
+    /// Restrict to these exact event ULIDs. Empty = no ULID restriction.
+    /// The precise "delete this one event" path (a mistaken entry by the
+    /// user or an agent); AND-combined with the other fields.
+    #[serde(default)]
+    pub event_ulids: Vec<String>,
 }
 
 /// Hard-delete events matching `filter` from the connection. Returns the
@@ -501,6 +506,30 @@ pub fn hard_delete_events(conn: &Connection, filter: &DeleteFilter) -> Result<i6
         ));
         for name in &filter.event_types {
             params.push(Box::new(name.clone()));
+        }
+    }
+    if !filter.event_ulids.is_empty() {
+        // `events.ulid_random` stores the 10-byte random tail of the ULID, not
+        // the Crockford string — parse each id and match the blob. Invalid
+        // strings are skipped (they match nothing).
+        let tails: Vec<Vec<u8>> = filter
+            .event_ulids
+            .iter()
+            .filter_map(|s| ulid::parse_crockford(s).ok())
+            .map(|u| ulid::random_tail(&u).to_vec())
+            .collect();
+        if !tails.is_empty() {
+            let placeholders = std::iter::repeat("?")
+                .take(tails.len())
+                .collect::<Vec<_>>()
+                .join(",");
+            clauses.push(format!("ulid_random IN ({placeholders})"));
+            for t in tails {
+                params.push(Box::new(t));
+            }
+        } else {
+            // All ids were unparseable → match nothing rather than everything.
+            return Ok(0);
         }
     }
 
