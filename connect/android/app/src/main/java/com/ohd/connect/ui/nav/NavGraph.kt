@@ -466,6 +466,9 @@ fun OhdNavHost(
                 onLogMeasurement = { navController.navigate(OhdRoute.LogMeasurement.route) },
                 onLogSymptom = { navController.navigate(OhdRoute.LogSymptom.route) },
                 onOpenDevices = { navController.navigate(OhdRoute.Devices.route) },
+                onOpenHealthProfile = { navController.navigate(OhdRoute.HealthProfile.route) },
+                onOpenCases = { navController.navigate(OhdRoute.OperatorCases.route) },
+                onRecordVisit = { navController.navigate(OhdRoute.RecordVisit.route) },
                 onFavouriteClick = { _, kind ->
                     // `kind` is the stable token persisted in the favourites
                     // JSON ("blood_pressure" / "glucose" / "weight" /

@@ -1,6 +1,7 @@
 package com.ohd.connect.ui.screens
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -42,9 +43,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.ohd.connect.R
+import com.ohd.connect.ui.components.OhdCard
 import com.ohd.connect.ui.components.OhdQuickLogItem
 import com.ohd.connect.ui.components.OhdSectionHeader
 import com.ohd.connect.ui.components.OhdSegmentedTimeRange
@@ -57,7 +61,6 @@ import com.ohd.connect.ui.screens._shared.decodeHomeFavourites
 import com.ohd.connect.ui.screens._shared.encodeHomeFavourites
 import com.ohd.connect.ui.theme.OhdBody
 import com.ohd.connect.ui.theme.OhdColors
-import com.ohd.connect.ui.theme.OhdDisplay
 
 /**
  * Home v2 — Pencil `KADlx`, spec §4.1.
@@ -83,12 +86,42 @@ fun HomeScreen(
     onLogMeasurement: () -> Unit,
     onLogSymptom: () -> Unit,
     onOpenDevices: () -> Unit,
+    onOpenHealthProfile: () -> Unit = {},
+    onOpenCases: () -> Unit = {},
+    onRecordVisit: () -> Unit = {},
     onFavouriteClick: (label: String, kind: String) -> Unit = { _, _ -> },
 ) {
     val ctx = LocalContext.current
     var range by remember { mutableStateOf(TimeRange.Today) }
     var eventCount by remember { mutableLongStateOf(0L) }
     var sourceCount by remember { mutableLongStateOf(0L) }
+
+    // Health-profile + cases summary for the two info cards. Loaded once via
+    // the same MCP read tools the dedicated screens use.
+    var bloodType by remember { mutableStateOf<String?>(null) }
+    var allergyCount by remember { mutableStateOf(0) }
+    var conditionCount by remember { mutableStateOf(0) }
+    var activeCaseCount by remember { mutableStateOf(0) }
+    LaunchedEffect(Unit) {
+        withContext(Dispatchers.IO) {
+            StorageRepository.executeToolJson("get_health_profile", "{}").getOrNull()?.let { raw ->
+                runCatching {
+                    val o = org.json.JSONObject(raw)
+                    bloodType = o.optJSONObject("blood_type")?.let { bt ->
+                        val g = bt.optString("group", "")
+                        val rh = when (bt.optString("rh", "")) {
+                            "positive" -> "+"; "negative" -> "−"; else -> ""
+                        }
+                        (g + rh).ifBlank { null }
+                    }
+                    allergyCount = o.optJSONArray("allergies")?.length() ?: 0
+                    conditionCount = o.optJSONArray("conditions")?.length() ?: 0
+                }
+            }
+            activeCaseCount = StorageRepository.listCases(includeClosed = false)
+                .getOrNull()?.count { it.endedAtMs == null } ?: 0
+        }
+    }
 
     // Favourites — read the persisted blob lazily via [LaunchedEffect] so
     // EncryptedSharedPreferences's first-touch latency (~hundreds of ms on
@@ -173,6 +206,28 @@ fun HomeScreen(
                         .clickable { onOpenDevices() },
                 )
             }
+        }
+
+        Spacer(Modifier.height(16.dp))
+
+        // Info cards — health profile + active cases. Inset 16dp.
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            HealthInfoCard(
+                bloodType = bloodType,
+                allergyCount = allergyCount,
+                conditionCount = conditionCount,
+                onClick = onOpenHealthProfile,
+            )
+            CasesCard(
+                activeCount = activeCaseCount,
+                onOpenCases = onOpenCases,
+                onRecordVisit = onRecordVisit,
+            )
         }
 
         Spacer(Modifier.height(20.dp))
@@ -275,6 +330,86 @@ private val DEFAULT_FAVOURITES: List<HomeFavourite> = listOf(
     HomeFavourite(label = "Blood pressure", kind = "blood_pressure", iconKey = "heart_pulse"),
 )
 
+/**
+ * Health-profile summary card — blood type + allergy/condition counts,
+ * tap-through to the full Health profile screen. Surfaces the persistent
+ * facts on Home so they're not buried in Settings.
+ */
+@Composable
+private fun HealthInfoCard(
+    bloodType: String?,
+    allergyCount: Int,
+    conditionCount: Int,
+    onClick: () -> Unit,
+) {
+    OhdCard(
+        title = "Health profile",
+        modifier = Modifier.fillMaxWidth().clickable { onClick() },
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(modifier = Modifier.weight(1f)) {
+                val parts = buildList {
+                    add(bloodType?.let { "Blood type $it" } ?: "Blood type not set")
+                    add(if (allergyCount == 1) "1 allergy" else "$allergyCount allergies")
+                    add(if (conditionCount == 1) "1 condition" else "$conditionCount conditions")
+                }
+                Text(
+                    text = parts.joinToString(" · "),
+                    fontFamily = OhdBody,
+                    fontWeight = FontWeight.W400,
+                    fontSize = 13.sp,
+                    color = OhdColors.Muted,
+                )
+            }
+            Icon(
+                imageVector = OhdIcons.ChevronRight,
+                contentDescription = null,
+                tint = OhdColors.Muted,
+                modifier = Modifier.size(18.dp),
+            )
+        }
+    }
+}
+
+/**
+ * Active-cases card — count of open cases + a "Record a visit" CTA. Tapping
+ * the card opens the Cases list; the CTA jumps straight into a new visit.
+ */
+@Composable
+private fun CasesCard(
+    activeCount: Int,
+    onOpenCases: () -> Unit,
+    onRecordVisit: () -> Unit,
+) {
+    OhdCard(
+        title = "Cases",
+        modifier = Modifier.fillMaxWidth().clickable { onOpenCases() },
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = when (activeCount) {
+                    0 -> "No active cases"
+                    1 -> "1 active case"
+                    else -> "$activeCount active cases"
+                },
+                fontFamily = OhdBody,
+                fontWeight = FontWeight.W400,
+                fontSize = 13.sp,
+                color = OhdColors.Muted,
+                modifier = Modifier.weight(1f),
+            )
+            Text(
+                text = "+ Record a visit",
+                fontFamily = OhdBody,
+                fontWeight = FontWeight.W500,
+                fontSize = 13.sp,
+                color = OhdColors.Red,
+                modifier = Modifier.clickable { onRecordVisit() },
+            )
+        }
+    }
+}
+
 /** OHD logo + sparkles + shares + bell + settings strip (Pencil `l3AI7` extended). */
 @Composable
 private fun HomeHeader(
@@ -290,13 +425,10 @@ private fun HomeHeader(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        Text(
-            text = "OHD",
-            fontFamily = OhdDisplay,
-            fontWeight = FontWeight.W200,
-            fontSize = 28.sp,
-            letterSpacing = 1.sp,
-            color = OhdColors.Red,
+        Image(
+            painter = painterResource(R.drawable.ohd_logo),
+            contentDescription = "OHD",
+            modifier = Modifier.height(26.dp),
         )
         Spacer(Modifier.weight(1f))
         Icon(
