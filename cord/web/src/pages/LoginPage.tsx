@@ -27,6 +27,13 @@ export default function LoginPage() {
   return (
     <div className="center-screen">
       <div className="card login-card">
+        <img
+          className="login-logo"
+          src="/brand/cord-on-white.svg"
+          alt="OHD CORD"
+          width={72}
+          height={72}
+        />
         <h1>OHD CORD</h1>
         <p className="muted">Sign in to talk to your health data.</p>
 

@@ -508,9 +508,19 @@ label {
   width: 380px;
   max-width: 100%;
   padding: 32px;
+  text-align: center;
+}
+.login-logo {
+  display: block;
+  margin: 0 auto 12px;
+  height: 72px;
+  width: auto;
 }
 .login-card h1 {
   margin-bottom: 4px;
+}
+.login-card .provider-list {
+  text-align: left;
 }
 .provider-list {
   display: flex;

@@ -90,6 +90,14 @@ fun SetupScreen(onSetupDone: () -> Unit) {
             verticalArrangement = Arrangement.SpaceBetween,
         ) {
             Column {
+                androidx.compose.foundation.Image(
+                    painter = androidx.compose.ui.res.painterResource(
+                        id = com.ohd.connect.R.drawable.ohd_logo,
+                    ),
+                    contentDescription = "OHD",
+                    modifier = Modifier.height(64.dp),
+                )
+                Spacer(Modifier.height(16.dp))
                 Text(
                     text = "OHD Connect",
                     style = MaterialTheme.typography.headlineLarge,

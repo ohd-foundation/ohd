@@ -93,7 +93,13 @@ strong { font-weight: 600; }
 }
 .brand:hover { color: var(--accent); }
 .brand-word { font-size: 1.15rem; font-weight: 500; }
-.brand-mark { display: inline-flex; color: var(--accent); }
+.brand-mark { display: inline-flex; color: var(--accent); align-items: center; }
+/* Swap the OHD logo per theme so the dark shield reads on light bg and the
+   light shield reads on dark bg — both files carry the designer's authored
+   colors, no runtime recolor. */
+.brand-mark__light, .brand-mark__dark { display: block; }
+[data-theme="light"] .brand-mark__dark { display: none; }
+[data-theme="dark"] .brand-mark__light { display: none; }
 .site-nav {
   display: flex;
   gap: 1.4rem;

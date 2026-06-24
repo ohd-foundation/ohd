@@ -32,8 +32,11 @@ const STYLE: &str = r#"<style>
     display: flex; min-height: 100vh; align-items: center; justify-content: center; }
   .card { background: #fff; border-radius: 14px; padding: 2.5rem 2.25rem;
     width: 100%; max-width: 380px; box-shadow: 0 2px 24px rgba(0,0,0,0.08); }
-  .brand { font-weight: 700; font-size: 1.15rem; margin: 0 0 0.25rem; }
-  .brand .accent { color: var(--ohd-red); }
+  .brand { display: flex; flex-direction: column; align-items: center;
+    gap: 0.5rem; margin: 0 0 1.25rem; }
+  .brand-logo { width: 56px; height: auto; display: block; }
+  .brand-word { font-weight: 700; font-size: 1.15rem; margin: 0; }
+  .brand-word .accent { color: var(--ohd-red); }
   h1 { font-size: 1.35rem; margin: 0 0 1.5rem; }
   label { display: block; font-size: 0.85rem; font-weight: 600;
     margin: 1rem 0 0.35rem; }
@@ -65,6 +68,19 @@ const STYLE: &str = r#"<style>
     white-space: pre-wrap; word-break: break-all; margin: 1rem 0; }
   .warn { color: #b3121f; font-weight: 600; font-size: 0.9rem; }
 </style>"#;
+
+/// Brand header — the OHD Identity shield-and-pulse logo above the
+/// "OHD Identity" wordmark. Inlined SVG (no extra request, scales
+/// crisply) sourced from `spec/brand/built/identity-on-white.svg`. The
+/// shield is `ink` (#202020), the pulse is `deep-red` (#b62121) exactly
+/// as the brand file authors them.
+const BRAND_HEADER: &str = r##"<div class="brand">
+<svg class="brand-logo" viewBox="43.449 -1011.759 83.667 90.723" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+<path style="fill:#202020" d="m 126.22103,-953.33956 -0.24228,-42.6322 -40.695876,-14.89934 -40.69588,14.89934 -0.24227,42.6322 c -0.39856,17.93305 18.94787,26.37136 40.93815,31.41239 21.990286,-5.04103 41.336716,-13.47934 40.938156,-31.41239 z"/>
+<path style="fill:none;stroke:#b62121;stroke-width:3.35032;stroke-linejoin:round" d="m 62.326704,-966.57046 14.50465,10e-6 5.71048,-17.35989 5.93891,35.06241 5.59628,-17.4741 h 14.162016"/>
+</svg>
+<p class="brand-word">OHD <span class="accent">Identity</span></p>
+</div>"##;
 
 /// Wrap page `body` in the shared document shell.
 fn page(title: &str, body: &str) -> String {
@@ -156,7 +172,7 @@ pub fn login_page(
         String::new()
     };
     let body = format!(
-        "<div class=\"card\"><p class=\"brand\">OHD <span class=\"accent\">Identity</span></p>\
+        "<div class=\"card\">{BRAND_HEADER}\
          <h1>Sign in</h1>{error_banner}\
          <form method=\"post\" action=\"/login\">{hidden}\
          <label for=\"email\">Email</label>\
@@ -187,7 +203,7 @@ pub fn reset_page(
         .unwrap_or_default();
     let hidden = flow_fields(client_id, redirect_uri, scope, state, nonce, code_challenge);
     let body = format!(
-        "<div class=\"card\"><p class=\"brand\">OHD <span class=\"accent\">Identity</span></p>\
+        "<div class=\"card\">{BRAND_HEADER}\
          <h1>Reset your password</h1>{error_banner}\
          <p class=\"muted\">Enter your recovery code and a new password. \
          If your account has no email yet, add one below.</p>\
@@ -211,7 +227,7 @@ pub fn reset_page(
 /// The `/logout` confirmation page — shown when logout has no (valid)
 /// `post_logout_redirect_uri` to send the browser back to.
 pub fn logged_out_page() -> String {
-    let body = "<div class=\"card\"><p class=\"brand\">OHD <span class=\"accent\">Identity</span></p>\
+    let body = "<div class=\"card\">{BRAND_HEADER}\
          <h1>Signed out</h1>\
          <p class=\"muted\">You have been signed out of OHD. Close this tab, \
          or return to the application to sign in again.</p></div>";
@@ -234,7 +250,7 @@ pub fn signup_page(
         .unwrap_or_default();
     let hidden = flow_fields(client_id, redirect_uri, scope, state, nonce, code_challenge);
     let body = format!(
-        "<div class=\"card\"><p class=\"brand\">OHD <span class=\"accent\">Identity</span></p>\
+        "<div class=\"card\">{BRAND_HEADER}\
          <h1>Create your account</h1>{error_banner}\
          <form method=\"post\" action=\"/signup\">{hidden}\
          <label for=\"email\">Email</label>\
@@ -261,7 +277,7 @@ pub fn signup_page(
 /// to `/continue` with no token.
 pub fn recovery_page(continue_token: &str, recovery_code: &str) -> String {
     let body = format!(
-        "<div class=\"card\"><p class=\"brand\">OHD <span class=\"accent\">Identity</span></p>\
+        "<div class=\"card\">{BRAND_HEADER}\
          <h1>Save your recovery code</h1>\
          <p class=\"muted\">This code recovers your account if you forget your \
          password. It is shown <strong>once</strong> — write it down and keep \
@@ -281,7 +297,7 @@ pub fn recovery_page(continue_token: &str, recovery_code: &str) -> String {
 /// `client_id` / `redirect_uri` and therefore must *not* redirect.
 pub fn error_page(message: &str) -> String {
     let body = format!(
-        "<div class=\"card\"><p class=\"brand\">OHD <span class=\"accent\">Identity</span></p>\
+        "<div class=\"card\">{BRAND_HEADER}\
          <h1>Something went wrong</h1>\
          <div class=\"error\">{}</div>\
          <p class=\"muted\">This request could not be completed. Return to the \
