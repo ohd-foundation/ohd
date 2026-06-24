@@ -4,7 +4,9 @@
 //! Subsequent `log_medication` doses link to it by `regimen_id`. End it
 //! with `discontinue_medication_regimen`.
 
-use crate::put::{ch_opt_real, ch_opt_text, ch_text, commit, opt_string, require_string};
+use crate::put::{
+    ch_opt_bool, ch_opt_real, ch_opt_text, ch_text, commit, opt_string, require_string,
+};
 use crate::ToolResult;
 use ohd_storage_core::Storage;
 use serde_json::{json, Value};
@@ -14,9 +16,13 @@ pub const NAME: &str = "start_medication_regimen";
 pub const DESCRIPTION: &str =
     "Start a medication regimen (an ongoing course the user is on). Pass `name` \
      (required), and optionally `dose_value` + `dose_unit`, `frequency` (free text, \
-     e.g. \"twice daily\"), `case_id` (the visit it was prescribed at), and \
-     `rx_concept_id` (a drug-registry code, reserved). Returns the minted \
-     `regimen_id` — pass it to log_medication so doses attach to this regimen.";
+     e.g. \"twice daily\"), `schedule` (a machine cadence: a 5-field cron expr like \
+     \"0 */8 * * *\", or `anchor:<name>` such as `anchor:lunch`/`anchor:bedtime`/\
+     `anchor:as_needed`), `case_id` (the visit it was prescribed at — omit for a \
+     personal/self-started med), `on_hand` (the user physically has it), `quick` \
+     (surface as a one-tap shortcut), and `rx_concept_id` (a drug-registry code, \
+     reserved). Returns the minted `regimen_id` — pass it to log_medication so \
+     doses attach to this regimen.";
 
 pub fn input_schema() -> Value {
     json!({
@@ -25,8 +31,11 @@ pub fn input_schema() -> Value {
             "name":          { "type": "string", "description": "Medication name." },
             "dose_value":    { "type": "number" },
             "dose_unit":     { "type": "string" },
-            "frequency":     { "type": "string", "description": "e.g. 'twice daily', 'every 8h'." },
-            "case_id":       { "type": "string", "description": "Prescribing visit's case ULID, optional." },
+            "frequency":     { "type": "string", "description": "Free text, e.g. 'twice daily'." },
+            "schedule":      { "type": "string", "description": "Machine cadence: cron expr or 'anchor:<name>'." },
+            "case_id":       { "type": "string", "description": "Prescribing visit's case ULID; omit for personal." },
+            "on_hand":       { "type": "boolean", "description": "User physically has the medication." },
+            "quick":         { "type": "boolean", "description": "Show as a one-tap shortcut." },
             "rx_concept_id": { "type": "string", "description": "Drug-registry id (reserved), optional." },
             "started":       { "type": "string", "description": "ISO 8601; defaults to now." }
         },
@@ -55,7 +64,16 @@ pub fn execute(input: &Value, storage: &Storage) -> ToolResult<Value> {
     if let Some(c) = ch_opt_text("frequency", opt_string(input, "frequency")) {
         channels.push(c);
     }
+    if let Some(c) = ch_opt_text("schedule", opt_string(input, "schedule")) {
+        channels.push(c);
+    }
     if let Some(c) = ch_opt_text("case_id", opt_string(input, "case_id")) {
+        channels.push(c);
+    }
+    if let Some(c) = ch_opt_bool("on_hand", input.get("on_hand").and_then(|v| v.as_bool())) {
+        channels.push(c);
+    }
+    if let Some(c) = ch_opt_bool("quick", input.get("quick").and_then(|v| v.as_bool())) {
         channels.push(c);
     }
     if let Some(c) = ch_opt_text("rx_concept_id", opt_string(input, "rx_concept_id")) {

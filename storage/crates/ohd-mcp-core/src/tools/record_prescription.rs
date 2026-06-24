@@ -1,6 +1,9 @@
 //! `record_prescription` — record a prescription in a case + start its regimen.
 
-use crate::put::{ch_opt_int, ch_opt_real, ch_opt_text, ch_text, commit, opt_string, require_string, ts_from};
+use crate::put::{
+    ch_bool, ch_opt_int, ch_opt_real, ch_opt_text, ch_text, commit, opt_string, require_string,
+    ts_from,
+};
 use crate::ToolResult;
 use ohd_storage_core::{ulid, Storage};
 use serde_json::{json, Value};
@@ -24,6 +27,7 @@ pub fn input_schema() -> Value {
             "dose_value":      { "type": "number" },
             "dose_unit":       { "type": "string" },
             "frequency":       { "type": "string", "description": "e.g. 'twice daily'." },
+            "schedule":        { "type": "string", "description": "Machine cadence on the regimen: cron expr or 'anchor:<name>'." },
             "duration_days":   { "type": "integer" },
             "entered_by":      { "type": "string", "enum": ["self_from_memory", "self_from_document", "practitioner", "pharmacy"], "default": "self_from_memory" },
             "when":            { "type": "string", "description": "ISO 8601; defaults to now." }
@@ -58,6 +62,14 @@ pub fn execute(input: &Value, storage: &Storage) -> ToolResult<Value> {
     if let Some(c) = ch_opt_text("frequency", frequency.clone()) {
         reg_ch.push(c);
     }
+    if let Some(c) = ch_opt_text("schedule", opt_string(input, "schedule")) {
+        reg_ch.push(c);
+    }
+    // A prescribed med is something the user is meant to take and (once
+    // dispensed) has on hand — default it into the active take-list. They
+    // can still flip these off on the Medications screen.
+    reg_ch.push(ch_bool("on_hand", true));
+    reg_ch.push(ch_bool("quick", true));
     commit(storage, "medication.regimen_started".to_string(), when_ms, None, reg_ch, None)?;
 
     // 2. The prescription record in the case.

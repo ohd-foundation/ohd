@@ -11,7 +11,9 @@ pub const NAME: &str = "record_condition";
 pub const DESCRIPTION: &str =
     "Record a medical condition / diagnosis the user has. Pass `name` (required, \
      e.g. \"type 2 diabetes\"), and optionally `icd10` (code), `onset_iso` (when it \
-     began), and a stable `fact_id` (defaults to slug(name) — reuse to update). \
+     began), a stable `fact_id` (defaults to slug(name) — reuse to update), and \
+     `case_id` for an episodic diagnosis tied to a clinical case. Omit case_id for \
+     a chronic/long-term condition (it then shows in the standing health profile). \
      Recorded as active; use resolve_condition when it ends.";
 
 pub fn input_schema() -> Value {
@@ -21,7 +23,8 @@ pub fn input_schema() -> Value {
             "name":      { "type": "string", "description": "Condition / diagnosis name." },
             "icd10":     { "type": "string", "description": "ICD-10 code, optional." },
             "onset_iso": { "type": "string", "description": "ISO 8601 onset date, optional." },
-            "fact_id":   { "type": "string", "description": "Stable id; defaults to slug(name)." }
+            "fact_id":   { "type": "string", "description": "Stable id; defaults to slug(name)." },
+            "case_id":   { "type": "string", "description": "Episode ULID for a case-bound diagnosis; omit for chronic." }
         },
         "required": ["name"],
         "additionalProperties": false
@@ -44,6 +47,9 @@ pub fn execute(input: &Value, storage: &Storage) -> ToolResult<Value> {
         channels.push(c);
     }
     if let Some(c) = ch_opt_int("onset_ms", onset_ms) {
+        channels.push(c);
+    }
+    if let Some(c) = ch_opt_text("case_id", opt_string(input, "case_id")) {
         channels.push(c);
     }
     commit(

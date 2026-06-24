@@ -71,6 +71,13 @@ pub fn ch_int(path: &str, v: i64) -> ChannelValue {
     }
 }
 
+pub fn ch_bool(path: &str, v: bool) -> ChannelValue {
+    ChannelValue {
+        channel_path: path.to_string(),
+        value: ChannelScalar::Bool { bool_value: v },
+    }
+}
+
 /// Skip nulls so the event ends up sparse — dynamic channel registration
 /// only kicks in for channels we actually emit. Cleaner storage.
 pub fn ch_opt_text(path: &str, v: Option<String>) -> Option<ChannelValue> {
@@ -83,6 +90,12 @@ pub fn ch_opt_real(path: &str, v: Option<f64>) -> Option<ChannelValue> {
 
 pub fn ch_opt_int(path: &str, v: Option<i64>) -> Option<ChannelValue> {
     v.map(|x| ch_int(path, x))
+}
+
+/// Emit a bool channel only when the caller supplied the flag — keeps the
+/// event sparse (an absent `quick`/`on_hand` means "unset", not "false").
+pub fn ch_opt_bool(path: &str, v: Option<bool>) -> Option<ChannelValue> {
+    v.map(|x| ch_bool(path, x))
 }
 
 /// Write one event and return the JSON the tool surface ships back.

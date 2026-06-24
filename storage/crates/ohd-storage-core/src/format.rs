@@ -93,6 +93,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "020_clinical_types",
         include_str!("../../../migrations/020_clinical_types.sql"),
     ),
+    (
+        "021_treatment_plan",
+        include_str!("../../../migrations/021_treatment_plan.sql"),
+    ),
 ];
 
 /// One of the three deployment modes a per-user file can be in.

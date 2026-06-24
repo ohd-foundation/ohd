@@ -149,6 +149,11 @@ pub fn catalog() -> Vec<Tool> {
         t!(tools::start_medication_regimen),
         t!(tools::discontinue_medication_regimen),
         t!(tools::list_active_regimens),
+        // Measurement watches + treatment plan.
+        t!(tools::start_measurement_watch),
+        t!(tools::stop_measurement_watch),
+        t!(tools::list_measurement_watches),
+        t!(tools::get_treatment_plan),
         // Clinical cases + events.
         t!(tools::open_case),
         t!(tools::close_case),
@@ -205,6 +210,10 @@ pub fn dispatch(name: &str, input: &Value, storage: &Storage) -> ToolResult<Valu
         tools::start_medication_regimen::NAME => tools::start_medication_regimen::execute(input, storage),
         tools::discontinue_medication_regimen::NAME => tools::discontinue_medication_regimen::execute(input, storage),
         tools::list_active_regimens::NAME => tools::list_active_regimens::execute(input, storage),
+        tools::start_measurement_watch::NAME => tools::start_measurement_watch::execute(input, storage),
+        tools::stop_measurement_watch::NAME => tools::stop_measurement_watch::execute(input, storage),
+        tools::list_measurement_watches::NAME => tools::list_measurement_watches::execute(input, storage),
+        tools::get_treatment_plan::NAME => tools::get_treatment_plan::execute(input, storage),
         tools::open_case::NAME => tools::open_case::execute(input, storage),
         tools::close_case::NAME => tools::close_case::execute(input, storage),
         tools::record_doctor_visit::NAME => tools::record_doctor_visit::execute(input, storage),
@@ -390,6 +399,8 @@ fn write_event_type(name: &str, input: &Value) -> Option<String> {
         }
         "start_medication_regimen" => Some("medication.regimen_started".to_string()),
         "discontinue_medication_regimen" => Some("medication.regimen_discontinued".to_string()),
+        "start_measurement_watch" => Some("measurement.watch_started".to_string()),
+        "stop_measurement_watch" => Some("measurement.watch_stopped".to_string()),
         // Clinical-record writes. record_prescription also starts a regimen,
         // but the primary write the grant authorizes is the clinical record;
         // a grant permitting clinical.prescription is the right gate.
