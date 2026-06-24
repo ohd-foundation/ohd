@@ -81,6 +81,7 @@ import com.ohd.connect.ui.screens.settings.FoodSettingsScreen
 import com.ohd.connect.ui.screens.settings.FormsSettingsScreen
 import com.ohd.connect.ui.screens.settings.HealthConnectSettingsScreen
 import com.ohd.connect.ui.screens.settings.LicencesScreen
+import com.ohd.connect.ui.screens.settings.HealthProfileScreen
 import com.ohd.connect.ui.screens.settings.NutritionGoalsScreen
 import com.ohd.connect.ui.screens.settings.RemindersSettingsScreen
 import com.ohd.connect.ui.screens.settings.SettingsDestination
@@ -175,6 +176,8 @@ sealed class OhdRoute(val route: String) {
      * the resolved targets via [com.ohd.connect.data.NutritionGoalsStore.effectiveTargets].
      */
     data object NutritionGoals : OhdRoute("settings/nutrition")
+    /** Health profile — blood type, allergies, conditions, emergency contacts. */
+    data object HealthProfile : OhdRoute("settings/health_profile")
     data object SettingsHealthConnect : OhdRoute("settings/health_connect")
     data object SettingsActivities : OhdRoute("settings/activities")
     data object SettingsReminders : OhdRoute("settings/reminders")
@@ -523,6 +526,7 @@ fun OhdNavHost(
                         SettingsDestination.Forms -> OhdRoute.SettingsForms
                         SettingsDestination.Food -> OhdRoute.SettingsFood
                         SettingsDestination.NutritionGoals -> OhdRoute.NutritionGoals
+                        SettingsDestination.HealthProfile -> OhdRoute.HealthProfile
                         SettingsDestination.HealthConnect -> OhdRoute.SettingsHealthConnect
                         SettingsDestination.Activities -> OhdRoute.SettingsActivities
                         SettingsDestination.Reminders -> OhdRoute.SettingsReminders
@@ -779,6 +783,12 @@ fun OhdNavHost(
                 contentPadding = contentPadding,
                 onBack = { navController.popBackStack() },
                 onToast = { msg -> toast(msg) },
+            )
+        }
+        composable(OhdRoute.HealthProfile.route) {
+            HealthProfileScreen(
+                contentPadding = contentPadding,
+                onBack = { navController.popBackStack() },
             )
         }
         composable(OhdRoute.SettingsHealthConnect.route) {
