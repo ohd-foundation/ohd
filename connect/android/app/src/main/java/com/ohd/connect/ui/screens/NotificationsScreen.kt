@@ -80,6 +80,8 @@ fun NotificationsScreen(
 
     LaunchedEffect(Unit) {
         entries = NotificationCenter.all(ctx)
+        // Opening the inbox marks everything read — clears the Home bell badge.
+        NotificationCenter.markAllSeen(ctx)
     }
 
     val permissionLauncher = rememberLauncherForActivityResult(

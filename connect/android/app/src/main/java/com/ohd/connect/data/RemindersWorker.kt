@@ -4,8 +4,8 @@ import android.content.Context
 import android.util.Log
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
-import com.ohd.connect.ui.screens.StubData
 import org.json.JSONArray
+import org.json.JSONObject
 import java.util.Calendar
 import java.util.concurrent.TimeUnit
 
@@ -71,6 +71,8 @@ class RemindersWorker(
         if (Auth.medsRemindersEnabled(ctx)) {
             runCatching { checkMedReminders(ctx) }
                 .onFailure { Log.w(TAG, "med reminder check failed", it) }
+            runCatching { checkMeasurementReminders(ctx) }
+                .onFailure { Log.w(TAG, "measurement reminder check failed", it) }
         }
 
         if (Auth.dailySummaryEnabled(ctx)) {
@@ -93,31 +95,31 @@ class RemindersWorker(
     }
 
     /**
-     * Scan prescribed medications for ones whose next dose is overdue by
-     * more than [LATE_GRACE_MS] and fire one reminder per overdue dose
-     * window. Dedup-set guards against re-firing the same dose every tick.
+     * Fire a reminder for any active medication regimen whose current
+     * schedule slot is due/overdue and unsatisfied. Driven by the regimen's
+     * real stored `schedule` (cron / anchor) via [Schedule.dueStatus] — not
+     * the old `StubData` heuristic. One reminder per slot (dedup-keyed).
      */
     private fun checkMedReminders(ctx: Context) {
-        val prescribed = StubData.medications.filter { it.kind == StubData.MedKind.Prescribed }
-        if (prescribed.isEmpty()) return
+        val regimens = activeRegimens() // regimen_id, name, schedule, startMs
+        if (regimens.isEmpty()) return
 
-        // Pull the most recent take for each medication. The medication
-        // logger writes `medication.taken` events with a `med.name` channel
-        // (see `MedicationScreen.kt`); older rows may use `name`. Accept
-        // either so this works against pre-redesign data.
-        val recent = StorageRepository.queryEvents(
-            EventFilter(eventTypesIn = listOf("medication.taken"), limit = 200L),
+        // Latest non-skipped dose per regimen — by regimen_id and by name,
+        // mirroring the Medications screen's matching.
+        val doses = StorageRepository.queryEvents(
+            EventFilter(eventTypesIn = listOf("medication.taken"), limit = 500L),
         ).getOrNull().orEmpty()
-
-        val lastTakenByName = mutableMapOf<String, Long>()
-        recent.forEach { ev ->
-            val name = ev.channels
-                .firstOrNull { it.path == "med.name" || it.path == "name" }
-                ?.display
-                ?: return@forEach
-            val current = lastTakenByName[name]
-            if (current == null || ev.timestampMs > current) {
-                lastTakenByName[name] = ev.timestampMs
+        val lastById = HashMap<String, Long>()
+        val lastByName = HashMap<String, Long>()
+        doses.forEach { ev ->
+            fun ch(p: String) = ev.channels.firstOrNull { it.path == p }?.display
+            val skipped = ch("status") == "skipped" || ch("skipped")?.equals("true", true) == true
+            if (skipped) return@forEach
+            ch("regimen_id")?.takeIf { it.isNotEmpty() }?.let {
+                lastById[it] = maxOf(lastById[it] ?: 0L, ev.timestampMs)
+            }
+            (ch("name") ?: ch("med.name"))?.lowercase()?.takeIf { it.isNotEmpty() }?.let {
+                lastByName[it] = maxOf(lastByName[it] ?: 0L, ev.timestampMs)
             }
         }
 
@@ -125,41 +127,111 @@ class RemindersWorker(
         val seen = loadDedupSet(ctx).toMutableSet()
         var changed = false
 
-        prescribed.forEach { med ->
-            val scheduleHours = med.scheduleHours ?: return@forEach
-            val last = lastTakenByName[med.name]
-            // If the user has never logged this med, treat now-as-baseline:
-            // we don't fire a reminder until at least one dose has been
-            // taken — otherwise a brand-new install spams "Time to take
-            // Metformin" the moment the worker boots.
-            if (last == null) return@forEach
+        regimens.forEach { r ->
+            val sched = Schedule.parse(r.schedule)
+            if (sched is Schedule.Unscheduled) return@forEach
+            val last = listOfNotNull(lastById[r.regimenId], lastByName[r.name.lowercase()]).maxOrNull()
+            val status = sched.dueStatus(last, now)
+            if (status !is DueStatus.DueNow && status !is DueStatus.Overdue) return@forEach
+            // Only nag for slots that fall after the regimen began, so a med
+            // added at 3pm with a "daily 8am" schedule isn't instantly "overdue".
+            val slot = sched.lastBefore(now) ?: return@forEach
+            if (slot < r.startMs) return@forEach
 
-            val nextDue = last + TimeUnit.HOURS.toMillis(scheduleHours.toLong())
-            if (now < nextDue + LATE_GRACE_MS) return@forEach
-
-            // Dedup key: med name + hour-rounded next-due timestamp. Reset
-            // on the next dose window — so the user gets one reminder per
-            // missed dose, not one per worker tick.
-            val key = "${med.name}_${nextDue / TimeUnit.HOURS.toMillis(1L)}"
+            val key = "med_${r.regimenId}_${slot / TimeUnit.HOURS.toMillis(1L)}"
             if (seen.contains(key)) return@forEach
-
             NotificationCenter.append(
                 ctx = ctx,
                 entry = NotificationCenter.NotificationEntry(
-                    id = "med_$key",
+                    id = key,
                     timestampMs = now,
-                    title = "Time to take ${med.name}",
-                    body = "Last dose: ${formatRelative(now - last)}",
+                    title = "Time to take ${r.name}",
+                    body = if (last != null) "Last dose ${formatRelative(now - last)}." else "Scheduled dose due.",
                     kind = NotificationCenter.Kind.MED_REMINDER,
                     actionRoute = "log/medication",
                 ),
             )
-
             seen.add(key)
             changed = true
         }
 
         if (changed) saveDedupSet(ctx, seen)
+    }
+
+    /**
+     * Mirror of [checkMedReminders] for measurement watches: fire when a
+     * watch's schedule slot is due/overdue and no reading has been logged
+     * for it. Driven by the watch's stored `schedule`.
+     */
+    private fun checkMeasurementReminders(ctx: Context) {
+        val watches = activeWatches() // metric, label, schedule, startMs
+        if (watches.isEmpty()) return
+
+        val now = System.currentTimeMillis()
+        val seen = loadDedupSet(ctx).toMutableSet()
+        var changed = false
+
+        watches.forEach { w ->
+            val sched = Schedule.parse(w.schedule)
+            if (sched is Schedule.Unscheduled) return@forEach
+            val lastReading = StorageRepository.queryEvents(
+                EventFilter(eventTypesIn = listOf("measurement.${w.metric}"), limit = 1L),
+            ).getOrNull()?.firstOrNull()?.timestampMs
+            val status = sched.dueStatus(lastReading, now)
+            if (status !is DueStatus.DueNow && status !is DueStatus.Overdue) return@forEach
+            val slot = sched.lastBefore(now) ?: return@forEach
+            if (slot < w.startMs) return@forEach
+
+            val key = "watch_${w.metric}_${slot / TimeUnit.HOURS.toMillis(1L)}"
+            if (seen.contains(key)) return@forEach
+            val label = w.label ?: w.metric.replace('_', ' ')
+            NotificationCenter.append(
+                ctx = ctx,
+                entry = NotificationCenter.NotificationEntry(
+                    id = key,
+                    timestampMs = now,
+                    title = "Time to measure $label",
+                    body = "A scheduled reading is due.",
+                    kind = NotificationCenter.Kind.MED_REMINDER,
+                    actionRoute = "log/measurement",
+                ),
+            )
+            seen.add(key)
+            changed = true
+        }
+
+        if (changed) saveDedupSet(ctx, seen)
+    }
+
+    // ---- tracked-item loaders (via the MCP tool dispatch) ----------------
+
+    private data class RegimenRef(val regimenId: String, val name: String, val schedule: String?, val startMs: Long)
+    private data class WatchRef(val metric: String, val label: String?, val schedule: String?, val startMs: Long)
+
+    private fun activeRegimens(): List<RegimenRef> {
+        val raw = StorageRepository.executeToolJson("list_active_regimens", "{}").getOrNull() ?: return emptyList()
+        return runCatching {
+            val arr = JSONObject(raw).optJSONArray("regimens")
+            (0 until (arr?.length() ?: 0)).mapNotNull { i ->
+                val o = arr!!.optJSONObject(i) ?: return@mapNotNull null
+                val id = o.optString("regimen_id", "").ifEmpty { return@mapNotNull null }
+                RegimenRef(id, o.optString("name", "Medication"),
+                    o.optString("schedule", "").ifEmpty { null }, o.optLong("ts_ms", 0L))
+            }
+        }.getOrDefault(emptyList())
+    }
+
+    private fun activeWatches(): List<WatchRef> {
+        val raw = StorageRepository.executeToolJson("list_measurement_watches", "{}").getOrNull() ?: return emptyList()
+        return runCatching {
+            val arr = JSONObject(raw).optJSONArray("watches")
+            (0 until (arr?.length() ?: 0)).mapNotNull { i ->
+                val o = arr!!.optJSONObject(i) ?: return@mapNotNull null
+                val metric = o.optString("metric", "").ifEmpty { return@mapNotNull null }
+                WatchRef(metric, o.optString("label", "").ifEmpty { null },
+                    o.optString("schedule", "").ifEmpty { null }, o.optLong("ts_ms", 0L))
+            }
+        }.getOrDefault(emptyList())
     }
 
     /**

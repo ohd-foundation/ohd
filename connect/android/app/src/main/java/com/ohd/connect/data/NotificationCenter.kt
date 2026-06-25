@@ -48,6 +48,8 @@ object NotificationCenter {
     private const val PREF_KEY_LOG = "notifications_v1"
     /** JSON-encoded `Set<String>` of `{medName}_{nextDueHourEpoch}` keys. */
     internal const val PREF_KEY_DEDUP = "reminders_dedup_v1"
+    /** Timestamp the user last opened the inbox — anything newer is unread. */
+    private const val PREF_KEY_LAST_SEEN = "notifications_last_seen_ms"
 
     /** Hard cap on the in-app log. Oldest entries drop off when exceeded. */
     private const val MAX_ENTRIES = 100
@@ -108,6 +110,17 @@ object NotificationCenter {
     /** Drop every persisted entry. Does not touch already-shown system notifications. */
     fun clear(ctx: Context) {
         Auth.securePrefs(ctx).edit().remove(PREF_KEY_LOG).apply()
+    }
+
+    /** Number of inbox entries newer than the last time it was opened. */
+    fun unreadCount(ctx: Context): Int {
+        val lastSeen = Auth.securePrefs(ctx).getLong(PREF_KEY_LAST_SEEN, 0L)
+        return all(ctx).count { it.timestampMs > lastSeen }
+    }
+
+    /** Mark the inbox read up to now — clears the Home bell badge. */
+    fun markAllSeen(ctx: Context) {
+        Auth.securePrefs(ctx).edit().putLong(PREF_KEY_LAST_SEEN, System.currentTimeMillis()).apply()
     }
 
     // ---- internals -------------------------------------------------------

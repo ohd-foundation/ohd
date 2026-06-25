@@ -95,6 +95,7 @@ fun HomeScreen(
     var range by remember { mutableStateOf(TimeRange.Today) }
     var eventCount by remember { mutableLongStateOf(0L) }
     var sourceCount by remember { mutableLongStateOf(0L) }
+    var unreadNotifications by remember { mutableStateOf(0) }
 
     // Health-profile + cases summary for the two info cards. Loaded once via
     // the same MCP read tools the dedicated screens use.
@@ -159,6 +160,9 @@ fun HomeScreen(
                 }
                 eventCount = ec
                 sourceCount = sc
+                unreadNotifications = withContext(Dispatchers.IO) {
+                    com.ohd.connect.data.NotificationCenter.unreadCount(ctx)
+                }
                 delay(5_000L)
             }
         }
@@ -172,6 +176,7 @@ fun HomeScreen(
             .verticalScroll(rememberScrollState()),
     ) {
         HomeHeader(
+            unreadNotifications = unreadNotifications,
             onOpenCord = onOpenCord,
             onOpenShares = onOpenShares,
             onOpenNotifications = onOpenNotifications,
@@ -413,6 +418,7 @@ private fun CasesCard(
 /** OHD logo + sparkles + shares + bell + settings strip (Pencil `l3AI7` extended). */
 @Composable
 private fun HomeHeader(
+    unreadNotifications: Int,
     onOpenCord: () -> Unit,
     onOpenShares: () -> Unit,
     onOpenNotifications: () -> Unit,
@@ -447,14 +453,24 @@ private fun HomeHeader(
                 .size(22.dp)
                 .clickable { onOpenShares() },
         )
-        Icon(
-            imageVector = OhdIcons.Bell,
-            contentDescription = "Notifications",
-            tint = OhdColors.Muted,
-            modifier = Modifier
-                .size(22.dp)
-                .clickable { onOpenNotifications() },
-        )
+        Box {
+            Icon(
+                imageVector = OhdIcons.Bell,
+                contentDescription = "Notifications",
+                tint = OhdColors.Muted,
+                modifier = Modifier
+                    .size(22.dp)
+                    .clickable { onOpenNotifications() },
+            )
+            if (unreadNotifications > 0) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .size(8.dp)
+                        .background(OhdColors.Red, RoundedCornerShape(4.dp)),
+                )
+            }
+        }
         Icon(
             imageVector = OhdIcons.Settings,
             contentDescription = "Settings",
