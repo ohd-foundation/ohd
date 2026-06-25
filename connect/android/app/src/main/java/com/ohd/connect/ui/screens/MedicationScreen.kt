@@ -30,6 +30,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.ohd.connect.data.DueStatus
+import com.ohd.connect.data.Schedule
 import com.ohd.connect.data.StorageRepository
 import com.ohd.connect.ui.components.OhdButton
 import com.ohd.connect.ui.components.OhdButtonVariant
@@ -292,9 +294,15 @@ fun MedicationScreen(
 
     // Tap a row → dose history + log actual dose / skip / remove.
     actionTarget?.let { r ->
+        // "Extra" when the item isn't currently due (already taken this slot,
+        // or not yet due) — logging now is an off-schedule dose.
+        val lastTaken = doses.firstOrNull { it.matches(r) && !it.skipped }?.ts
+        val st = Schedule.parse(r.schedule).dueStatus(lastTaken, System.currentTimeMillis())
+        val extra = st is DueStatus.Taken || st is DueStatus.Upcoming
         RegimenActionDialog(
             regimen = r,
             recent = doses.filter { it.matches(r) }.take(6),
+            extra = extra,
             onDismiss = { actionTarget = null },
             onLog = { dose, unit ->
                 logDose(r, dose, unit, skipped = false)
@@ -342,24 +350,33 @@ private fun MedSection(
     onOpen: (Regimen) -> Unit,
 ) {
     if (regimens.isEmpty()) return
+    val now = System.currentTimeMillis()
     Spacer(Modifier.height(8.dp))
     OhdSectionHeader(text = title)
     regimens.forEachIndexed { idx, r ->
         val last = doses.firstOrNull { it.matches(r) }
+        // Last *non-skipped* dose satisfies a schedule slot; a skip doesn't.
+        val lastTakenMs = doses.firstOrNull { it.matches(r) && !it.skipped }?.ts
+        val status = Schedule.parse(r.schedule).dueStatus(lastTakenMs, now)
         OhdMedLogItem(
             name = r.name,
-            sub = subtitleFor(r, last),
-            takenState = if (last != null && !last.skipped && isToday(last.ts)) {
-                TakenState.Taken
-            } else {
-                TakenState.Pending
-            },
+            sub = subtitleFor(r, last, status),
+            takenState = takenStateFor(status, last),
             onLog = { onLog(r) },
             onLongPress = { onOpen(r) },
             onOpen = { onOpen(r) },
         )
         if (idx < regimens.lastIndex) OhdDivider()
     }
+}
+
+/** Map a schedule [DueStatus] (+ last dose for the unscheduled case) to a button state. */
+private fun takenStateFor(status: DueStatus, last: Dose?): TakenState = when (status) {
+    is DueStatus.Taken -> TakenState.Taken
+    is DueStatus.Upcoming -> TakenState.Upcoming
+    is DueStatus.DueNow, is DueStatus.Overdue -> TakenState.Pending
+    is DueStatus.Unscheduled ->
+        if (last != null && !last.skipped && isToday(last.ts)) TakenState.Taken else TakenState.Pending
 }
 
 /** An active medication regimen, parsed from list_active_regimens. */
@@ -435,9 +452,13 @@ private fun doseLabel(r: Regimen): String? = when {
     else -> null
 }
 
-private fun subtitleFor(r: Regimen, last: Dose?): String {
+private fun subtitleFor(r: Regimen, last: Dose?, status: DueStatus): String {
     val cadence = scheduleLabel(r.schedule) ?: r.frequency
     val regimenLine = listOfNotNull(doseLabel(r), cadence).joinToString(" · ").ifEmpty { "Regimen" }
+    // For a scheduled item the due hint is the most useful tail; for an
+    // unscheduled one fall back to the last-dose summary.
+    val hint = dueHint(status)
+    if (hint != null) return "$regimenLine · $hint"
     return when {
         last == null -> "$regimenLine · no doses logged yet"
         last.skipped -> "$regimenLine · skipped ${niceWhen(last.ts)}"
@@ -446,6 +467,33 @@ private fun subtitleFor(r: Regimen, last: Dose?): String {
             val tail = if (amt != null) "last $amt · ${niceWhen(last.ts)}" else "last dose ${niceWhen(last.ts)}"
             "$regimenLine · $tail"
         }
+    }
+}
+
+/** Human due hint for a scheduled item, or null when unscheduled. */
+private fun dueHint(status: DueStatus): String? = when (status) {
+    is DueStatus.Unscheduled -> null
+    is DueStatus.DueNow -> "due now"
+    is DueStatus.Overdue -> "overdue ${overdueLabel(status.sinceMs)}"
+    is DueStatus.Upcoming -> "next ${fmtClock(status.nextMs)}"
+    is DueStatus.Taken -> status.nextMs?.let { "taken · next ${fmtClock(it)}" } ?: "taken ✓"
+}
+
+/** "3h" / "2d" — the magnitude of how late a slot is (fmtRelative minus " ago"). */
+private fun overdueLabel(sinceMs: Long): String =
+    fmtRelative(sinceMs).removeSuffix(" ago").ifBlank { "now" }
+
+/** Short clock label for a near-future slot: "8:00", "tomorrow 8:00", "Thu 8:00". */
+private fun fmtClock(ms: Long): String {
+    val now = java.util.Calendar.getInstance()
+    val t = java.util.Calendar.getInstance().apply { timeInMillis = ms }
+    val hm = java.text.SimpleDateFormat("H:mm", java.util.Locale.getDefault()).format(java.util.Date(ms))
+    fun day(c: java.util.Calendar) = c.get(java.util.Calendar.YEAR) * 1000 + c.get(java.util.Calendar.DAY_OF_YEAR)
+    val diff = day(t) - day(now)
+    return when (diff) {
+        0 -> hm
+        1 -> "tomorrow $hm"
+        else -> java.text.SimpleDateFormat("EEE", java.util.Locale.getDefault()).format(java.util.Date(ms)) + " $hm"
     }
 }
 
@@ -471,6 +519,7 @@ private fun isToday(ts: Long): Boolean {
 private fun RegimenActionDialog(
     regimen: Regimen,
     recent: List<Dose>,
+    extra: Boolean,
     onDismiss: () -> Unit,
     onLog: (dose: Double?, unit: String?) -> Unit,
     onSkip: () -> Unit,
@@ -530,7 +579,7 @@ private fun RegimenActionDialog(
         },
         confirmButton = {
             TextButton(onClick = { onLog(doseText.trim().toDoubleOrNull(), unit.trim().ifEmpty { null }) }) {
-                Text("Log dose")
+                Text(if (extra) "Log an extra dose" else "Log dose")
             }
         },
         dismissButton = {

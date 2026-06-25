@@ -27,8 +27,14 @@ import androidx.compose.ui.unit.sp
 import com.ohd.connect.ui.theme.OhdBody
 import com.ohd.connect.ui.theme.OhdColors
 
-/** Whether the prescribed/on-hand med has already been taken in the current window. */
-enum class TakenState { Pending, Taken }
+/**
+ * Where a tracked med stands for its current schedule slot, driving the
+ * right-hand affordance:
+ *  - [Pending]  — due now / overdue / unscheduled-and-not-taken → red "Take".
+ *  - [Upcoming] — scheduled but not yet due → outline "Take" (can take early).
+ *  - [Taken]    — slot satisfied / dosed today → muted "Taken".
+ */
+enum class TakenState { Pending, Upcoming, Taken }
 
 /**
  * Medication log row — Pencil `hAKak`.
@@ -100,6 +106,23 @@ fun OhdMedLogItem(
                     fontWeight = FontWeight.W500,
                     fontSize = 12.sp,
                     color = OhdColors.White,
+                )
+            }
+            TakenState.Upcoming -> Box(
+                modifier = Modifier
+                    .width(60.dp)
+                    .height(32.dp)
+                    .background(OhdColors.Bg, shape)
+                    .border(BorderStroke(1.dp, OhdColors.Line), shape)
+                    .combinedClickable(onClick = onLog, onLongClick = onLongPress),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    text = "Take",
+                    fontFamily = OhdBody,
+                    fontWeight = FontWeight.W500,
+                    fontSize = 12.sp,
+                    color = OhdColors.Ink,
                 )
             }
             TakenState.Taken -> Box(
