@@ -321,6 +321,7 @@ fun MedicationScreen(
 
     if (addOpen) {
         AddRegimenDialog(
+            priorDoses = doses,
             onDismiss = { addOpen = false },
             onAdd = { name, dose, unit, frequency, onHandFlag, quickFlag ->
                 addOpen = false
@@ -596,6 +597,7 @@ private fun RegimenActionDialog(
  */
 @Composable
 private fun AddRegimenDialog(
+    priorDoses: List<Dose>,
     onDismiss: () -> Unit,
     onAdd: (name: String, dose: Double?, unit: String, frequency: String, onHand: Boolean, quick: Boolean) -> Unit,
 ) {
@@ -605,12 +607,33 @@ private fun AddRegimenDialog(
     var frequency by remember { mutableStateOf("") }
     var onHand by remember { mutableStateOf(true) }
     var quick by remember { mutableStateOf(true) }
+    // Doses already logged under this name — so a one-off you've taken
+    // before can become a regimen carrying its real dose, and you can see
+    // you've had it before. (Name-matching already links them; this surfaces it.)
+    val matches = priorDoses.filter { name.isNotBlank() && it.name.equals(name.trim(), ignoreCase = true) }
+    val lastTaken = matches.firstOrNull { !it.skipped }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Add a medication") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 OhdInput(value = name, onValueChange = { name = it }, placeholder = "Name (e.g. Mounjaro)")
+                if (matches.isNotEmpty()) {
+                    Text(
+                        "You've logged \"${name.trim()}\" ${matches.size}× · last ${niceWhen(matches.first().ts)}",
+                        fontFamily = OhdBody, fontSize = 12.sp, color = OhdColors.Muted,
+                    )
+                    lastTaken?.amountLabel()?.let { amt ->
+                        OhdButton(
+                            label = "Use last dose ($amt)",
+                            variant = OhdButtonVariant.Ghost,
+                            onClick = {
+                                doseText = lastTaken.doseValue?.let { fmtDose(it) } ?: doseText
+                                unit = lastTaken.doseUnit ?: unit
+                            },
+                        )
+                    }
+                }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Box(Modifier.weight(1f)) {
                         OhdInput(
