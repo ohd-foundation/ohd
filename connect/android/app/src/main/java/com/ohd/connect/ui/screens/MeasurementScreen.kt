@@ -33,8 +33,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ohd.connect.data.EventChannelInput
 import com.ohd.connect.data.EventInput
+import com.ohd.connect.data.DueStatus
 import com.ohd.connect.data.MetricDef
 import com.ohd.connect.data.MetricsRegistry
+import com.ohd.connect.data.Schedule
 import com.ohd.connect.data.OhdScalar
 import com.ohd.connect.data.PutEventOutcome
 import com.ohd.connect.data.StorageRepository
@@ -88,6 +90,8 @@ fun MeasurementScreen(
 ) {
     var openSheetFor by remember { mutableStateOf<QuickMeasureKind?>(null) }
     var watches by remember { mutableStateOf<List<Watch>>(emptyList()) }
+    // metric token → latest reading timestamp (for due/overdue computation).
+    var lastReadingByMetric by remember { mutableStateOf<Map<String, Long>>(emptyMap()) }
     var refreshTick by remember { mutableStateOf(0) }
     var trackOpen by remember { mutableStateOf(false) }
     var stopTarget by remember { mutableStateOf<Watch?>(null) }
@@ -103,13 +107,11 @@ fun MeasurementScreen(
     }
 
     LaunchedEffect(refreshTick) {
-        val res = withContext(Dispatchers.IO) {
-            StorageRepository.executeToolJson("list_measurement_watches", "{}")
-        }
-        res.getOrNull()?.let { raw ->
-            runCatching {
-                val arr = JSONObject(raw).optJSONArray("watches")
-                watches = (0 until (arr?.length() ?: 0)).mapNotNull { i ->
+        val (parsed, readings) = withContext(Dispatchers.IO) {
+            val raw = StorageRepository.executeToolJson("list_measurement_watches", "{}").getOrNull()
+            val list = runCatching {
+                val arr = JSONObject(raw ?: "{}").optJSONArray("watches")
+                (0 until (arr?.length() ?: 0)).mapNotNull { i ->
                     val o = arr!!.optJSONObject(i) ?: return@mapNotNull null
                     val id = o.optString("watch_id", "").ifEmpty { return@mapNotNull null }
                     Watch(
@@ -120,8 +122,26 @@ fun MeasurementScreen(
                         caseId = o.optString("case_id", "").ifEmpty { null },
                     )
                 }
+            }.getOrDefault(emptyList())
+            // Latest reading per watched metric — drives due/overdue.
+            val map = HashMap<String, Long>()
+            list.map { it.metric }.distinct().filter { it.isNotBlank() }.forEach { m ->
+                val r = StorageRepository.executeToolJson(
+                    "query_events",
+                    JSONObject().put("event_type", "measurement.$m")
+                        .put("visibility", "all").put("limit", 1).toString(),
+                ).getOrNull()
+                val ts = r?.let {
+                    runCatching {
+                        JSONObject(it).optJSONArray("events")?.optJSONObject(0)?.optLong("ts_ms", 0L)
+                    }.getOrNull()
+                }
+                if (ts != null && ts > 0) map[m] = ts
             }
+            list to map
         }
+        watches = parsed
+        lastReadingByMetric = readings
     }
 
     fun startWatch(metric: String, schedule: String, quick: Boolean) {
@@ -147,6 +167,7 @@ fun MeasurementScreen(
 
     val planWatches = watches.filter { !it.caseId.isNullOrBlank() }
     val trackedWatches = watches.filter { it.caseId.isNullOrBlank() }
+    val now = System.currentTimeMillis()
 
     Column(
         modifier = modifier
@@ -166,7 +187,7 @@ fun MeasurementScreen(
             // ---- ON A TREATMENT PLAN (case-linked watches) ----
             if (planWatches.isNotEmpty()) {
                 item { OhdSectionHeader(text = "ON A TREATMENT PLAN") }
-                watchRows(planWatches, onLogReading = { w ->
+                watchRows(planWatches, lastReadingByMetric, now, onLogReading = { w ->
                     metricToKind(w.metric)?.let { openSheetFor = it }
                 }, onStop = { stopTarget = it })
                 item { Spacer(Modifier.height(8.dp)) }
@@ -175,7 +196,7 @@ fun MeasurementScreen(
             // ---- TRACKED (personal watches) ----
             if (trackedWatches.isNotEmpty()) {
                 item { OhdSectionHeader(text = "TRACKED") }
-                watchRows(trackedWatches, onLogReading = { w ->
+                watchRows(trackedWatches, lastReadingByMetric, now, onLogReading = { w ->
                     metricToKind(w.metric)?.let { openSheetFor = it }
                 }, onStop = { stopTarget = it })
                 item { Spacer(Modifier.height(8.dp)) }
@@ -309,20 +330,46 @@ private data class Watch(
 /** Emit the rows for a list of watches into a LazyColumn. */
 private fun androidx.compose.foundation.lazy.LazyListScope.watchRows(
     watches: List<Watch>,
+    lastReadingByMetric: Map<String, Long>,
+    now: Long,
     onLogReading: (Watch) -> Unit,
     onStop: (Watch) -> Unit,
 ) {
     watches.forEachIndexed { idx, w ->
+        val status = Schedule.parse(w.schedule).dueStatus(lastReadingByMetric[w.metric], now)
+        val secondary = measureDueHint(status) ?: scheduleLabel(w.schedule) ?: "tracked"
         item {
             OhdListItem(
                 primary = w.label ?: metricLabel(w.metric),
-                secondary = scheduleLabel(w.schedule) ?: "tracked",
+                secondary = secondary,
                 meta = "Log ›",
                 onClick = { onLogReading(w) },
                 onLongClick = { onStop(w) },
             )
         }
         if (idx < watches.lastIndex) item { OhdDivider() }
+    }
+}
+
+/** Due hint for a watch ("due now" / "next 8:00" / "overdue 3h"), or null. */
+private fun measureDueHint(status: DueStatus): String? = when (status) {
+    is DueStatus.Unscheduled -> null
+    is DueStatus.DueNow -> "due now"
+    is DueStatus.Overdue -> "overdue " + fmtRelative(status.sinceMs).removeSuffix(" ago")
+    is DueStatus.Upcoming -> "next " + fmtClockShort(status.nextMs)
+    is DueStatus.Taken -> status.nextMs?.let { "done · next " + fmtClockShort(it) } ?: "done ✓"
+}
+
+/** Short clock label: "8:00", "tomorrow 8:00", "Thu 8:00". */
+private fun fmtClockShort(ms: Long): String {
+    val now = java.util.Calendar.getInstance()
+    val t = java.util.Calendar.getInstance().apply { timeInMillis = ms }
+    val hm = java.text.SimpleDateFormat("H:mm", java.util.Locale.getDefault()).format(java.util.Date(ms))
+    fun day(c: java.util.Calendar) = c.get(java.util.Calendar.YEAR) * 1000 + c.get(java.util.Calendar.DAY_OF_YEAR)
+    return when (day(t) - day(now)) {
+        0 -> hm
+        1 -> "tomorrow $hm"
+        else -> java.text.SimpleDateFormat("EEE", java.util.Locale.getDefault()).format(java.util.Date(ms)) + " $hm"
     }
 }
 
