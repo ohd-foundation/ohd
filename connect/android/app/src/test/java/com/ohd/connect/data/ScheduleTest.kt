@@ -37,7 +37,7 @@ class ScheduleTest {
 
     @Test fun unparseable_and_as_needed_are_unscheduled() {
         assertTrue(Schedule.parse("") is Schedule.Unscheduled)
-        assertTrue(Schedule.parse("every day-ish") is Schedule.Unscheduled)
+        assertTrue(Schedule.parse("whenever i remember") is Schedule.Unscheduled)
         assertTrue(Schedule.parse("anchor:as_needed") is Schedule.Unscheduled)
         assertTrue(Schedule.parse(null) is Schedule.Unscheduled)
     }
@@ -77,6 +77,33 @@ class ScheduleTest {
         )
         assertTrue("expected Taken, got $status", status is DueStatus.Taken)
         assertEquals(at(2026, 6, 16, 8, 0), (status as DueStatus.Taken).nextMs)
+    }
+
+    @Test fun parses_interval_forms() {
+        val day = 24L * 60 * 60 * 1000
+        assertEquals(Schedule.Interval(7 * day), Schedule.parse("weekly"))
+        assertEquals(Schedule.Interval(7 * day), Schedule.parse("every 7 days"))
+        assertEquals(Schedule.Interval(7 * day), Schedule.parse("every:7d"))
+        assertEquals(Schedule.Interval(12 * 60 * 60 * 1000), Schedule.parse("twice daily"))
+        assertEquals(Schedule.Interval(day), Schedule.parse("daily"))
+    }
+
+    @Test fun interval_due_overdue_taken() {
+        val day = 24L * 60 * 60 * 1000
+        val s = Schedule.parse("weekly")
+        val now = at(2026, 6, 15, 9, 0)
+        // never logged → take the first now
+        assertTrue(s.dueStatus(null, now) is DueStatus.DueNow)
+        // last dose 8 days ago → overdue (next was a day ago)
+        assertTrue(s.dueStatus(now - 8 * day, now) is DueStatus.Overdue)
+        // last dose 3 days ago → satisfied, next in 4 days
+        val taken = s.dueStatus(now - 3 * day, now)
+        assertTrue(taken is DueStatus.Taken)
+        assertEquals(now - 3 * day + 7 * day, (taken as DueStatus.Taken).nextMs)
+    }
+
+    @Test fun interval_natural_morning_maps_to_anchor() {
+        assertTrue(Schedule.parse("every morning") is Schedule.Anchor)
     }
 
     @Test fun unscheduled_status() {

@@ -131,11 +131,11 @@ class RemindersWorker(
             val sched = Schedule.parse(r.schedule)
             if (sched is Schedule.Unscheduled) return@forEach
             val last = listOfNotNull(lastById[r.regimenId], lastByName[r.name.lowercase()]).maxOrNull()
-            val status = sched.dueStatus(last, now)
-            if (status !is DueStatus.DueNow && status !is DueStatus.Overdue) return@forEach
-            // Only nag for slots that fall after the regimen began, so a med
-            // added at 3pm with a "daily 8am" schedule isn't instantly "overdue".
-            val slot = sched.lastBefore(now) ?: return@forEach
+            // currentSlotMs is non-null only when a slot is due/overdue and
+            // unsatisfied — handles cron, anchor, and floating intervals.
+            val slot = sched.currentSlotMs(last, now) ?: return@forEach
+            // Only nag for slots after the regimen began, so a med added at 3pm
+            // with a "daily 8am" schedule isn't instantly "overdue".
             if (slot < r.startMs) return@forEach
 
             val key = "med_${r.regimenId}_${slot / TimeUnit.HOURS.toMillis(1L)}"
@@ -177,9 +177,7 @@ class RemindersWorker(
             val lastReading = StorageRepository.queryEvents(
                 EventFilter(eventTypesIn = listOf("measurement.${w.metric}"), limit = 1L),
             ).getOrNull()?.firstOrNull()?.timestampMs
-            val status = sched.dueStatus(lastReading, now)
-            if (status !is DueStatus.DueNow && status !is DueStatus.Overdue) return@forEach
-            val slot = sched.lastBefore(now) ?: return@forEach
+            val slot = sched.currentSlotMs(lastReading, now) ?: return@forEach
             if (slot < w.startMs) return@forEach
 
             val key = "watch_${w.metric}_${slot / TimeUnit.HOURS.toMillis(1L)}"
@@ -215,8 +213,11 @@ class RemindersWorker(
             (0 until (arr?.length() ?: 0)).mapNotNull { i ->
                 val o = arr!!.optJSONObject(i) ?: return@mapNotNull null
                 val id = o.optString("regimen_id", "").ifEmpty { return@mapNotNull null }
-                RegimenRef(id, o.optString("name", "Medication"),
-                    o.optString("schedule", "").ifEmpty { null }, o.optLong("ts_ms", 0L))
+                // Fall back to the free-text frequency so "weekly" etc. drive
+                // reminders even without an explicit machine schedule.
+                val sched = o.optString("schedule", "").ifEmpty { o.optString("frequency", "") }
+                    .ifEmpty { null }
+                RegimenRef(id, o.optString("name", "Medication"), sched, o.optLong("ts_ms", 0L))
             }
         }.getOrDefault(emptyList())
     }

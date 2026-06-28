@@ -297,7 +297,7 @@ fun MedicationScreen(
         // "Extra" when the item isn't currently due (already taken this slot,
         // or not yet due) — logging now is an off-schedule dose.
         val lastTaken = doses.firstOrNull { it.matches(r) && !it.skipped }?.ts
-        val st = Schedule.parse(r.schedule).dueStatus(lastTaken, System.currentTimeMillis())
+        val st = regimenSchedule(r).dueStatus(lastTaken, System.currentTimeMillis())
         val extra = st is DueStatus.Taken || st is DueStatus.Upcoming
         RegimenActionDialog(
             regimen = r,
@@ -358,7 +358,7 @@ private fun MedSection(
         val last = doses.firstOrNull { it.matches(r) }
         // Last *non-skipped* dose satisfies a schedule slot; a skip doesn't.
         val lastTakenMs = doses.firstOrNull { it.matches(r) && !it.skipped }?.ts
-        val status = Schedule.parse(r.schedule).dueStatus(lastTakenMs, now)
+        val status = regimenSchedule(r).dueStatus(lastTakenMs, now)
         OhdMedLogItem(
             name = r.name,
             sub = subtitleFor(r, last, status),
@@ -369,6 +369,16 @@ private fun MedSection(
         )
         if (idx < regimens.lastIndex) OhdDivider()
     }
+}
+
+/**
+ * The schedule driving a regimen's due-state: prefer the explicit machine
+ * `schedule`, but fall back to parsing the free-text `frequency` so a user
+ * who simply typed "weekly" / "every 8h" still gets due/overdue.
+ */
+private fun regimenSchedule(r: Regimen): Schedule {
+    val s = Schedule.parse(r.schedule)
+    return if (s is Schedule.Unscheduled) Schedule.parse(r.frequency) else s
 }
 
 /** Map a schedule [DueStatus] (+ last dose for the unscheduled case) to a button state. */

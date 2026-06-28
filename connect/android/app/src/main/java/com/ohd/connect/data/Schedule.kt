@@ -57,9 +57,18 @@ sealed interface Schedule {
             times.any { (h, m) -> cal.get(Calendar.HOUR_OF_DAY) == h && cal.get(Calendar.MINUTE) == m }
     }
 
+    /**
+     * A floating interval relative to the last log — "every 7 days from when
+     * you took it", a weekly injection. Not clock-anchored, so it's evaluated
+     * directly off `lastLogMs` rather than via [nextAfter]/[lastBefore].
+     */
+    data class Interval(val stepMs: Long) : Schedule {
+        override fun matchesMinute(cal: Calendar): Boolean = false
+    }
+
     /** Next firing strictly after `afterMs`, or null if none within ~1 year. */
     fun nextAfter(afterMs: Long): Long? {
-        if (this is Unscheduled) return null
+        if (this is Unscheduled || this is Interval) return null
         val cal = Calendar.getInstance().apply {
             timeInMillis = afterMs
             set(Calendar.SECOND, 0)
@@ -75,7 +84,7 @@ sealed interface Schedule {
 
     /** Most recent firing at or before `beforeMs`, or null if none in ~1 year. */
     fun lastBefore(beforeMs: Long): Long? {
-        if (this is Unscheduled) return null
+        if (this is Unscheduled || this is Interval) return null
         val cal = Calendar.getInstance().apply {
             timeInMillis = beforeMs
             set(Calendar.SECOND, 0)
@@ -94,6 +103,15 @@ sealed interface Schedule {
      */
     fun dueStatus(lastLogMs: Long?, now: Long): DueStatus {
         if (this is Unscheduled) return DueStatus.Unscheduled
+        if (this is Interval) {
+            // Floating: the next dose is `stepMs` after the last one. Never
+            // logged → the first is due now.
+            if (lastLogMs == null) return DueStatus.DueNow
+            val next = lastLogMs + stepMs
+            if (now < next) return DueStatus.Taken(next)
+            val overdueBy = now - next
+            return if (overdueBy <= DUE_GRACE_MS) DueStatus.DueNow else DueStatus.Overdue(next)
+        }
         val prev = lastBefore(now)
         val next = nextAfter(now)
         if (prev == null) {
@@ -105,6 +123,23 @@ sealed interface Schedule {
         }
         val overdueBy = now - prev
         return if (overdueBy <= DUE_GRACE_MS) DueStatus.DueNow else DueStatus.Overdue(prev)
+    }
+
+    /**
+     * Timestamp of the slot that is currently due/overdue and unsatisfied, or
+     * null when nothing is pending. Used by the reminder worker to dedup one
+     * nudge per slot across all schedule kinds.
+     */
+    fun currentSlotMs(lastLogMs: Long?, now: Long): Long? = when (this) {
+        is Unscheduled -> null
+        is Interval ->
+            // Don't background-nag a never-started interval (the screen still
+            // shows "due now"); once logged, the slot is last + step.
+            lastLogMs?.let { it + stepMs }?.takeIf { now >= it }
+        else -> when (dueStatus(lastLogMs, now)) {
+            is DueStatus.DueNow, is DueStatus.Overdue -> lastBefore(now)
+            else -> null
+        }
     }
 
     companion object {
@@ -129,12 +164,60 @@ sealed interface Schedule {
         fun parse(raw: String?): Schedule {
             val s = raw?.trim().orEmpty()
             if (s.isEmpty()) return Unscheduled
-            if (s.startsWith("anchor:")) {
-                val name = s.removePrefix("anchor:").trim().lowercase()
+            val lower = s.lowercase()
+            if (lower.startsWith("anchor:")) {
+                val name = lower.removePrefix("anchor:").trim()
                 val times = ANCHORS[name] ?: return Unscheduled
                 return Anchor(name, times)
             }
-            return parseCron(s) ?: Unscheduled
+            if (lower.startsWith("every:")) {
+                return parseInterval(lower.removePrefix("every:").trim()) ?: Unscheduled
+            }
+            // Cron looks like five whitespace-separated tokens of cron chars.
+            parseCron(s)?.let { return it }
+            // Otherwise try natural language ("weekly", "every 7 days", …).
+            return parseNatural(lower) ?: Unscheduled
+        }
+
+        private val DAY_MS = 24L * 60L * 60L * 1000L
+        private val HOUR_MS = 60L * 60L * 1000L
+
+        /** `7d` / `12h` / `30m` / `2w` → an [Interval], or null. */
+        private fun parseInterval(token: String): Interval? {
+            val m = Regex("^(\\d+)\\s*([dhmw])$").find(token.replace(" ", "")) ?: return null
+            val n = m.groupValues[1].toLongOrNull() ?: return null
+            if (n <= 0) return null
+            val step = when (m.groupValues[2]) {
+                "d" -> n * DAY_MS
+                "h" -> n * HOUR_MS
+                "m" -> n * 60L * 1000L
+                "w" -> n * 7L * DAY_MS
+                else -> return null
+            }
+            return Interval(step)
+        }
+
+        /** Common spoken cadences → a schedule. Best-effort; null if unknown. */
+        private fun parseNatural(s: String): Schedule? {
+            // "every N day(s)/week(s)/hour(s)/h"
+            Regex("every\\s+(\\d+)\\s*(day|days|d|week|weeks|w|hour|hours|h)")
+                .find(s)?.let { m ->
+                    val n = m.groupValues[1].toLong()
+                    val unit = m.groupValues[2].first() // d / w / h
+                    return parseInterval("$n$unit")
+                }
+            return when {
+                "twice" in s && ("dai" in s || "day" in s) -> Interval(12 * HOUR_MS)
+                "every other day" in s -> Interval(2 * DAY_MS)
+                "weekly" in s || "every week" in s || "once a week" in s -> Interval(7 * DAY_MS)
+                "fortnight" in s || "biweekly" in s -> Interval(14 * DAY_MS)
+                "monthly" in s || "every month" in s -> Interval(30 * DAY_MS)
+                "daily" in s || "every day" in s || "once a day" in s -> Interval(DAY_MS)
+                "morning" in s -> Anchor("breakfast", ANCHORS.getValue("breakfast"))
+                "bedtime" in s || "night" in s -> Anchor("bedtime", ANCHORS.getValue("bedtime"))
+                "lunch" in s || "noon" in s -> Anchor("lunch", ANCHORS.getValue("lunch"))
+                else -> null
+            }
         }
 
         private fun parseCron(s: String): Cron? {
