@@ -66,9 +66,42 @@ sealed interface Schedule {
         override fun matchesMinute(cal: Calendar): Boolean = false
     }
 
+    /** PRN — take as needed; explicit "no schedule, never nag". */
+    object Prn : Schedule {
+        override fun matchesMinute(cal: Calendar): Boolean = false
+    }
+
+    /**
+     * Meal-relative (AC/PC/CC) — fires off `food.eaten` events, handled by the
+     * trigger engine, not the clock. [firstOfDay] = only the day's first meal
+     * ("with breakfast" / "with first food").
+     */
+    data class Meal(val relation: Relation, val firstOfDay: Boolean) : Schedule {
+        enum class Relation { Before, With, After }
+        override fun matchesMinute(cal: Calendar): Boolean = false
+    }
+
+    /**
+     * Event-anchored — `waking` (off `activity.sleep` end) or `bedtime`
+     * (sleep start). Handled by the trigger engine.
+     */
+    data class Event(val name: String) : Schedule {
+        override fun matchesMinute(cal: Calendar): Boolean = false
+    }
+
+    /**
+     * Conditional / sliding-scale — fire when a `measurement.<metric>` reading
+     * crosses [value] per [op] (`>`, `<`, `>=`, `<=`). Notify-only; never
+     * auto-doses. Handled by the trigger engine.
+     */
+    data class Conditional(val metric: String, val op: String, val value: Double) : Schedule {
+        override fun matchesMinute(cal: Calendar): Boolean = false
+    }
+
     /** Next firing strictly after `afterMs`, or null if none within ~1 year. */
     fun nextAfter(afterMs: Long): Long? {
-        if (this is Unscheduled || this is Interval) return null
+        // Only clock-anchored kinds have minute-resolvable slots.
+        if (this !is Cron && this !is Anchor) return null
         val cal = Calendar.getInstance().apply {
             timeInMillis = afterMs
             set(Calendar.SECOND, 0)
@@ -84,7 +117,8 @@ sealed interface Schedule {
 
     /** Most recent firing at or before `beforeMs`, or null if none in ~1 year. */
     fun lastBefore(beforeMs: Long): Long? {
-        if (this is Unscheduled || this is Interval) return null
+        // Only clock-anchored kinds have minute-resolvable slots.
+        if (this !is Cron && this !is Anchor) return null
         val cal = Calendar.getInstance().apply {
             timeInMillis = beforeMs
             set(Calendar.SECOND, 0)
@@ -102,7 +136,13 @@ sealed interface Schedule {
      * its most recent log (a dose / a reading), or null if never logged.
      */
     fun dueStatus(lastLogMs: Long?, now: Long): DueStatus {
-        if (this is Unscheduled) return DueStatus.Unscheduled
+        // Event-driven kinds have no clock due-state; the trigger engine drives
+        // them. PRN/unscheduled never nag.
+        if (this is Unscheduled || this is Prn || this is Meal ||
+            this is Event || this is Conditional
+        ) {
+            return DueStatus.Unscheduled
+        }
         if (this is Interval) {
             // Floating: the next dose is `stepMs` after the last one. Never
             // logged → the first is due now.
@@ -165,18 +205,78 @@ sealed interface Schedule {
             val s = raw?.trim().orEmpty()
             if (s.isEmpty()) return Unscheduled
             val lower = s.lowercase()
-            if (lower.startsWith("anchor:")) {
-                val name = lower.removePrefix("anchor:").trim()
-                val times = ANCHORS[name] ?: return Unscheduled
-                return Anchor(name, times)
+            // Explicit DSL prefixes (what the UI builder + LLM emit).
+            when {
+                lower.startsWith("anchor:") -> {
+                    val name = lower.removePrefix("anchor:").trim()
+                    return ANCHORS[name]?.let { Anchor(name, it) } ?: Unscheduled
+                }
+                lower.startsWith("every:") ->
+                    return parseInterval(lower.removePrefix("every:").trim()) ?: Unscheduled
+                lower.startsWith("times:") ->
+                    return parseTimes(lower.removePrefix("times:").trim()) ?: Unscheduled
+                lower.startsWith("meal:") ->
+                    return parseMealSpec(lower.removePrefix("meal:").trim()) ?: Unscheduled
+                lower.startsWith("event:") ->
+                    return parseEventSpec(lower.removePrefix("event:").trim()) ?: Unscheduled
+                lower.startsWith("cond:") ->
+                    return parseCondSpec(lower.removePrefix("cond:").trim()) ?: Unscheduled
+                lower == "prn" -> return Prn
             }
-            if (lower.startsWith("every:")) {
-                return parseInterval(lower.removePrefix("every:").trim()) ?: Unscheduled
-            }
-            // Cron looks like five whitespace-separated tokens of cron chars.
+            // A literal 5-field cron expression.
             parseCron(s)?.let { return it }
-            // Otherwise try natural language ("weekly", "every 7 days", …).
+            // Otherwise sig codes / plain English.
             return parseNatural(lower) ?: Unscheduled
+        }
+
+        // ---- DSL spec parsers ------------------------------------------------
+
+        /** `3@6,14,22` / `2@9,21` / `2` (default spacing) → fixed clock slots. */
+        private fun parseTimes(spec: String): Schedule? {
+            val parts = spec.split("@")
+            val n = parts[0].trim().toIntOrNull() ?: return null
+            if (n <= 0) return null
+            val hours = if (parts.size > 1) {
+                parts[1].split(",").mapNotNull { it.trim().toIntOrNull() }.filter { it in 0..23 }
+            } else {
+                defaultTimesFor(n)
+            }
+            if (hours.isEmpty()) return null
+            return Cron(minute = setOf(0), hour = hours.toSortedSet(), dayOfMonth = null, month = null, dayOfWeek = null)
+        }
+
+        /** Reasonable clock times for an N-times-a-day count with no times given. */
+        private fun defaultTimesFor(n: Int): List<Int> = when (n) {
+            1 -> listOf(9)
+            2 -> listOf(9, 21)
+            3 -> listOf(8, 14, 22)
+            4 -> listOf(8, 12, 16, 20)
+            else -> (0 until n).map { 8 + it * 24 / n }.filter { it in 0..23 }
+        }
+
+        /** `with` / `before` / `after`, optional `:first`. */
+        private fun parseMealSpec(spec: String): Meal? {
+            val first = spec.endsWith(":first")
+            val rel = when (spec.removeSuffix(":first").trim()) {
+                "before" -> Meal.Relation.Before
+                "with" -> Meal.Relation.With
+                "after" -> Meal.Relation.After
+                else -> return null
+            }
+            return Meal(rel, first)
+        }
+
+        private fun parseEventSpec(spec: String): Schedule? = when (spec.trim()) {
+            "waking", "bedtime" -> Event(spec.trim())
+            else -> null
+        }
+
+        /** `glucose>14` / `bp>=140` → a [Conditional]. */
+        private fun parseCondSpec(spec: String): Conditional? {
+            val m = Regex("^([a-z_]+)(>=|<=|>|<)(\\d+(?:\\.\\d+)?)$")
+                .find(spec.replace(" ", "")) ?: return null
+            val v = m.groupValues[3].toDoubleOrNull() ?: return null
+            return Conditional(m.groupValues[1], m.groupValues[2], v)
         }
 
         private val DAY_MS = 24L * 60L * 60L * 1000L
@@ -197,27 +297,92 @@ sealed interface Schedule {
             return Interval(step)
         }
 
-        /** Common spoken cadences → a schedule. Best-effort; null if unknown. */
-        private fun parseNatural(s: String): Schedule? {
-            // "every N day(s)/week(s)/hour(s)/h"
-            Regex("every\\s+(\\d+)\\s*(day|days|d|week|weeks|w|hour|hours|h)")
+        /**
+         * Sig codes (BID/TID/QID/AC/PC/HS/PRN…) + plain English → a schedule.
+         * Best-effort; null if nothing matches. Order matters: specific
+         * patterns (conditional, "starting at", explicit intervals) are tried
+         * before the keyword table.
+         */
+        private fun parseNatural(raw: String): Schedule? {
+            val s = raw.replace(".", "") // b.i.d → bid
+            parseConditionalNatural(s)?.let { return it }
+            // "every N h starting at H" → fixed slots H, H+N, …
+            Regex("every\\s+(\\d+)\\s*h(?:ours?)?\\s+(?:starting(?:\\s+at)?|from|at)\\s+(\\d{1,2})")
                 .find(s)?.let { m ->
-                    val n = m.groupValues[1].toLong()
-                    val unit = m.groupValues[2].first() // d / w / h
-                    return parseInterval("$n$unit")
+                    val step = m.groupValues[1].toInt()
+                    val start = m.groupValues[2].toInt()
+                    if (step in 1..24 && start in 0..23) {
+                        val hours = generateSequence(start) { it + step }.takeWhile { it < 24 }.toList()
+                        return Cron(setOf(0), hours.toSortedSet(), null, null, null)
+                    }
                 }
+            // floating "every N day(s)/week(s)/hour(s)"
+            Regex("every\\s+(\\d+)\\s*(day|days|d|week|weeks|w|hour|hours|h)").find(s)?.let { m ->
+                return parseInterval(m.groupValues[1] + m.groupValues[2].first())
+            }
             return when {
-                "twice" in s && ("dai" in s || "day" in s) -> Interval(12 * HOUR_MS)
+                "as needed" in s || "as required" in s || "when needed" in s || "if needed" in s ||
+                    matchesWord(s, "prn") || matchesWord(s, "sos") -> Prn
+
+                matchesWord(s, "qid") || "four times" in s || "4 times" in s -> parseTimes("4")
+                matchesWord(s, "tid") || "three times" in s || "3 times" in s -> parseTimes("3")
+                matchesWord(s, "bid") || matchesWord(s, "bd") || "twice" in s -> parseTimes("2")
+
+                matchesWord(s, "ac") || "before meal" in s || "before food" in s || "before eating" in s ->
+                    Meal(Meal.Relation.Before, false)
+                matchesWord(s, "pc") || "after meal" in s || "after food" in s || "after eating" in s ->
+                    Meal(Meal.Relation.After, false)
+                "with breakfast" in s || "with first food" in s -> Meal(Meal.Relation.With, true)
+                matchesWord(s, "cc") || "with food" in s || "with meal" in s -> Meal(Meal.Relation.With, false)
+
+                "first thing" in s || "on waking" in s || "upon waking" in s ||
+                    "when i wake" in s || "after waking" in s -> Event("waking")
+
+                matchesWord(s, "hs") || matchesWord(s, "qhs") || "bedtime" in s ||
+                    "at night" in s || "before bed" in s -> Anchor("bedtime", ANCHORS.getValue("bedtime"))
+                matchesWord(s, "qam") || "every morning" in s || "morning" in s || matchesWord(s, "mane") ->
+                    Anchor("breakfast", ANCHORS.getValue("breakfast"))
+                matchesWord(s, "qpm") || "every evening" in s || "evening" in s ->
+                    Anchor("dinner", ANCHORS.getValue("dinner"))
+                "lunch" in s || "noon" in s -> Anchor("lunch", ANCHORS.getValue("lunch"))
+
                 "every other day" in s -> Interval(2 * DAY_MS)
                 "weekly" in s || "every week" in s || "once a week" in s -> Interval(7 * DAY_MS)
                 "fortnight" in s || "biweekly" in s -> Interval(14 * DAY_MS)
                 "monthly" in s || "every month" in s -> Interval(30 * DAY_MS)
-                "daily" in s || "every day" in s || "once a day" in s -> Interval(DAY_MS)
-                "morning" in s -> Anchor("breakfast", ANCHORS.getValue("breakfast"))
-                "bedtime" in s || "night" in s -> Anchor("bedtime", ANCHORS.getValue("bedtime"))
-                "lunch" in s || "noon" in s -> Anchor("lunch", ANCHORS.getValue("lunch"))
+
+                "daily" in s || "every day" in s || "once a day" in s || "once daily" in s ||
+                    matchesWord(s, "qd") || matchesWord(s, "od") -> parseTimes("1")
                 else -> null
             }
+        }
+
+        private fun matchesWord(s: String, word: String): Boolean =
+            Regex("\\b" + Regex.escape(word) + "\\b").containsMatchIn(s)
+
+        /** "when/if <metric> over/above/under/below <value>" → [Conditional]. */
+        private fun parseConditionalNatural(s: String): Conditional? {
+            val m = Regex(
+                "([a-z ]+?)\\s+(over|above|greater than|under|below|less than)\\s+(\\d+(?:\\.\\d+)?)",
+            ).find(s) ?: return null
+            val metric = normalizeMetric(m.groupValues[1].trim()) ?: return null
+            val op = when (m.groupValues[2].trim()) {
+                "over", "above", "greater than" -> ">"
+                else -> "<"
+            }
+            val v = m.groupValues[3].toDoubleOrNull() ?: return null
+            return Conditional(metric, op, v)
+        }
+
+        /** Map a spoken metric name to the canonical token, or null. */
+        private fun normalizeMetric(name: String): String? = when {
+            "glucose" in name || "sugar" in name -> "glucose"
+            "blood pressure" in name || name.trim() == "bp" -> "blood_pressure"
+            "temperature" in name || "temp" in name || "fever" in name -> "temperature"
+            "weight" in name -> "weight"
+            "heart rate" in name || "pulse" in name || name.trim() == "hr" -> "heart_rate"
+            "spo2" in name || "oxygen" in name || "saturation" in name -> "spo2"
+            else -> null
         }
 
         private fun parseCron(s: String): Cron? {

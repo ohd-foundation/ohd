@@ -84,8 +84,11 @@ class ScheduleTest {
         assertEquals(Schedule.Interval(7 * day), Schedule.parse("weekly"))
         assertEquals(Schedule.Interval(7 * day), Schedule.parse("every 7 days"))
         assertEquals(Schedule.Interval(7 * day), Schedule.parse("every:7d"))
-        assertEquals(Schedule.Interval(12 * 60 * 60 * 1000), Schedule.parse("twice daily"))
-        assertEquals(Schedule.Interval(day), Schedule.parse("daily"))
+        assertEquals(Schedule.Interval(8 * 60 * 60 * 1000), Schedule.parse("every 8h"))
+        // count-per-day ("twice daily", "daily") are fixed clock times now,
+        // not floating intervals.
+        assertEquals(setOf(9, 21), (Schedule.parse("twice daily") as Schedule.Cron).hour)
+        assertEquals(setOf(9), (Schedule.parse("daily") as Schedule.Cron).hour)
     }
 
     @Test fun interval_due_overdue_taken() {
@@ -104,6 +107,46 @@ class ScheduleTest {
 
     @Test fun interval_natural_morning_maps_to_anchor() {
         assertTrue(Schedule.parse("every morning") is Schedule.Anchor)
+    }
+
+    @Test fun parses_sig_count_codes_to_fixed_times() {
+        assertEquals(setOf(9, 21), (Schedule.parse("BID") as Schedule.Cron).hour)
+        assertEquals(setOf(8, 14, 22), (Schedule.parse("tid") as Schedule.Cron).hour)
+        assertEquals(setOf(8, 12, 16, 20), (Schedule.parse("QID") as Schedule.Cron).hour)
+        assertEquals(setOf(9), (Schedule.parse("once daily") as Schedule.Cron).hour)
+    }
+
+    @Test fun parses_times_dsl_and_starting_at() {
+        assertEquals(setOf(6, 14, 22), (Schedule.parse("times:3@6,14,22") as Schedule.Cron).hour)
+        assertEquals(setOf(6, 14, 22), (Schedule.parse("every 8h starting at 6") as Schedule.Cron).hour)
+    }
+
+    @Test fun parses_meal_relative() {
+        assertEquals(Schedule.Meal(Schedule.Meal.Relation.With, false), Schedule.parse("with food"))
+        assertEquals(Schedule.Meal(Schedule.Meal.Relation.Before, false), Schedule.parse("ac"))
+        assertEquals(Schedule.Meal(Schedule.Meal.Relation.After, false), Schedule.parse("after meals"))
+        assertEquals(Schedule.Meal(Schedule.Meal.Relation.With, true), Schedule.parse("with breakfast"))
+        assertEquals(Schedule.Meal(Schedule.Meal.Relation.With, true), Schedule.parse("meal:with:first"))
+    }
+
+    @Test fun parses_event_and_prn() {
+        assertEquals(Schedule.Event("waking"), Schedule.parse("first thing in the morning"))
+        assertEquals(Schedule.Event("waking"), Schedule.parse("event:waking"))
+        assertTrue(Schedule.parse("as needed") is Schedule.Prn)
+        assertTrue(Schedule.parse("prn") is Schedule.Prn)
+    }
+
+    @Test fun parses_conditional() {
+        assertEquals(Schedule.Conditional("glucose", ">", 14.0), Schedule.parse("take when glucose over 14"))
+        assertEquals(Schedule.Conditional("glucose", ">", 14.0), Schedule.parse("cond:glucose>14"))
+        assertEquals(Schedule.Conditional("temperature", ">", 38.0), Schedule.parse("if temperature above 38"))
+    }
+
+    @Test fun event_driven_kinds_have_no_clock_due() {
+        val now = at(2026, 6, 15, 9, 0)
+        assertTrue(Schedule.parse("with food").dueStatus(null, now) is DueStatus.Unscheduled)
+        assertTrue(Schedule.parse("prn").dueStatus(null, now) is DueStatus.Unscheduled)
+        assertTrue(Schedule.parse("cond:glucose>14").dueStatus(null, now) is DueStatus.Unscheduled)
     }
 
     @Test fun unscheduled_status() {
